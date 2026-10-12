@@ -335,6 +335,8 @@ func (h *Handler) modelList() []map[string]any {
 // OpenAI 官方仅规定 id/object/created/owned_by，未定义能力字段；
 // 多模态能力按 OpenRouter / llama.cpp 通行的 architecture.input_modalities 透传。
 // 上游模型列表接口未返回能力信息时，按惯例回退为 ["text"]。
+// 思考档位（issue #96）：按 Buddy2api v2.1.11 口径透传 reasoning 对象，
+// 上游未声明档位时整个对象不出现（不编造；supports_reasoning 同理不输出）。
 func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 	id := k.String() + "/" + mi.ID
 	entry := map[string]any{"id": id, "object": "model", "created": 1753600000, "owned_by": k.String()}
@@ -347,6 +349,20 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 	entry["architecture"] = map[string]any{
 		"input_modalities": mi.InputModalities(),
 		"modality":         mi.Modality(),
+	}
+	if len(mi.ReasoningEfforts) > 0 || mi.DefaultReasoningEffort != "" {
+		reasoning := map[string]any{}
+		if len(mi.ReasoningEfforts) > 0 {
+			reasoning["supported_efforts"] = mi.ReasoningEfforts
+		}
+		if mi.DefaultReasoningEffort != "" {
+			reasoning["default_effort"] = mi.DefaultReasoningEffort
+		}
+		if mi.CanDisableThinking != nil {
+			reasoning["can_disable_thinking"] = *mi.CanDisableThinking
+		}
+		entry["reasoning"] = reasoning
+		entry["supports_reasoning"] = true
 	}
 	return entry
 }

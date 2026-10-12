@@ -332,7 +332,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			continue
 		}
 		seen[m.ID] = true
-		out = append(out, provider.ModelInfo{
+		mi := provider.ModelInfo{
 			ID:            m.ID,
 			Name:          m.Name,
 			ContextWindow: m.MaxInputTokens,
@@ -343,7 +343,19 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			SupportsImages:    m.imageOK(),
 			SupportsReasoning: m.SupportsReasoning,
 			SupportsTools:     m.SupportsToolCall,
-		})
+		}
+		// 思考档位（issue #96）：目录 reasoning 对象原样透传，缺失不编造
+		if m.Reasoning.hasReasoningMeta() {
+			r := m.Reasoning
+			mi.ReasoningEfforts = provider.CleanEfforts(r.SupportedEfforts)
+			mi.DefaultReasoningEffort = strings.TrimSpace(r.DefaultEffort)
+			if mi.DefaultReasoningEffort == "" {
+				mi.DefaultReasoningEffort = strings.TrimSpace(r.Effort)
+			}
+			cd := r.CanDisableThinking
+			mi.CanDisableThinking = &cd
+		}
+		out = append(out, mi)
 	}
 	// 硬编码补入目录外可用模型
 	for _, m := range extraModels {

@@ -164,13 +164,16 @@ function renderModelSearch(q) {
   } else {
     box.innerHTML = shown.map(({ ch, m, short, full }) => {
       const caps = [m.supports_images ? "👁" : "", m.supports_reasoning ? "🧠" : ""].join("");
+      // 档位小字（issue #96）：上游声明才显示
+      const eff = (m.reasoning_efforts && m.reasoning_efforts.length)
+        ? `<span class="ms-eff" title="思考档位：${esc(m.reasoning_efforts.join("·"))}${m.default_reasoning_effort ? `（默认 ${m.default_reasoning_effort}）` : ""}">${esc(m.reasoning_efforts.join("·"))}</span>` : "";
       const ctx = (m.has_context && m.context_window)
         ? `<span title="上下文窗口：${esc(fmtTokens(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokens(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
       const rate = m.free ? "Free" : (m.priced ? `x${m.rate.toFixed(2)}` : "unknown");
       return `<div class="ms-row" data-mid="${esc(full)}" role="button" tabindex="0" title="点击复制完整模型 ID：${esc(full)}">`
         + `<span class="badge ${chClass(ch)}">${esc(chLabel(ch))}</span>`
         + `<span class="ms-name">${esc(short)}</span>`
-        + `<span class="ms-tags">${ctx}${caps}</span>`
+        + `<span class="ms-tags">${ctx}${caps}${eff}</span>`
         + `<span class="ms-rate">${esc(rate)}</span>`
         + `</div>`;
     }).join("");
@@ -740,9 +743,18 @@ function renderFees(fees) {
     return caps.length > 0 ? ` <span class="cap-icons">${caps.join("")}</span>` : "";
   };
 
+  // 思考档位标记（issue #96）：模型 ID 后的档位小字标，如 [low·high·max]。
+  // 只在上游目录声明时展示（reasoning_efforts 非空），不自行编造。
+  const effortTag = (m) => {
+    if (!m || !m.reasoning_efforts || !m.reasoning_efforts.length) return "";
+    const list = m.reasoning_efforts.join("·") + (m.default_reasoning_effort ? `（默认 ${m.default_reasoning_effort}）` : "");
+    return ` <span class="effort-tag" title="思考档位（上游目录声明）：${esc(list)}；客户端传 reasoning_effort 即可调档">[${esc(m.reasoning_efforts.join("·"))}]</span>`;
+  };
+
   // 上下文标记：模型 ID 后的 (1M)/(180K) 小字标。
-  // has_context = 上游接口真实返回或本工具手工实测；实测值加 * 且在 tooltip 标注来源，
-  // 既不冒充上游官方值，也不埋没它（cline 这类渠道上游根本不返回上下文）。
+  // has_context = 上游接口真实返回（context_from_api）或本工具手工实测（hand_measured）。
+  // 实测值用带 * 的写法「(1M*)」+ tooltip 标注来源——不把实测冒充成上游官方值，
+  // 同时也不埋没它（cline 这类渠道上游根本不返回上下文，只能靠实测）。
   const ctxTag = (m) => {
     if (!m || !m.has_context || !m.context_window) return "";
     const hand = m.hand_measured ? "*" : "";
@@ -761,7 +773,10 @@ function renderFees(fees) {
     const parts = [];
     if (yes.length) parts.push(`支持：${yes.join("、")}`);
     if (unknown.length) parts.push(`${m.hand_measured ? "实测不支持" : "上游未声明"}：${unknown.join("、")}`);
-    if (m.hand_measured) parts.push("（上下文与能力为本工具实测值，仅供参考）");
+    if (m.reasoning_efforts && m.reasoning_efforts.length) {
+      parts.push(`思考档位：${m.reasoning_efforts.join("/")}${m.default_reasoning_effort ? `（默认 ${m.default_reasoning_effort}）` : ""}`);
+    }
+    if (m.hand_measured) parts.push("（能力与上下文为本工具实测值，仅供参考）");
     return parts.join("；");
   };
 
@@ -813,7 +828,7 @@ function renderFees(fees) {
     // 完整 ID：裸名补上渠道前缀；模型名本身已带前缀则原样用
     const full = raw.includes("/") ? raw : (chPrefix ? `${chPrefix}/${raw}` : raw);
     const copyTip = `点击复制：${full}`;
-    const line = `<div class="mline"><code class="fee-model-copy" data-mid="${esc(full)}" role="button" tabindex="0" title="${esc(modelTip(m))}\n${copyTip}">${esc(short)}</code>${ctxTag(m)}${capIcons(m)}${noteCell(m)}</div>`;
+    const line = `<div class="mline"><code class="fee-model-copy" data-mid="${esc(full)}" role="button" tabindex="0" title="${esc(modelTip(m))}\n${copyTip}">${esc(short)}</code>${ctxTag(m)}${effortTag(m)}${capIcons(m)}${noteCell(m)}</div>`;
     // 仅当完整ID != 短名时才显示可复制的完整 ID 行，避免裸名模型重复
     const idRow = full !== short
       ? `<span class="full-id" data-mid="${esc(full)}" title="点击复制完整模型 ID：${esc(full)}">${esc(full)}</span>`

@@ -337,6 +337,20 @@ type catalogModel struct {
 	SupportsReasoning  bool `json:"supportsReasoning"`
 	SupportsToolCall   bool `json:"supportsToolCall"`
 	DisabledMultimodal bool `json:"disabledMultimodal"`
+	// reasoning 档位声明（issue #96；形状对齐 Buddy2api/dsh-connect 实测）。
+	// 上游仅对可调档模型给 supportedEfforts；deepseek 系只有单独 effort
+	//（默认档）没有列表 —— 两者都透传，缺失不编造。
+	Reasoning *catalogReasoning `json:"reasoning"`
+}
+
+// catalogReasoning 目录 reasoning 对象（仅取可透传的权威字段）。
+type catalogReasoning struct {
+	SupportedEfforts   []string `json:"supportedEfforts"`
+	DefaultEffort      string   `json:"defaultEffort"`
+	// Effort 老式默认档字段（上游 deepseek 系实测：reasoning:{effort:"high"}）；
+	// DefaultEffort 为空时回退取它。
+	Effort             string   `json:"effort"`
+	CanDisableThinking bool     `json:"canDisableThinking"`
 }
 
 // FetchModels 调上游动态模型接口。
@@ -372,10 +386,11 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 				MaxOutputTokens int64  `json:"maxOutputTokens"`
 				Disabled        bool   `json:"disabled"`
 				// 能力字段（国内版目录同样返回，实测可用）
-				SupportsImages     bool `json:"supportsImages"`
-				SupportsReasoning  bool `json:"supportsReasoning"`
-				SupportsToolCall   bool `json:"supportsToolCall"`
-				DisabledMultimodal bool `json:"disabledMultimodal"`
+				SupportsImages     bool              `json:"supportsImages"`
+				SupportsReasoning  bool              `json:"supportsReasoning"`
+				SupportsToolCall   bool              `json:"supportsToolCall"`
+				DisabledMultimodal bool              `json:"disabledMultimodal"`
+				Reasoning          *catalogReasoning `json:"reasoning"`
 			} `json:"models"`
 			Agents []struct {
 				Name   string   `json:"name"`
@@ -409,7 +424,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		if !ok || m.Disabled {
 			continue
 		}
-		out = append(out, ModelInfo{
+		mi := ModelInfo{
 			ID:             m.ID,
 			Name:           m.Name,
 			ContextWindow:  m.MaxInputTokens,
@@ -419,12 +434,35 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 			SupportsImages:    m.SupportsImages && !m.DisabledMultimodal,
 			SupportsReasoning: m.SupportsReasoning,
 			SupportsTools:     m.SupportsToolCall,
-		})
+		}
+		// 思考档位（issue #96）：目录 reasoning 对象原样透传，缺失不编造
+		mi.ReasoningEfforts, mi.DefaultReasoningEffort, mi.CanDisableThinking = applyCatalogReasoning(&m)
+		out = append(out, mi)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
 	}
 	return out, nil
+}
+
+// applyCatalogReasoning 把目录 reasoning 对象投影进 ModelInfo（供任一渠道复用，
+// 字段形状对齐 Buddy2api model_reasoning.py / dsh-connect upstream.ts 实测）。
+// 全部字段缺失时不留任何痕迹（nil/空串），消费方不得把「未声明」当「不支持」。
+func applyCatalogReasoning(m *catalogModel) (efforts []string, def string, canDisable *bool) {
+	if m == nil || m.Reasoning == nil {
+		return nil, "", nil
+	}
+	r := m.Reasoning
+	efforts = provider.CleanEfforts(r.SupportedEfforts)
+	def = strings.TrimSpace(r.DefaultEffort)
+	if def == "" {
+		def = strings.TrimSpace(r.Effort) // 老式默认档字段回退
+	}
+	if efforts == nil && def == "" {
+		return nil, "", nil // reasoning 对象存在但无任何档位信息：整体视为未声明
+	}
+	cd := r.CanDisableThinking
+	return efforts, def, &cd
 }
 
 // UserResource 查询账号当前可花费积分余额（所有套餐 CycleCapacity 聚合，负值钳 0）。

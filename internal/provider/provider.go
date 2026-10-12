@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"wild-work/internal/auth"
@@ -149,6 +150,16 @@ type ModelInfo struct {
 	SupportsImages    bool // 支持图像输入（多模态视觉）
 	SupportsReasoning bool // 支持思考/推理模式
 	SupportsTools     bool // 支持函数/工具调用
+	// 思考档位（issue #96）：上游目录显式声明的可选档位表。nil = 上游未声明，
+	// 消费方不得自行编造（对齐 ContextFromAPI 哲学；参考 Buddy2api v2.1.11 的
+	// 「never invent effort lists」原则）。典型值 low/medium/high/xhigh/max。
+	ReasoningEfforts []string
+	// DefaultReasoningEffort 上游声明的默认档位；空 = 未声明。
+	DefaultReasoningEffort string
+	// CanDisableThinking 该模型思考是否可关闭；nil = 上游未声明。
+	// 上游只对显式 true 语义不同（false 可能是「不可关闭」也可能是「未声明」，
+	// 由各渠道解析时保留原始三态）。
+	CanDisableThinking *bool
 }
 
 // InputModalities 按 OpenAI 生态惯例给出输入模态列表（OpenRouter/llama.cpp 的
@@ -166,6 +177,24 @@ func (m ModelInfo) Modality() string {
 		return "text+image->text"
 	}
 	return "text->text"
+}
+
+// CleanEfforts 规范化上游声明档位表：去空白、去重、丢空串；全部无效时返回 nil
+// （「上游没给合法列表就不编档」，Buddy2api model_reasoning.py 同款语义）。
+func CleanEfforts(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, s := range raw {
+		if s = strings.TrimSpace(s); s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ModelPricing 模型积分定价（从上游 API 拉取）。

@@ -89,7 +89,8 @@ const patched =
   + "\n; lastFees = " + JSON.stringify({ channels: [
     { channel: "qodercn", models: [
       { model: "qwen3.8-flash", priced: true, rate: 0.3, free: false, has_context: true, context_window: 180000, supports_images: false, supports_reasoning: false },
-      { model: "glm-5.3", priced: true, rate: 0.5, free: false, has_context: true, context_window: 200000, supports_images: true, supports_reasoning: true },
+      { model: "glm-5.3", priced: true, rate: 0.5, free: false, has_context: true, context_window: 200000, supports_images: true, supports_reasoning: true,
+        reasoning_efforts: ["low", "high", "max"], default_reasoning_effort: "high" },
     ] },
     { channel: "workbuddy", models: [
       { model: "deepseek-v4", priced: false, rate: 0, free: false, has_context: false },
@@ -99,7 +100,7 @@ const patched =
     { channel: "loomy", models: Array.from({ length: 12 }, (_, i) =>
       ({ model: `qwen-bulk-${i}`, priced: true, rate: 0.1, free: false, has_context: false })) },
   ] }) + ";"
-  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage };";
+  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
   document,
@@ -146,6 +147,8 @@ let msHtml = document.getElementById("modelSearchList").innerHTML;
 check("搜索 glm 命中 1 条", (msHtml.match(/class="ms-row"/g) || []).length === 1, msHtml.slice(0, 120));
 check("命中项 data-mid 为完整 ID", msHtml.includes('data-mid="qodercn/glm-5.3"'));
 check("命中项显示渠道徽章与费率", msHtml.includes("QoderCN") && msHtml.includes("x0.50"));
+check("命中项显示思考档位（issue #96）", msHtml.includes('class="ms-eff"') && msHtml.includes("low·high·max"), msHtml.slice(0, 300));
+check("档位 title 含默认档", msHtml.includes("默认 high"));
 check("底部提示共 N 个匹配", /共 1 个匹配/.test(document.getElementById("modelSearchFoot").textContent));
 T.renderModelSearch("");
 msHtml = document.getElementById("modelSearchList").innerHTML;
@@ -160,6 +163,24 @@ T.renderModelSearch("qwen");
 msHtml = document.getElementById("modelSearchList").innerHTML;
 check("超上限时只渲染 12 条", (msHtml.match(/class="ms-row"/g) || []).length === 12, `实际 ${(msHtml.match(/class="ms-row"/g) || []).length}`);
 check("超上限时底部提示未显示数量", /还有 1 个未显示/.test(document.getElementById("modelSearchFoot").textContent), document.getElementById("modelSearchFoot").textContent);
+
+// ---- 场景 2.7：费率表思考档位标记（issue #96，与 /v1/models + /api/fees 同源） ----
+T.renderFees({ channels: [
+  { channel: "qodercn", models: [
+    { model: "glm-5.3", priced: true, rate: 0.5, free: false, has_context: true, context_window: 200000,
+      supports_reasoning: true, reasoning_efforts: ["low", "high", "max"], default_reasoning_effort: "high" },
+    { model: "qwen3.8-flash", priced: true, rate: 0.3, free: false, has_context: true, context_window: 180000, supports_reasoning: false },
+  ] },
+] });
+const feesHtml = document.getElementById("feesBox").innerHTML;
+check("费率表档位小字标出现（[low·high·max]）", feesHtml.includes("effort-tag") && feesHtml.includes("[low·high·max]"), feesHtml.slice(0, 200));
+check("档位 title 含默认档与调档提示", feesHtml.includes("默认 high") && feesHtml.includes("reasoning_effort"));
+check("无档位声明的模型不显示档位标", (feesHtml.match(/effort-tag/g) || []).length === 1);
+
+// ---- 场景 2.75：模型查找面板无档位声明时不显示档位 ----
+T.renderModelSearch("deepseek");
+msHtml = document.getElementById("modelSearchList").innerHTML;
+check("未声明档位的模型行无 ms-eff", !msHtml.includes("ms-eff"), msHtml.slice(0, 200));
 
 // ---- 场景 3：运行统计（/api/stats 载荷 → 各区块渲染） ----
 // 载荷形状 = internal/stats 引擎 Snapshot 的 JSON（与 sidecar /capi/stats 对齐）

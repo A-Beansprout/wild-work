@@ -49,7 +49,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.6.4"
+const Version = "2.7.0"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -2711,7 +2711,7 @@ type feesModelRow struct {
 	Color string `json:"color,omitempty"`
 	// HasContext 标记该模型的上下文窗口/最大输出是否可展示：
 	// 上游接口真实返回（ContextFromAPI）或本工具手工实测（HandMeasured）均置 true。
-	// false 表示无可靠数据（硬编码估算或上游不返回且未实测），前端提示「未知」。
+	// false 表示无可靠数据（硬编码估算或上游不返回且未实测），前端提示「未知」而非展示数字。
 	HasContext    bool  `json:"has_context"`
 	ContextWindow int64 `json:"context_window,omitempty"`
 	MaxTokens     int64 `json:"max_tokens,omitempty"`
@@ -2721,6 +2721,10 @@ type feesModelRow struct {
 	SupportsImages    bool `json:"supports_images"`
 	SupportsReasoning bool `json:"supports_reasoning"`
 	SupportsTools     bool `json:"supports_tools"`
+	// 思考档位（issue #96，与 /v1/models 同源）：上游声明的可选档位与默认档，
+	// 空表 = 上游未声明（前端不展示，不编造）。
+	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"`
 }
 
 // buildFeesChannels 以「渠道 models 列表」为基准组表：
@@ -2766,6 +2770,9 @@ func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
 				SupportsImages:    mi.SupportsImages,
 				SupportsReasoning: mi.SupportsReasoning,
 				SupportsTools:     mi.SupportsTools,
+				// 思考档位（issue #96）与 /v1/models 同源透传
+				ReasoningEfforts:       mi.ReasoningEfforts,
+				DefaultReasoningEffort: mi.DefaultReasoningEffort,
 			}
 			if p, ok := prices[mi.ID]; ok {
 				row.Priced = p.IsExplicit() // 缺倍率字段（如 auto）不算已定价

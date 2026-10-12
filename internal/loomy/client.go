@@ -428,6 +428,10 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			SupportsImages:    m.Capabilities.Vision,
 			SupportsReasoning: m.Capabilities.Reasoning,
 			SupportsTools:     m.Capabilities.FunctionCalling,
+			// 思考档位（issue #96）：上游 /models 的 reasoning_efforts 是权威值，
+			// 原样透传（实测 8 模型均为 none/low/medium/high/xhigh，default=low）
+			ReasoningEfforts:       provider.CleanEfforts(m.ReasoningEfforts),
+			DefaultReasoningEffort: strings.TrimSpace(m.DefaultReasoningEffort),
 		}
 		out = append(out, info)
 	}

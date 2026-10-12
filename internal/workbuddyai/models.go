@@ -32,6 +32,26 @@ type catalogModel struct {
 	SupportsReasoning  bool `json:"supportsReasoning"`
 	SupportsToolCall   bool `json:"supportsToolCall"`
 	DisabledMultimodal bool `json:"disabledMultimodal"`
+	// reasoning 档位声明（issue #96，形状对齐 dsh-workbuddyai-connect 实测类型）。
+	Reasoning *catalogReasoning `json:"reasoning"`
+}
+
+// catalogReasoning 目录 reasoning 对象（仅取可透传的权威字段；与 upstream 包同形状）。
+type catalogReasoning struct {
+	SupportedEfforts   []string `json:"supportedEfforts"`
+	DefaultEffort      string   `json:"defaultEffort"`
+	// Effort 老式默认档字段（deepseek 系实测只有它没有列表），DefaultEffort 空时回退。
+	Effort             string   `json:"effort"`
+	CanDisableThinking bool     `json:"canDisableThinking"`
+}
+
+// hasReasoningMeta 报告 reasoning 对象是否带任何档位信息（全空 = 视为未声明）。
+func (r *catalogReasoning) hasReasoningMeta() bool {
+	if r == nil {
+		return false
+	}
+	return len(provider.CleanEfforts(r.SupportedEfforts)) > 0 ||
+		strings.TrimSpace(r.DefaultEffort) != "" || strings.TrimSpace(r.Effort) != ""
 }
 
 // imageOK 判定该模型可否接收图像输入：
@@ -255,6 +275,10 @@ func mergeV3(v2 []catalogModel, v3 []catalogModel) ([]catalogModel, map[string]s
 			}
 			m.SupportsImages = vm.SupportsImages || m.SupportsImages
 			m.SupportsToolCall = vm.SupportsToolCall || m.SupportsToolCall
+			// 思考档位：v3 带则覆盖，v3 无则保留 v2（同「非空者优先」口径）
+			if vm.Reasoning.hasReasoningMeta() {
+				m.Reasoning = vm.Reasoning
+			}
 		}
 		if m.ID == "" || seen[m.ID] {
 			continue
