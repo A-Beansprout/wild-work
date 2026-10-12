@@ -1317,25 +1317,40 @@ func (a *App) refreshIfSessionDead(rt *Runtime, au *auth.Auth, err error) bool {
 	return true
 }
 
-// creditTotals 一次上游调用同时取回「可消耗余额」「临期额度」与「不可消耗余额」。
-// 三者同源于 UserResourceDetail 的单次响应：remain 即 pool 路由口径的可消耗余额，
-// 临期额度为其中临期阈值内到期的部分（config.schedule.expiring_threshold_hours，
-// 默认 24h，实际口径「到期日≤今天+阈值」），不可消耗部分由条目的 Usable 标记汇总得到
-// （渠道不区分专用池时为 0；渠道不下发到期时间时临期为 0，如 Qoder）。
-// 遇 401 自动刷新 token 并重试一次（见 refreshIfSessionDead）。
-func (a *App) creditTotals(rt *Runtime, au *auth.Auth) (usable, expiring, unusable int64, err error) {
-	remain, items, err := rt.Upstream.UserResourceDetail(au)
+// creditSnapshot 实时拉取明细并算出「可消耗余额」「临期额度」「不可消耗余额」三口径，
+// 成功即回写 pool 快照 + ledger 差分。三者同源于 UserResourceDetail 的单次响应：remain 即
+// pool 路由口径的可消耗余额，临期额度为其中临期阈值内到期的部分
+// （config.schedule.expiring_threshold_hours，默认 24h，实际口径「到期日≤今天+阈值」），
+// 不可消耗部分由条目的 Usable 标记汇总得到（渠道不区分专用池时为 0；渠道不下发到期时间时
+// 临期为 0，如 Qoder）。遇 401 自动刷新 token 并重试一次（见 refreshIfSessionDead）。
+//
+// 顶层（卡片/汇总条/Pick 选号）与明细弹层从此同源：旧实现里 pool 快照只被「刷新事件」
+// （手动刷新/全部刷新/自动循环）更新，而明细是 hover 时的实时值，两者必然相差区间内消耗量
+// ——面板「同屏两个数字对不上」实为时差而非上游口径问题（已实测同响应内上游汇总字段==明细池
+// 相加）。hover 明细也回写后，弹层展开那一刻全屏数字同源于同一响应。
+func (a *App) creditSnapshot(rt *Runtime, au *auth.Auth) (remain int64, items []provider.ResourceItem, expiring, unusable int64, err error) {
+	remain, items, err = rt.Upstream.UserResourceDetail(au)
 	if err != nil && a.refreshIfSessionDead(rt, au, err) {
 		remain, items, err = rt.Upstream.UserResourceDetail(au)
 	}
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, nil, 0, 0, err
 	}
 	_, unusable = provider.Summarize(items)
 	expiring = provider.ExpiringWithin(items, a.cfg.ExpiringThresholdDur)
 	// 差分记账：与上次快照对比产出 earn/spend/expire 流水（锦上添花，失败不干扰）
 	if a.ledger != nil {
 		a.ledger.DiffCredits(rt.Kind.String(), au.UID, remain, items)
+	}
+	rt.Pool.SetCreditDetail(au.UID, remain, expiring, unusable)
+	return remain, items, expiring, unusable, nil
+}
+
+// creditTotals 取三口径小计（不含 items），并在同一响应上喂入运行统计的最近临期。
+func (a *App) creditTotals(rt *Runtime, au *auth.Auth) (usable, expiring, unusable int64, err error) {
+	remain, items, expiring, unusable, err := a.creditSnapshot(rt, au)
+	if err != nil {
+		return 0, 0, 0, err
 	}
 	// 运行统计：账号最近临期喂入（复用同一响应的 items，免二次上游调用）
 	a.applyExpiryFromItems(au.UID, items)
@@ -1385,7 +1400,6 @@ func (a *App) StartCreditAutoRefresh(ctx context.Context, kinds []provider.Kind,
 						log.Printf("credit auto-refresh failed platform=%s uid=%s err=%v", k, st.UID, err)
 						continue
 					}
-					rt.Pool.SetCreditDetail(st.UID, usable, expiring, unusable)
 					log.Printf("credit auto-refresh platform=%s uid=%s remain=%d expiring=%d unusable=%d", k, st.UID, usable, expiring, unusable)
 				}
 			}
@@ -1469,7 +1483,6 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		log.Printf("credits refresh failed platform=%s uid=%s err=%v", rt.Kind, uid, err)
 		return 0, err
 	}
-	rt.Pool.SetCreditDetail(uid, usable, expiring, unusable)
 	log.Printf("credits refresh success platform=%s uid=%s remain=%d expiring=%d unusable=%d", rt.Kind, uid, usable, expiring, unusable)
 	return usable, nil
 }
@@ -1509,8 +1522,7 @@ func (a *App) RefreshAll() RefreshSummary {
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: false, Msg: "no token"})
 				continue
 			}
-			if usable, expiring, unusable, err := a.creditTotals(rt, au); err == nil {
-				rt.Pool.SetCreditDetail(st.UID, usable, expiring, unusable)
+			if usable, _, _, err := a.creditTotals(rt, au); err == nil {
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: usable})
 			} else {
@@ -1589,22 +1601,19 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 	return nil
 }
 
-// ResourceDetail 查询单个账号积分明细（含可用/不可用小计）。
+// ResourceDetail 查询单个账号积分明细（含可用/不可用/临期小计）。
 // 返回的 remain 与 items 同时给出：remain 供 pool 口径对账，items 供 UI 明细展示。
-// 遇 401 自动刷新 token 并重试一次，避免因本地 token 已失效导致明细永远为空。
-func (a *App) ResourceDetail(uid string) (int64, []provider.ResourceItem, error) {
+// 取数经 creditSnapshot：实时拉取的同时把同一响应回写 pool 快照，故面板展开明细后
+// 卡片顶层与弹层同源一致，不再依赖刷新按钮弥合时差；401 自愈亦在 creditSnapshot 内。
+func (a *App) ResourceDetail(uid string) (remain int64, items []provider.ResourceItem, expiring, unusable int64, err error) {
 	rt, au := a.findRuntimeAuth(uid)
 	if rt == nil || au == nil || rt.Upstream == nil {
-		return 0, nil, fmt.Errorf("unknown account %s", uid)
+		return 0, nil, 0, 0, fmt.Errorf("unknown account %s", uid)
 	}
 	if rt.Kind == provider.Oczen {
-		return 0, nil, fmt.Errorf("OpenCodeZen 匿名通道无积分，不适用")
+		return 0, nil, 0, 0, fmt.Errorf("OpenCodeZen 匿名通道无积分，不适用")
 	}
-	remain, items, err := rt.Upstream.UserResourceDetail(au)
-	if err != nil && a.refreshIfSessionDead(rt, au, err) {
-		remain, items, err = rt.Upstream.UserResourceDetail(au)
-	}
-	return remain, items, err
+	return a.creditSnapshot(rt, au)
 }
 
 // ---------------------------------------------------------------------------
@@ -2318,18 +2327,21 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			UID string `json:"uid"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		remain, items, err := a.ResourceDetail(req.UID)
+		remain, items, expiring, _, err := a.ResourceDetail(req.UID)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		// 可用/不可用小计在服务端算好，前端只负责展示，避免两边口径漂移。
-		usable, unusable := provider.Summarize(items)
+		usable, unusableSum := provider.Summarize(items)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"remain":          remain,
 			"items":           items,
 			"usable_remain":   usable,
-			"unusable_remain": unusable,
+			"unusable_remain": unusableSum,
+			// 临期小计与 pool 快照同源于本次响应：前端回写卡片时三个数字一起更新，
+			// 避免「可用已同步、临期还是旧值」的半新半旧展示。
+			"expiring_remain": expiring,
 		})
 	})
 	mux.HandleFunc("POST /api/config/checkin_times", func(w http.ResponseWriter, r *http.Request) {
