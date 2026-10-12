@@ -26,6 +26,14 @@ var capMarkers = []string{
 // passMarkers 是「越界用法」：请求了订阅池或不受支持的池，属请求本身的问题。
 var passMarkers = []string{"entitlement_error", "not subscribed", "this request is not supported"}
 
+// regionBlockedMarkers 是「模型在本地区被限制」：实测 muse-spark-1.3-contributor 恒返回
+// 403 `access forbidden: … is not available in your region`（地区限制，不是账号问题）。
+// 与 R38（WorkBuddyAI 模型级 429）/ R47（cline 共享出口上限）同族：**模型级属性**，
+// 换账号必然复现 ⇒ 必须 ErrPassthrough（原文透传、不计错、不冷却、不换号）。
+// 实测教训（2026-10-12）：未识别时它落 ErrClient（R29 可轮换）⇒ 重试耗尽后把账号判为
+// 「连续错误」冷却 60s，导致同账号下另外 3 个正常模型全部 503 no_healthy_account。
+var regionBlockedMarkers = []string{"not available in your region", "access forbidden"}
+
 // badParamMarkers 是本端参数/头造成的失败，不得计入账号健康度。
 var badParamMarkers = []string{
 	"empty response content", // max_tokens 太小，推理吃光预算 ⇒ 可见内容为空
@@ -90,6 +98,12 @@ func Classify(status int, body string) provider.ErrKind {
 	for _, m := range badParamMarkers {
 		if strings.Contains(lower, m) {
 			return provider.ErrBadParams
+		}
+	}
+	// 3.5) 模型地区限制：模型级属性，换账号必复现 ⇒ 透传原文、不罚号（见 regionBlockedMarkers）。
+	for _, m := range regionBlockedMarkers {
+		if strings.Contains(lower, m) {
+			return provider.ErrPassthrough
 		}
 	}
 

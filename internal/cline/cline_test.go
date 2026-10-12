@@ -76,6 +76,10 @@ func TestClassifyOrderAndInnerStatus(t *testing.T) {
 		{"压平500+临时限流", 500, nsBody429, provider.ErrPassthrough},
 		{"云池不支持", 403, `{"error":{"code":"API_REQUEST_ERROR_CODE","message":"Error 403: This request is not supported."}}`, provider.ErrPassthrough},
 		{"订阅池", 403, `{"error":{"code":"ENTITLEMENT_ERROR","message":"Error 403: the user is not subscribed"}}`, provider.ErrPassthrough},
+		// 模型地区限制（2026-10-12 实测 muse-spark-1.3-contributor）：模型级属性，换号必复现。
+		// 未识别时它落 ErrClient（可轮换）⇒ 重试耗尽后把账号判连续错误冷却 60s，
+		// 同账号下另外 3 个正常模型一起 503（实测）。
+		{"模型地区限制", 403, `{"error":"access forbidden: cline-free/muse-spark-1.3-contributor is not available in your region","success":false}`, provider.ErrPassthrough},
 
 		// 2) 无上限文案的 429 才是真账号级（配额键名 …UsageCostUSDPerUser）
 		{"纯429", 429, `{"error":"too many requests"}`, provider.ErrSoftRate},
@@ -271,6 +275,47 @@ func TestChatStreamAlwaysSendsClientTypeHeader(t *testing.T) {
 	}
 }
 
+// TestChatStreamForcesStreamUpstream：**无论客户端是否要求流式**，发往上游的 body 必须
+// stream:true（不变量 1）。
+//
+// 为什么必须有这条回归（2026-10-12 实测）：handler 对上游响应一律按 SSE 解析（流式 Stream /
+// 非流式 Aggregate 都只认 data: 帧），而本渠道把客户端 body 原样转发。客户端发 stream:false 时
+// 上游回非流式 JSON 信封 ⇒ errEmptyStream ⇒ 502 upstream_parse ⇒ 被当作账号连续错误冷却整条渠道
+// （实测：一次非流式请求后四个免费模型全部 503 no_healthy_account 约 60s）。
+func TestChatStreamForcesStreamUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantStream bool
+	}{
+		{"客户端显式 stream:false", `{"model":"cline-free/step-5-preview","stream":false,"messages":[]}`, true},
+		{"客户端未带 stream", `{"model":"cline-free/step-5-preview","messages":[]}`, true},
+		{"客户端已是 stream:true", `{"model":"cline-free/step-5-preview","stream":true,"messages":[]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got, _ = io.ReadAll(r.Body)
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+
+			c := New()
+			c.Base = srv.URL
+			a := &auth.Auth{Kind: "cline", AccessToken: "sk_testkey", ExpiresAt: FarFutureExpiry()}
+			if _, status, _, err := c.ChatStream(a, []byte(tc.body)); err != nil || status != 200 {
+				t.Fatalf("假上游应通：status=%d err=%v", status, err)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal(got, &obj); err != nil {
+				t.Fatalf("上游 body 非法 JSON：%v（%s）", err, got)
+			}
+			if v, _ := obj["stream"].(bool); v != tc.wantStream {
+				t.Errorf("上游 body 的 stream 应为 %v，实得 %v（body=%s）", tc.wantStream, obj["stream"], got)
+			}
+		})
+	}
+}
+
 func TestClampMaxTokens(t *testing.T) {
 	get := func(b []byte) (any, bool) {
 		var o map[string]any
@@ -348,8 +393,57 @@ func TestChatStreamRejectsUnknownModelAfterCatalog(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 目录：free[] 原样透传（无静态表、无映射、无过滤）
+// 目录：free[] 原样透传（无静态表、无映射、无过滤）+ 实测元数据补全
 // ---------------------------------------------------------------------------
+
+// TestFetchModelsAppliesMeasuredCaps：上游 free[] 不返回上下文/能力字段（实测），
+// 故由本地实测表补全，并经 /v1/models 的 context_length 与
+// architecture.input_modalities 透传给客户端（客户端靠它决定压缩时机与能否收图）。
+// 未列入实测表的模型（上游新增）只保留基础字段，不虚报能力。
+func TestFetchModelsAppliesMeasuredCaps(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"free":[{"id":"cline-free/step-5-preview","name":"Step 5 Preview"},
+		 {"id":"cline-free/solar-mini4","name":"Solar Mini4"},
+		 {"id":"cline-free/brand-new-model","name":"Brand New"}]}`)
+	}))
+	defer srv.Close()
+	c := New()
+	c.Base = srv.URL
+	got, err := c.FetchModels(&auth.Auth{Kind: "cline", AccessToken: "sk_x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]provider.ModelInfo{}
+	for _, m := range got {
+		byID[m.ID] = m
+	}
+	step := byID["cline-free/step-5-preview"]
+	if step.ContextWindow != 768_000 {
+		t.Errorf("step-5-preview 上下文应为实测值 768000，实得 %d", step.ContextWindow)
+	}
+	if !step.SupportsImages {
+		t.Error("step-5-preview 实测支持图像，应置 SupportsImages=true（否则 /v1/models 会声明纯文本）")
+	}
+	if step.ContextFromAPI {
+		t.Error("实测值不来自上游接口，ContextFromAPI 必须为 false（不得冒充上游声明）")
+	}
+	if ids := step.InputModalities(); len(ids) != 2 || ids[1] != "image" {
+		t.Errorf("支持图像时 input_modalities 应为 [text image]，实得 %v", ids)
+	}
+	solar := byID["cline-free/solar-mini4"]
+	if solar.SupportsImages {
+		t.Error("solar-mini4 上游明确 404 no endpoints that support image input，不得声明支持图像")
+	}
+	if ids := solar.InputModalities(); len(ids) != 1 || ids[0] != "text" {
+		t.Errorf("不支持图像时 input_modalities 应只含 text，实得 %v", ids)
+	}
+	brand := byID["cline-free/brand-new-model"]
+	if brand.ContextWindow != 0 || brand.SupportsImages {
+		t.Errorf("未列入实测表的模型不应虚报元数据，实得 ctx=%d images=%v",
+			brand.ContextWindow, brand.SupportsImages)
+	}
+}
 
 func fakeCatalog() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

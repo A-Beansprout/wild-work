@@ -137,6 +137,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 	}
 
 	out := clampMaxTokens(body)
+	out = forceStream(out)
 	req, err := http.NewRequest(http.MethodPost, c.base()+EpChat, bytes.NewReader(out))
 	if err != nil {
 		return nil, 0, nil, err
@@ -158,6 +159,33 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 		return nil, effectiveStatus(resp.StatusCode, string(raw)), raw, nil
 	}
 	return provider.NewIdleReader(resp.Body, c.idleTimeout()), resp.StatusCode, nil, nil
+}
+
+// forceStream 强制上游 stream:true（不变量 1）。
+//
+// **为什么必须有**（2026-10-12 实测踩坑）：本渠道把客户端 body 原样转发，而 handler 对上游
+// 响应**一律按 SSE 解析** —— 流式走 Stream、非流式客户端走 Aggregate，二者都只认 `data:` 帧。
+// 客户端发 `stream:false`（或干脆不带 stream）时，上游会回**非流式 JSON 信封**，解析器找不到
+// 任何 data 帧 ⇒ `errEmptyStream` ⇒ 502 `upstream_parse`，且该错误被当作账号连续错误
+// ⇒ 冷却整条渠道（实测：一次非流式请求后，四个免费模型全部 503 no_healthy_account 约 60s）。
+//
+// 讽刺的是 sse.go 的 Aggregate 注释早已假定「本渠道永远请求 stream=true（不变量 1）」，
+// 但 ChatStream 此前只做了 clampMaxTokens，并未落实该假定 —— 这就是 bug 本身。
+// 非流式客户端由 handler 本地聚合（Aggregate），与 oczen/monkeycode 同款做法。
+func forceStream(body []byte) []byte {
+	var obj map[string]any
+	if json.Unmarshal(body, &obj) != nil {
+		return body
+	}
+	if v, _ := obj["stream"].(bool); v {
+		return body // 已是 true，零改动原样返回（不重新 marshal，避免无谓的键序变化）
+	}
+	obj["stream"] = true
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // clampMaxTokens 治理输出上限（实测：8→上游 400；16→500 empty response content；
