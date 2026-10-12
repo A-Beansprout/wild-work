@@ -917,7 +917,7 @@ func rewriteModel(body []byte, model string) ([]byte, error) {
 	return json.Marshal(obj)
 }
 
-// normalizeToolTurnContent 把「content 为 null 或缺失」的工具轮消息补成空串。
+// normalizeToolTurnContent 把「content 为 null 或缺失」的 assistant / tool 消息补成空串。
 //
 // 上游（实测 qoder/deepseek-flash，2026-09-24）要求带 tool_calls 的 assistant
 // 消息必须携带**字符串** content，null 或字段缺失会让它整请求拒答，并且报一个
@@ -937,6 +937,14 @@ func rewriteModel(body []byte, model string) ([]byte, error) {
 //
 // 放宽到 tool 角色一并处理：工具返回空内容时客户端同样可能给 null，上游对工具
 // 轮是同一套校验。
+//
+// 2026-10-11 追加（traecode/SOLO 实测）：**普通 assistant 消息**（无 tool_calls）
+// content 缺失同样会被整请求拒答，错误是 SOLO 流内 event:error 的
+// `4001 the param is invalid`。成因是 CodeBuddy 客户端在「思考中途被打断」时，
+// 会把半截思考存成 `{"role":"assistant","reasoning":"…"}`（无 content、无
+// tool_calls）；此后该会话每轮重放都带上这条空壳，于是每发必拒（同「中毒进
+// 历史」）。重放对照坐实：原样 → 0.6s 即 4001；删掉该条或补 content:"" → 均
+// 正常出流。故 assistant 一律补空串，不再以 tool_calls 为前提。
 func normalizeToolTurnContent(obj map[string]any) {
 	msgs, _ := obj["messages"].([]any)
 	for _, raw := range msgs {
@@ -946,12 +954,7 @@ func normalizeToolTurnContent(obj map[string]any) {
 		}
 		role, _ := m["role"].(string)
 		switch role {
-		case "assistant":
-			// 只在真的带 tool_calls 时补：普通 assistant 消息 content=null 无证据会出问题。
-			if tc, ok := m["tool_calls"].([]any); !ok || len(tc) == 0 {
-				continue
-			}
-		case "tool":
+		case "assistant", "tool":
 		default:
 			continue
 		}
