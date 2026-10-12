@@ -1762,6 +1762,33 @@ function fmtTokensFull(n) {
   return Number(n).toLocaleString("zh-CN");
 }
 
+// cacheCell 渲染「缓存利用率」单元格。**优雅降级的三态**（后端约定）：
+//   cr_cov > 0 → 有上报样本，显示百分比（可准确到 0%，那是真没命中）
+//   cr_cov = 0 → 上游不提供该维度（glm / raccoon 等）→ 显示「—」，**绝不显示 0%**
+// 把「命中率为零」与「不知道」区分开是本列的核心要求：后者显示 0% 会误导用户
+// 以为换渠道/改提示词就能改善，而实际上是上游根本不回报这个指标。
+function cacheCell(r) {
+  const cov = Number(r.cr_cov) || 0;
+  if (cov <= 0) return `<span class="muted" title="该模型的上游不提供缓存命中字段（本工具不做估算）">—</span>`;
+  const hit = Number(r.cr) || 0;
+  const pct = (hit / cov) * 100;
+  // 样本量少时刻意标低可信度：单次请求的命中率很可能不代表稳态
+  const n = Number(r.cr_reqs) || 0;
+  const tip = `命中 ${fmtTokensFull(hit)} / 上报请求 prompt ${fmtTokensFull(cov)}（${n} 次上报请求）`;
+  const shown = pct >= 10 ? pct.toFixed(1) : pct.toFixed(2);
+  return `<span class="cache-pct" title="${esc(tip)}">${shown}%</span>`;
+}
+
+// renderUsageCacheCard 汇总卡：无任何上报样本时显示「—」（同样不伪造 0%）
+function renderUsageCacheCard(t) {
+  const cov = Number(t.cr_cov) || 0;
+  const el = $("ucCache");
+  if (cov <= 0) { el.textContent = "—"; el.title = "当前窗口内没有渠道上报缓存字段"; return; }
+  const pct = ((Number(t.cr) || 0) / cov) * 100;
+  el.textContent = (pct >= 10 ? pct.toFixed(1) : pct.toFixed(2)) + "%";
+  el.title = `命中 ${fmtTokensFull(t.cr)} / 上报请求 prompt ${fmtTokensFull(cov)}（${t.cr_reqs || 0} 次上报请求）；未上报的渠道不计入分母`;
+}
+
 const CH_NAMES = {
   workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork",
   qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen",
@@ -1782,6 +1809,7 @@ function renderUsage(st) {
   $("ucReqs").textContent = fmtCredits(st.token.requests);
   $("ucSpend").textContent = fmtCredits(st.credit.spend);
   $("ucEarn").textContent = fmtCredits(st.credit.earn);
+  renderUsageCacheCard(st.token || {});
 
   renderModelTable(st.token.by_model || [], usageDays);
   renderCreditTab(st.credit || {});
@@ -1791,14 +1819,15 @@ function renderUsage(st) {
 
 function renderModelTable(rows, days) {
   const tb = $("tblModels").querySelector("tbody");
-  if (!rows.length) { tb.innerHTML = `<tr><td colspan="5" class="empty-cell">暂无数据（流水自本功能上线后开始记录）</td></tr>`; return; }
+  if (!rows.length) { tb.innerHTML = `<tr><td colspan="6" class="empty-cell">暂无数据（流水自本功能上线后开始记录）</td></tr>`; return; }
   const top = rows.slice(0, MODEL_TOP_N); // 前 20 名，已按 token 降序
   tb.innerHTML = top.map((r) => {
     const avg = days > 1 ? Math.round((r.pt + r.ct) / days) : (r.pt + r.ct);
     return `<tr>
       <td>${esc(r.model)}</td><td><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span></td>
       <td class="num">${fmtCredits(r.requests)}</td><td class="num">${fmtTokensFull(r.pt + r.ct)}</td>
-      <td class="num">${fmtTokensFull(avg)}</td></tr>`;
+      <td class="num">${fmtTokensFull(avg)}</td>
+      <td class="num">${cacheCell(r)}</td></tr>`;
   }).join("");
 }
 
@@ -2185,7 +2214,7 @@ function renderExpiry(ex) {
 
 // 模型消耗（今日，按积分降序）：Trae 系积分加「≈」（分摊估算），平均速度=成功请求实测均值
 function renderModels(models) {
-  let mh = `<tr><th>#</th><th>模型</th><th>次数</th><th>Token</th><th>积分</th>` +
+  let mh = `<tr><th>#</th><th>模型</th><th>次数</th><th>Token</th><th>缓存</th><th>积分</th>` +
     `<th title="成功请求实测均值：tok/s = 生成 token ÷ 生成耗时（按时长加权）；TTFB = 首字节耗时算术平均">平均速度</th></tr>`;
   models.forEach((m, j) => {
     const isTrae = isTraeChannel(m.model);
@@ -2209,10 +2238,12 @@ function renderModels(models) {
       : "—";
     mh += `<tr><td class="st-idx">${j + 1}</td>` +
       `<td class="st-mono" title="${esc(m.model)}">${esc(m.model)}</td>` +
-      `<td>${fmtCredits(m.reqs)}</td><td>${fmtTokensFull(m.tokens)}</td><td>${creditCell}</td>` +
+      `<td>${fmtCredits(m.reqs)}</td><td>${fmtTokensFull(m.tokens)}</td>` +
+      `<td class="st-mono">${cacheCell(m)}</td>` +
+      `<td>${creditCell}</td>` +
       `<td class="st-mono">${perfCell}</td></tr>`;
   });
-  $("stModels").innerHTML = models.length ? mh : `<tr><td class="st-empty" colspan="6">今日暂无消耗</td></tr>`;
+  $("stModels").innerHTML = models.length ? mh : `<tr><td class="st-empty" colspan="7">今日暂无消耗</td></tr>`;
 }
 
 // 请求日志：降序渲染（最新在最上）；tok/s 仅流式有值，0/空给「—」

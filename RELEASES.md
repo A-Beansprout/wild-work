@@ -1416,3 +1416,75 @@ WorkBuddy 每日签到包落在「明日到期」的资源 key 上且提前一�
 | #88 | ledger 测试每月固定红 | ✅ 本版修复（社区 PR） |
 | #86 | CDP 挂死断言必然失败 | ✅ 本版修复（社区 PR） |
 | — | 小浣熊登录仅 Windows 可用、需装客户端、与客户端抢注册表 | ✅ 本版修复（登录改用网页版 CDP 捕获，跨平台） |
+---
+
+# wild-work v2.6.4 — Token 用量表新增「缓存利用率」列 + 渠道缓存字段实地取证
+
+## ✨ 新功能：「缓存利用率」列
+
+「用量与流水 → Token 用量」的模型表新增**缓存**列，并在汇总卡区新增**缓存利用率**卡片；
+「运行统计 → 模型消耗」表同步新增该列。数值口径为
+
+```
+缓存利用率 = 缓存命中 token ÷ 「上报了缓存字段」的请求的 prompt token   （加总口径）
+```
+
+**为什么是加总而不是逐请求平均**：逐请求平均会让「一个 100k prompt 命中 95%」与
+「十个 100 token 全部未命中」等权，与用户真正关心的「省了多少 token」不符。
+
+**哪些渠道有数**（2026-10-12 逐渠道实测，24 份真实上游快照）：
+
+| 状态 | 渠道 | 上游字段 |
+|---|---|---|
+| ✅ 有数 | WorkBuddyCN / WorkBuddyAI | `prompt_cache_hit_tokens`（实测命中 1218/1283 ≈ 94.9%） |
+| ✅ 有数 | TraeWork / TraeCode | `cache_read_input_tokens` |
+| ✅ 有数 | QoderCN / QoderCOM / 千问办公 / Cline / OpenCodeZen | `prompt_tokens_details.cached_tokens` |
+| ✅ 有数 | MonkeyCode | `input_tokens_details.cached_tokens`（本版修复：此前转换时被丢弃） |
+| ➖ 显示「—」 | 小浣熊 / 智谱清言 / Loomy | 上游不下发该维度 |
+
+## 🎯 不支持的渠道如何降级（本版的设计重点）
+
+**核心原则：把「命中率为零」与「不知道」严格区分开**——两者混同会误导用户去优化一个
+上游根本不回报的指标。实现上有两层：
+
+1. **取数层**（`internal/server/cacheusage.go`）把「字段存在但为 0」与「字段不存在」
+   判成两种结果。特别地，小浣熊下发的是**空对象** `prompt_tokens_details:{}`，
+   即「没这个维度」而非「命中 0」——若只判「有 details 对象就算上报」，面板会给它
+   恒显 0%。
+2. **展示层**（`app.js` 的 `cacheCell`）三态渲染：有上报样本 → 百分比（允许 0.00%，
+   那是真未命中）；无上报样本或字段整体缺失（老流水）→ **「—」**，且不带任何百分比。
+
+**统计本身完全降级**：未上报的请求**整条不进缓存列的分母**，不影响它原有的 token
+统计与流水。故新列对任何渠道都不会「显示错数」，最坏情况只是「—」。
+
+## 🔧 顺带修复
+
+- **MonkeyCode 缓存字段被丢弃**：本渠道是唯一「重建 usage」的渠道（只拼
+  prompt/completion/total），上游给的 `input_tokens_details.cached_tokens` 在网关内部
+  就没了。现已显式搬运并回填为 OpenAI 形状的 `prompt_tokens_details.cached_tokens`。
+- **Cline 非流式请求会冷却整条渠道**：本渠道把客户端 body 原样转发，客户端发
+  `stream:false` 时上游回非流式 JSON，而 handler 对上游响应一律按 SSE 解析 ⇒ 502
+  `upstream_parse` ⇒ 被当作账号连续错误冷却整条渠道约 60 秒。现已强制上游
+  `stream:true`（非流式客户端由本地 Aggregate 聚合，与 OpenCodeZen/MonkeyCode 同款）。
+
+## 🛠 开发期上游取证工具（devdump）
+
+新增 `internal/devdump`：把各渠道出站对话请求的**上游原始响应**落盘，供离线分析
+上游到底回了哪些 usage 字段。**两层开关确保发布版零开销**：整包被构建标签切成两半
+（无 `-tags devdump` 时退化为常量桩），且需同时设置环境变量 `WILDWORK_DUMP_DIR`
+才真正落盘。检验方式：发布版二进制里 `WILDWORK_DUMP_DIR` / `dumpTransport` 字符串计数为 0。
+
+```bash
+export WILDWORK_DUMP_DIR="$PWD/temp/dump"
+go build -tags devdump -o dist/wild-work-devdump.exe ./cmd/wild-work
+./dist/wild-work-devdump.exe --no-tray
+bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
+```
+
+快照含 access token 等敏感头，仅限本机分析。
+
+## ⬆️ 升级说明
+
+- **无需迁移**：流水新增的 `cr`/`cr_cov` 字段均为 omitempty，未上报时不写出——
+  与旧版本产出的行**逐字节相同**，旧流水读出来即「未上报」，面板显示「—」。
+- **历史数据**：缓存列只统计升级后的新请求（老流水没有缓存字段，无数据可算）。

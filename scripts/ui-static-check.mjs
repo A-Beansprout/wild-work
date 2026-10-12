@@ -68,6 +68,9 @@ function mkNode(id) {
     clientHeight: 50,
     onmouseenter: null,
     onmouseleave: null,
+    // querySelector 供 renderModelTable 取 tbody；返回独立 stub（其 innerHTML
+    // 会被断言读取，故必须与父节点区分开）。
+    querySelector: (sel) => (nodes[id + sel] ||= mkNode(id + sel)),
   };
 }
 const document = {
@@ -96,7 +99,7 @@ const patched =
     { channel: "loomy", models: Array.from({ length: 12 }, (_, i) =>
       ({ model: `qwen-bulk-${i}`, priced: true, rate: 0.1, free: false, has_context: false })) },
   ] }) + ";"
-  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderAppLog, handleToasts, renderModelSearch, collectAllModels };";
+  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
   document,
@@ -268,6 +271,41 @@ const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.u
 check("style.css 含运行统计样式段（#mtabStats .st-sum 等）", /#mtabStats \.st-sum/.test(css) && /#mtabStats \.st-plat-row/.test(css));
 check("更新角标失败警示样式存在（#stUpdated.st-stale）", /#stUpdated\.st-stale/.test(css));
 
+// ---- 场景 3.5：缓存利用率的**三态降级**（本列的核心就是不能把「不知道」显示成 0%） ----
+// 语义务必与 internal/server/cacheusage.go + internal/ledger 的 CR/CRC 保持一致：
+//   cr_cov > 0 → 百分比（允许 0%，那是真未命中）
+//   cr_cov = 0 → 「—」（上游不提供该维度：glm / raccoon）
+{
+  const T2 = globalThis.__T;
+  // ① 有上报样本：命中 97 / 分母 103 → 94.17%
+  const withHit = T2.cacheCell({ cr: 97, cr_cov: 103, cr_reqs: 2 });
+  check("有上报样本时显示百分比（97/103 → 94.2%）", /94\.2%/.test(withHit), withHit);
+  check("百分比带样本量 title", /2 次上报请求/.test(withHit), withHit);
+  // ② 上报了但命中为 0：显示 0.00%，**不是** 「—」（这两者必须区分）
+  const zeroHit = T2.cacheCell({ cr: 0, cr_cov: 500, cr_reqs: 3 });
+  check("上报但未命中显示 0%（不显示「—」）", /0\.00%/.test(zeroHit) && !/—/.test(zeroHit), zeroHit);
+  // ③ 未上报（glm / raccoon）：显示「—」，且**绝不能**出现百分比
+  const noReport = T2.cacheCell({ cr: 0, cr_cov: 0, cr_reqs: 0 });
+  check("未上报时显示「—」而非 0%", noReport.includes("—") && !/%/.test(noReport), noReport);
+  const missing = T2.cacheCell({});
+  check("字段整体缺失（老流水）也显示「—」", missing.includes("—") && !/%/.test(missing), missing);
+  // ④ 汇总卡同款三态
+  T2.renderUsageCacheCard({ cr: 50, cr_cov: 200, cr_reqs: 4 });
+  check("汇总卡有样本时显示 25.0%", document.getElementById("ucCache").textContent === "25.0%", document.getElementById("ucCache").textContent);
+  T2.renderUsageCacheCard({});
+  check("汇总卡无样本时显示「—」", document.getElementById("ucCache").textContent === "—", document.getElementById("ucCache").textContent);
+  // ⑤ 模型表真渲染一列（列数从 5 → 6，占位行 colspan 同步）
+  T2.renderModelTable([
+    { model: "glm-5.3", channel: "workbuddy", requests: 2, pt: 200, ct: 100, cr: 150, cr_cov: 200, cr_reqs: 2 },
+    { model: "chatglm", channel: "glm", requests: 1, pt: 50, ct: 10 },
+  ], 1);
+  const rowsHtml = document.getElementById("tblModelstbody").innerHTML;
+  check("模型表渲染缓存列（命中行 75.0%）", /75\.0%/.test(rowsHtml), rowsHtml.slice(0, 200));
+  check("模型表对不上报渠道显示「—」", rowsHtml.includes("—"));
+  T2.renderModelTable([], 1);
+  check("模型表空态占位行跨 6 列", document.getElementById("tblModelstbody").innerHTML.includes('colspan="6"'));
+}
+
 // ---- 输出 ----
 let failed = 0;
 for (const [name, pass, extra] of results) {
@@ -381,3 +419,4 @@ for (const [label, re] of uniq) {
 
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
+

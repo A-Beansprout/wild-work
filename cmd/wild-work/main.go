@@ -32,6 +32,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/cline"
 	"wild-work/internal/config"
+	"wild-work/internal/devdump"
 	"wild-work/internal/gateway"
 	"wild-work/internal/glm"
 	"wild-work/internal/ledger"
@@ -282,6 +283,14 @@ func main() {
 	// 长回答会在超时点被掐断且无终止帧（实测 2026-09-27 触发 5 次）。
 	// 两者共用同一 Transport，故代理只需套 HTTP 即可（见下方 applyProxies）。
 	glmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+
+	// 开发期调试开关：把各渠道出站对话请求的**上游原始响应**落盘（仅 -tags devdump
+	// 构建有效，见 internal/devdump）。这里只做一次启动期读取与提示；真正的接线在
+	// applyProxies → applyProxyToKind（唯一统一改 Transport 处）。
+	devdump.Refresh()
+	if devdump.Enabled() {
+		log.Printf("devdump enabled: 上游原始响应落盘至 %s（仅开发构建；含 token，勿外传）", os.Getenv("WILDWORK_DUMP_DIR"))
+	}
 
 	// 单渠道上游代理：config.proxies 按 kind 套到各渠道 HTTP client 上（未配置 = 直连）。
 	// traework / glm 的 StreamHTTP 与主 client 共用出厂 Transport，先切独立再套代理，

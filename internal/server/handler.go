@@ -609,12 +609,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.stickySuccess(rt)
 		if peek.Stream {
 			usage, serr := rt.Upstream.Stream(w, rc, clientModel)
+			cu := cacheUsageOf(usage) // 缓存命中（上游未上报时 reported=false，面板显示「—」）
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
 			// 记账失败不干扰主流程——锦上添花功能。
 			if h.ledger != nil {
 				pt, ct, src := usageTokens(usage)
 				h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-					Model: stripChannel(clientModel), PT: pt, CT: ct, Src: src})
+					Model: stripChannel(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 			}
 			// 运行统计：模型维度记账（有 usage 才计，对齐 sidecar 的 u.found 语义）。
 			// 吞吐仅在流式下有意义：genSec = 总耗时 − TTFB；引擎内对 ≤50ms 的样本只计 TTFB。
@@ -622,7 +623,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				pt, ct, _ := usageTokens(usage)
 				if pt > 0 || ct > 0 {
 					gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
-					h.stats.AddUsage(clientModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, time.Now())
+					h.stats.AddUsage(clientModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 					statRow.Tok = ct
 					if gen > 0 {
 						statRow.TokPerSec = float64(ct) / gen
@@ -686,8 +687,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.ledger != nil {
 			u, _ := resp["usage"].(map[string]any)
 			pt, ct, src := usageTokens(u)
+			cu := cacheUsageOf(u)
 			h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-				Model: stripChannel(clientModel), PT: pt, CT: ct, Src: src})
+				Model: stripChannel(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 		}
 		writeJSON(w, http.StatusOK, resp)
 		// 运行统计：必须在写回之后——此刻 statWriter 才记到首字节，TTFB 为真值；
@@ -698,7 +700,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			pt, ct, _ := usageTokens(u)
 			if pt > 0 || ct > 0 {
 				gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
-				h.stats.AddUsage(clientModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, time.Now())
+				cu := cacheUsageOf(u)
+				h.stats.AddUsage(clientModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 				statRow.Tok = ct
 			}
 			statRow.Credit = usageCredit(u)

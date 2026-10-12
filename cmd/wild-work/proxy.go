@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"wild-work/internal/config"
+	"wild-work/internal/devdump"
 )
 
 // proxyFor 返回渠道 kind 对应的代理 URL（未配置返回 nil = 直连）。
@@ -70,9 +71,14 @@ func applyProxies(cfg *config.Config, targets map[string][]*http.Client) {
 		}
 	}
 }
+
 // applyProxyToKind 把 cfg 中渠道 kind 的代理套到一组 HTTP client 上（client 可含 nil 项）。
 // traework 的 StreamHTTP 与主 client 共用出厂 Transport，因此必须先切共享再传入，
 // 此处对每个 client 独立套代理；代理配置无效时返回错误（面板路径不致命仅回显）。
+//
+// 末尾一律接 devdump（开发期上游原文落盘）：这里是**唯一**对全部渠道 client
+// 统一改 Transport 的地方（启动 + 面板热更新两条路径都经此），故各渠道包零改动。
+// 发布版 devdump.Wrap 是原样返回的常量实现（构建标签剔除），无任何开销。
 func applyProxyToKind(cfg *config.Config, kind string, clients ...*http.Client) error {
 	u, err := proxyFor(cfg, kind)
 	if err != nil {
@@ -82,6 +88,7 @@ func applyProxyToKind(cfg *config.Config, kind string, clients ...*http.Client) 
 	// 不能因「未配置」跳过而残留旧代理 Transport（启动时对全新 client 无影响）。
 	for _, c := range clients {
 		SetTransportProxy(c, u)
+		devdump.Wrap(c, kind)
 	}
 	return nil
 }

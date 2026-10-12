@@ -1052,3 +1052,7 @@ body {
   .fees-tab { padding: 7px 12px; }
   .credit-tip .detail-close { width: 30px; height: 30px; }
 }
+
+/* 缓存利用率单元格（用量与流水 / 运行统计）：三态渲染见 app.js 的 cacheCell。
+   有样本 → 等宽数字便于纵向比对；无样本 → 沿用 .muted 的「—」低对比显示。 */
+.cache-pct { font-variant-numeric: tabular-nums; }
