@@ -401,14 +401,14 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", cline: "Cline" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", cline: "cline" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
 // 千问办公无签到活动；MonkeyCode 无签到端点；小浣熊无签到端点；Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
-const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "raccoon", "loomy", "oczen"]);
+const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "cline"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
 const IMPORT_LOCAL_CHANNELS = new Set(["monkeycode", "raccoon", "loomy"]);
@@ -418,11 +418,15 @@ const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 // 小浣熊两个集合都命中 —— 弹窗里同时给「网页版登录」与「从客户端导入」两个动作。
 const WEB_LOGIN_CHANNELS = new Set(["raccoon"]);
 const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
+// 粘贴凭据型渠道：没有浏览器登录编排，凭据由用户从官方站点自行创建后粘贴进来。
+// Cline：app.cline.bot → Settings → API Keys 建 sk_ Key（见 internal/cline）。
+const PASTE_KEY_CHANNELS = new Set(["cline"]);
+const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
-const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持" };
+const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持", cline: "无签到" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
-const NO_CREDITS = new Set(["oczen"]);
+const NO_CREDITS = new Set(["oczen", "cline"]);
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
@@ -449,7 +453,7 @@ function creditsText(a) {
 }
 
 // 渠道汇总固定顺序（与添加按钮布局一致；traecode 是别名池不单独出现，qoder 下线仅存量兜底）
-const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "oczen", "qoder"];
+const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "cline", "oczen", "qoder"];
 
 // renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
 // 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
@@ -963,6 +967,7 @@ const NO_CHECKIN_LOGIN_HINT = {
   raccoon: "（支持「网页版登录」与「从客户端导入」两种方式；access_token 约 1 小时，本工具会自动续期，上游刷新时会轮换 refresh_token）",
   loomy: "（凭据来自本机已登录的 Loomy 客户端；上游无续期接口，约 14 天后需重新登录并再次导入）",
   glm: "（登录后请按下方指引复制 refresh_token 粘贴回来）",
+  cline: "（无需登录：在 app.cline.bot 自行注册账号并创建 API Key，粘贴即可；Key 不过期也不轮换）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
@@ -996,6 +1001,17 @@ function promptLogin(channel) {
     return;
   }
 
+  // 粘贴凭据型渠道（Cline）：弹专用输入框，而不是「打开浏览器登录」。
+  // Cline 的凭据是官方 API Key，创建动作发生在 app.cline.bot 网页里，本工具无法代劳，
+  // 所以这里没有轮询/回调，只有一次「验证 + 落盘」（后端只调 /api-keys，零 token 消耗）。
+  if (isPasteKey(channel)) {
+    $("clineKeyInput").value = "";
+    $("clineErr").textContent = "";
+    $("clineWarn").classList.add("hidden");
+    $("clineOverlay").classList.remove("hidden");
+    setTimeout(() => $("clineKeyInput").focus(), 30);
+    return;
+  }
   // 纯导入型渠道：文案与动作都不同（读本机客户端凭据，而不是打开浏览器登录）。
   if (isImportLocal(channel)) {
     $("lcTitle").textContent = "导入 " + name + " 账号";
@@ -1157,6 +1173,31 @@ function cancelGLMLogin() {
   $("glmOverlay").classList.add("hidden");
 }
 
+// submitClineKey 提交用户粘贴的 Cline 官方 API Key。
+// 后端只做「GET /api/v1/api-keys 验证 + 落盘」，零 token 消耗；
+// 返回的 warning 非空表示「这把 Key 与已有账号同属一个 Cline 账号」——
+// 官方配额按账号计（…UsageCostUSDPerUser），同账号多 Key 不会扩额度，必须显式告知。
+async function submitClineKey() {
+  const key = ($("clineKeyInput").value || "").trim();
+  if (!key) { $("clineErr").textContent = "请粘贴 API Key（sk_ 开头）"; return; }
+  const btn = $("btnClineSubmit");
+  btn.disabled = true;
+  $("clineErr").textContent = "验证中…";
+  try {
+    const r = await api("/api/login/cline_key", { api_key: key });
+    $("clineOverlay").classList.add("hidden");
+    $("clineKeyInput").value = "";
+    if (r && r.warning) toast(r.warning);
+    toast("Cline 账号已添加");
+    await loadState();
+    refreshFees();
+  } catch (e) {
+    $("clineErr").textContent = e.message || "验证失败";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // 手工兜底：粘贴 refresh_token
 async function submitGLMToken() {
   const token = ($("glmTokenInput").value || "").trim();
@@ -1210,8 +1251,8 @@ async function toggleAutostart() {
 
 // ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/渠道代理） ----------
 // PROXY_CHANNELS 渠道上游代理列表（顺序与面板渠道序一致；旧 qoder 已下线不提供代理配置）。
-const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "qwenwork", "glm", "monkeycode", "raccoon", "loomy"];
-const PROXY_HINT = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen" };
+const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "qwenwork", "glm", "cline", "monkeycode", "raccoon", "loomy"];
+const PROXY_HINT = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", cline: "Cline", oczen: "OpenCodeZen" };
 
 // renderProxyList 按当前 state.proxies 渲染每渠道一个输入行。
 function renderProxyList() {
@@ -1573,6 +1614,9 @@ function bind() {
   $("btnGLMSubmit").onclick = submitGLMToken;
   $("btnGLMCancel").onclick = cancelGLMLogin;
   $("btnGLMToggleManual").onclick = () => $("glmManual").classList.toggle("hidden");
+  $("btnAddCline").onclick = () => promptLogin("cline");
+  $("btnClineSubmit").onclick = submitClineKey;
+  $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;

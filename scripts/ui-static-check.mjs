@@ -306,5 +306,33 @@ for (const [label, re] of uniq) {
   if (!pass) failed++;
 }
 
+// ---- 渠道接线完整性（cline）----
+// 面板新增一个渠道最容易漏的是「按钮 ↔ 弹层 ↔ 提交函数」这条链：
+// 漏了不报错，只表现为「渠道能选到但没入口」或「弹层弹出来但点没反应」——
+// 与 R34/R41 同族的「声明了却没接线」，故在此静态锁住。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const need = [
+    ["index.html 有 Cline 添加按钮", html.includes('id="btnAddCline"')],
+    ["index.html 有 API Key 粘贴弹层", html.includes('id="clineOverlay"')],
+    ["弹层含 Key 输入框", html.includes('id="clineKeyInput"')],
+    ["弹层写明申请办法（app.cline.bot）", html.includes("app.cline.bot")],
+    ["弹层警告「必须多个独立账号」", /多个独立账号|多个不同.*账号/.test(html)],
+    ["app.js 接线了 btnAddCline", raw.includes('$("btnAddCline").onclick')],
+    ["app.js 接线了提交/取消按钮", raw.includes('$("btnClineSubmit").onclick') && raw.includes('$("btnClineCancel").onclick')],
+    ["app.js 调 /api/login/cline_key", raw.includes("/api/login/cline_key")],
+    ["cline 在渠道名/样式表里登记", /cline: "Cline"/.test(raw) && /cline: "cline"/.test(raw)],
+    ["cline 归入无签到渠道", /NO_EXPLICIT_CHECKIN[^)]*"cline"/.test(raw)],
+    ["cline 无余额概念→积分显示不适用", /NO_CREDITS[^)]*"cline"/.test(raw)],
+    ["cline 可配上游代理", /PROXY_CHANNELS[^)]*"cline"/.test(raw)],
+    ["style.css 有 cline 渠道色", css.includes(".badge.cline") && css.includes(".btn.primary.alt.cline")],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

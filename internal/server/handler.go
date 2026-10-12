@@ -765,6 +765,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if noLoginChannel(rt.Kind) {
 			hint = "该渠道无需登录，稍后重试即可（若持续失败请查看日志）"
 		}
+		// 粘贴 Key 型渠道（cline）没有「重新登录」这个动作：Key 不过期也不轮换，
+		// 被禁用只会是「Key 无效/已被删除」，唯一补救是换一把有数 Key 粘进来。
+		// 照搬「需重新登录」会把用户引到一个不存在的入口（R41 同族的文案误导）。
+		if keyPasteChannel(rt.Kind) {
+			hint = fmt.Sprintf("请在面板粘贴一把有效的 %s API Key（sk_…，在 app.cline.bot → Settings → API Keys 创建）", rt.Kind)
+		}
 		// 多数是限流冷却而非登录态问题：给出最早解冻时间，重登提示仅在无任何冷却时兜底。
 		if cooling > 0 && !earliest.IsZero() {
 			hint = fmt.Sprintf("最早约 %s 解冻（多为限流冷却，到点自动恢复；若长时间未恢复再检查登录态）", formatUnfreeze(earliest))
@@ -799,10 +805,15 @@ func formatUnfreeze(t time.Time) string {
 // 避免匿名通道（oczen）被误导去找一个不存在的登录按钮。
 func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen }
 
+// keyPasteChannel 报告渠道凭据是否「由用户从官方站点自行创建后粘贴进来」（而非登录编排取得）。
+// 这类渠道的引导文案必须指向「粘贴新 Key」而不能说「重新登录」：
+// cline 的官方 API Key 不过期、不轮换，被禁用只会是 Key 本身无效/被删。
+func keyPasteChannel(k provider.Kind) bool { return k == provider.Cline }
+
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model>")
+		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / cline/<model> / oczen/<model>")
 	}
 	kind := provider.Kind(parts[0])
 	rt := h.cfg.Runtimes[kind]

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/cline"
 	"wild-work/internal/config"
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
@@ -326,6 +327,16 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 	sort.SliceStable(items, func(i, j int) bool { return channelRank(kindOf(items[i])) < channelRank(kindOf(items[j])) })
 }
 
+// creditsNAKind 判定该渠道的「积分」概念是否不适用（面板显示「不适用」而不是 0）。
+//
+// 两种成因不同，但 UI 处理一致：
+//   - oczen：匆名通道，根本没有账号/余额概念；
+//   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
+//     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
+func creditsNAKind(group string) bool {
+	return group == provider.Oczen.String() || group == provider.Cline.String()
+}
+
 // noExplicitCheckinKinds 不支持显式签到（手动按钮）的渠道。
 // WorkBuddy 国际版改为定时自动对话保活并领取日活奖励（详见 workbuddyai.DailyCheckin），
 // 无需用户手动触发，故也不提供手动签到入口；
@@ -335,9 +346,10 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 // MonkeyCode 一期也不提供手动签到：上游未提供额度或签到端点。
 // 小浣熊一期也不提供手动签到：上游未提供额度或签到端点。
 // Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
+// Cline 走官方 API Key：无签到活动、Key 不过期 ⇒ 既不需手动签到也不需保活。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen || k == provider.Cline
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -992,6 +1004,71 @@ func (a *App) SubmitGLMToken(refreshToken string) (string, error) {
 	return r.UID, nil
 }
 
+// SubmitClineKey 提交用户粘贴的 Cline 官方 API Key（sk_…）：验证 → 落盘 → 重载账号池。
+//
+// 验证只调 GET /api/v1/api-keys —— **零 token 消耗**，避免「添加账号即烧额度」。
+// uid 取该端点中 key_prefix 与本 Key 相符那条的 apk- id（实测 key_prefix = Key 前 10 字符）。
+//
+// 第二个返回值是**告警**（非错误，账号照样保存）：官方配额字段名是 `…UsageCostUSDPerUser`，
+// 即上限按 Cline **账号**计 ⇒ 同一账号的多把 Key 共享一份额度。
+// 由于 api-keys 返回的是本账号**全部** Key，可据此发现「两把 Key 同属一个账号」并提醒
+// 用户去注册独立账号，而不是误以为多 Key 等于多额度。
+func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
+	key := strings.TrimSpace(apiKey)
+	res, err := cline.ValidateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+
+	// 同账号检测：新 Key 所在账号的 Key 列表 ∩ 已入库账号的 Key 前缀
+	warn := ""
+	if existing, lerr := auth.LoadClineDir(a.cfg.AuthDir); lerr == nil {
+		family := append([]string{res.KeyPrefix}, res.SiblingKeys...)
+		for _, e := range existing {
+			p := e.AccessTokenValue()
+			if len(p) > cline.KeyPrefixLen {
+				p = p[:cline.KeyPrefixLen]
+			}
+			if p == "" {
+				continue
+			}
+			for _, kp := range family {
+				if kp == p {
+					warn = fmt.Sprintf("这把 Key 与已添加的账号 %s 同属一个 Cline 账号，共享同一份额度"+
+						"（官方按账号计），不会增加可用额度。请注册独立 Cline 账号并各自建 Key。", e.UID)
+					break
+				}
+			}
+			if warn != "" {
+				break
+			}
+		}
+	}
+
+	name := res.AccountName
+	if name == "" {
+		name = "API Key " + res.KeyPrefix
+	}
+	_ = os.MkdirAll(a.cfg.AuthDir, 0o755)
+	ca := &auth.Auth{
+		Kind:        "cline",
+		UID:         res.UID,
+		Nickname:    name,
+		AccessToken: key,
+		// Key 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
+		ExpiresAt: cline.FarFutureExpiry(),
+		FilePath:  filepath.Join(a.cfg.AuthDir, "cline-"+res.UID+".json"),
+	}
+	if err := ca.SaveAtomic(); err != nil {
+		return "", "", fmt.Errorf("保存 Cline 凭据失败：%w", err)
+	}
+	// 日志零 token（不变量 2）：只打 uid 与展示名，绝不打完整 Key
+	log.Printf("cline 账号已添加（粘贴 Key）uid=%s name=%s 同账号告警=%v", res.UID, name, warn != "")
+	a.reloadAccounts()
+	a.afterAccountAdded(provider.Cline)
+	return res.UID, warn, nil
+}
+
 // StartGLMAutoLogin 发起智谱清言自动登录：拉起独立 profile 的浏览器，
 // 用户在真实浏览器里登录，后台经 CDP 自动捕获 Cookie。
 //
@@ -1225,6 +1302,15 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadLoomyDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload loomy accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	// Cline：一把官方 API Key = 一个账号，凭据由面板「粘贴 API Key」写入。
+	if rt := a.runtime(provider.Cline); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadClineDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload cline accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
@@ -1941,11 +2027,11 @@ type AccountView struct {
 	CreditsStale bool `json:"credits_stale,omitempty"`
 	// CreditsNA 积分概念不适用（如 OpenCodeZen 匿名通道），UI 显示「不适用」
 	// 而非 0，并隐藏刷新积分与明细入口。
-	CreditsNA      bool              `json:"credits_na,omitempty"`
-	Cooling        bool              `json:"cooling"`
-	Until          string            `json:"until"`
-	Reason         string            `json:"reason"`
-	Disabled       bool              `json:"disabled"`
+	CreditsNA bool   `json:"credits_na,omitempty"`
+	Cooling   bool   `json:"cooling"`
+	Until     string `json:"until"`
+	Reason    string `json:"reason"`
+	Disabled  bool   `json:"disabled"`
 	// ModelCooling 模型级冷却（model → 解冻时刻）；仅该账号该模型限流，账号整体仍可用
 	// （429/6004 上游按模型计）。面板据此区分「整号冷却」与「个别模型限流」。
 	ModelCooling   map[string]string `json:"model_cooling,omitempty"`
@@ -2064,7 +2150,7 @@ func (a *App) accountViews() []AccountView {
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
 			// 匿名渠道无积分：前端据此显示「不适用」
-			CreditsNA:      group == provider.Oczen.String(),
+			CreditsNA:      creditsNAKind(group),
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,
@@ -2268,6 +2354,22 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid})
 	})
+	mux.HandleFunc("POST /api/login/cline_key", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			APIKey string `json:"api_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "请求体解析失败")
+			return
+		}
+		uid, warn, err := a.SubmitClineKey(req.APIKey)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
+	})
+
 	mux.HandleFunc("POST /api/account/checkin", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`

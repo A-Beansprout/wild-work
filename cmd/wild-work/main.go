@@ -30,6 +30,7 @@ import (
 
 	"wild-work/internal/app"
 	"wild-work/internal/auth"
+	"wild-work/internal/cline"
 	"wild-work/internal/config"
 	"wild-work/internal/gateway"
 	"wild-work/internal/glm"
@@ -167,11 +168,17 @@ func main() {
 	if err != nil {
 		fatal("读取 Loomy 账号目录失败：%v", err)
 	}
+	// Cline：粘贴型渠道，凭据是官方 API Key（sk_…），由面板「粘贴 API Key」写入 auths/。
+	// 一个 Cline 账号一把 Key；Key 不轮换 ⇒ 无 refresh、无保活、无签到。
+	clAuths, err := auth.LoadClineDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 Cline 账号目录失败：%v", err)
+	}
 	// OpenCodeZen 匿名通道无凭证文件：全程只有一个虚拟账号，
 	// 不经目录扫描、不参与 reload（见 app.reloadAccounts 的说明）。
 	ocAuths := []*auth.Auth{oczen.AnonymousAuth()}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, oczen=%d(匿名) from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(ocAuths), cfg.AuthDir)
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, oczen=%d(匿名) from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(ocAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -223,6 +230,12 @@ func main() {
 	for _, a := range lmAuths {
 		lmPool.Add(a)
 	}
+	// Cline：真多账号池（一把 Key = 一个 Cline 账号），故**不置 SingleAccount**，
+	// 账号级惩罚与同请求换号（R29）全量适用。
+	clPool := pool.New(filepath.Join(stateDir, "state-cline.json"))
+	for _, a := range clAuths {
+		clPool.Add(a)
+	}
 	// oczen：整池只有一个匿名虚拟账号，state 仅用于记冷却（无积分、无签到）
 	ocPool := pool.New(filepath.Join(stateDir, "state-oczen.json"))
 	for _, a := range ocAuths {
@@ -256,6 +269,12 @@ func main() {
 	rcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	lmUp := loomy.New()
 	lmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	clUp := cline.New()
+	// Cline：非流式 client 保留总超时（一问一答需要兜底）；StreamHTTP **不得**设 Timeout
+	// ——R35：Client.Timeout 覆盖整个生命周期（含读 body），SSE 整个生成期都在读 body，
+	// 长回答必被从中间掐断。共用 Transport 以复用连接池。
+	clUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	clUp.StreamHTTP.Transport = clUp.HTTP.Transport
 	ocUp := oczen.New()
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
@@ -281,6 +300,7 @@ func main() {
 		provider.MonkeyCode.String():  {mcUp.HTTP, mcUp.StreamHTTP},
 		provider.Raccoon.String():     {rcUp.HTTP, rcUp.StreamHTTP},
 		provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
+		provider.Cline.String():       {clUp.HTTP, clUp.StreamHTTP},
 		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		// glm 两个 client 都要传（SetTransportProxy 会**新建** Transport，
 		// 只套 HTTP 会让 StreamHTTP 仍走直连（代理对流式不生效）。
@@ -349,6 +369,11 @@ func main() {
 	// 跳过、不会误禁用账号，但每天仍空跑一次并记录失败，故直接关掉。
 	lmSch := scheduler.New(scheduler.Config{Pool: lmPool, Upstream: lmUp, Name: "loomy",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// Cline：官方 API Key **不过期**、无签到活动、无 refresh token ⇒ 定时任务全部关闭。
+	// 必须传显式空切片 []int{}（R39）：传 nil 会被 scheduler.New 的零值兜底补上默认时间，
+	// 于是每天空跑一次必然失败的签到，并在面板渲染红色「签到失败」。
+	clSch := scheduler.New(scheduler.Config{Pool: clPool, Upstream: clUp, Name: "cline",
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// OpenCodeZen 匿名：无账号、无签到、无 token 可保活（凭证是常量 public）。
 	// CheckinMinutes/KeepaliveHours 均为显式空切片 → 调度器不发生任何上游调用。
 	ocSch := scheduler.New(scheduler.Config{Pool: ocPool, Upstream: ocUp, Name: "oczen",
@@ -378,6 +403,7 @@ func main() {
 		provider.Raccoon:    {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, StaticModels: raccoon.StaticModels()},
 		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, StaticModels: loomy.StaticModels()},
 		provider.GLM:        {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, StaticModels: glm.StaticModels()},
+		provider.Cline:      {Kind: provider.Cline, Pool: clPool, Upstream: clUp, StaticModels: cline.StaticModels()},
 		// 注意：GLM **不**置 SingleAccount。
 		//
 		// 早期误判：以为「凭据轮换后不可人工恢复」就该按单账号处理。但
@@ -405,6 +431,7 @@ func main() {
 		provider.Raccoon:     {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
 		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
 		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
+		provider.Cline:       {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
 		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
 	}
 
@@ -485,7 +512,8 @@ func main() {
 			provider.QwenWork.String():    {qwUp.HTTP, qwUp.StreamHTTP},
 			provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 			// glm 两个 client 都要传（同启动路径的理由：SetTransportProxy 新建 Transport）
-			provider.GLM.String(): {glmUp.HTTP, glmUp.StreamHTTP},
+			provider.GLM.String():   {glmUp.HTTP, glmUp.StreamHTTP},
+			provider.Cline.String(): {clUp.HTTP, clUp.StreamHTTP},
 		})
 	})
 	// 面板保存 oczen key 后热更新渠道凭证；启动时也应用一次配置中的初始 key
@@ -527,6 +555,9 @@ func main() {
 	// 漏了**不会报错**——只表现为「该渠道的自动签到/保活从不运行」，
 	// 而手工触发（面板按钮 / RunCheckinNow）仍然可用，极难发现。
 	go glmSch.Run(sctx)
+	// Cline 的 Run 同样不可漏（R34：漏了不报错，只表现为该渠道定时逻辑从不运行）。
+	// 本渠道任务全关，Run 只会阻塞等 ctx/配置变更，但缺了它将来加任务即静默失效。
+	go clSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；

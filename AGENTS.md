@@ -35,7 +35,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R7 | **移除 wails / WebView2 全部依赖** | 省内存与运行时；平台能力封装进 `internal/platform`（build tag 拆分） |
 | R8 | daemon 单进程：一个 `http.Server` 同时服务 OpenAI 端点 + 管理 API + 静态 UI | 沿用 server 现有 ServeMux 扩展 |
 | R9 | 核心业务（pool/scheduler/upstream/traework/server/login/config/auth/provider）**整体复用**，格式零迁移 | config.json / auths/ / data/state.json 兼容旧版；旧 state.json 自动迁移到 state-workbuddy.json |
-| R10 | 新增渠道扩展方式：实现 `provider.Upstream` 接口 + auth 加载器 + 注册 Runtime | 模型前缀 `channel/<model>` 路由；已实现 WorkBuddyCN(国内) + WorkBuddyAI(国际) + TraeWork + TraeCode(与 TraeWork 共账号，function=solo_agent) + QoderCN + QoderCOM(国际) + 千问办公(qwenwork) + MonkeyCode(monkeycode，平台托管模型) + 小浣熊(raccoon) + Loomy(loomy) + 智谱清言(glm) + OpenCodeZen(oczen 匿名) 十二渠道；旧 Qoder（`qoder/*`，QoderWork）已从界面下线但路由保留 |
+| R10 | 新增渠道扩展方式：实现 `provider.Upstream` 接口 + auth 加载器 + 注册 Runtime | 模型前缀 `channel/<model>` 路由；已实现 WorkBuddyCN(国内) + WorkBuddyAI(国际) + TraeWork + TraeCode(与 TraeWork 共账号，function=solo_agent) + QoderCN + QoderCOM(国际) + 千问办公(qwenwork) + MonkeyCode(monkeycode，平台托管模型) + 小浣熊(raccoon) + Loomy(loomy) + 智谱清言(glm) + OpenCodeZen(oczen 匿名) + Cline(cline，官方 sk_ Key 免费池) 十三渠道；旧 Qoder（`qoder/*`，QoderWork）已从界面下线但路由保留 |
 | R11 | Windows 产物在 WSL 交叉编译（`GOOS=windows CGO_ENABLED=0`，已验证可行）；macOS 产物走 GitHub Actions macos-latest（cgo 必需） | WSL 无法编 darwin cgo；CI 增加 darwin job |
 | R12 | **无桌面 Linux 使用 `--no-tray` 参数** | 无参启动在无 DBus 环境托盘 panic 直接 exit 并提示；`--no-tray` 跳过托盘打印信息阻塞等待 Ctrl+C |
 | R13 | **三接口兼容采用两层结构：内层 handler 不动，新增 `internal/gateway` 边缘层**，经 **in-process 调用**（`io.Pipe` + ResponseWriter 形状）复用内层 | 代码量比内联重构多 20%，但改动面小一个数量级（主链路仅 2 处调用点 + 1 个访问器），回归风险低、可脱离 pool 单测。**不得用 HTTP 自环**（`0.0.0.0` 监听不可作目标、鉴权双份、启动竞态） |
@@ -72,6 +72,8 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R43 | **运行统计（`internal/stats`）与用量流水（`internal/ledger`）是两套并列口径，不合并、不互校**（2026-10-07，PR #71–#73） | **背景**：新增「运行统计」tab 时引入了第二套统计面。分工：`ledger` = 磁盘 JSONL 双流水（`data/ledger/{usage,credit}-*.jsonl`），账号**条目差分**口径，按需扫描聚合（R17）；`stats` = 内存实时 + 按日归档 `data/stats.json`，「今日」口径——消耗走**余额下降差值**、收入走**日志签到事件**（`events.go` 正则解析 `app.log`，因「登录即自动签到」等场景条目晚于入账建立，差值恒 0 漏记）、逐请求 token 走 **usage 帧精确值**（`usage.go`）。**决议**：两者**零共享状态、零互相写入**（stats 仅只读 `ledger.Query(1)` 取当日作废），各自标注口径、互不引用；**数字天然不同是设计而非缺陷**（差值含积分包到期作废，ledger 已拆 spend/expire），**不追求对齐**。**边界**：`ledger` 仍是面板「用量与积分」的数据源与 issue #67 等待修的口径；`stats` 只服务「运行统计」tab。新增统计需求时**先明确归属**（精确拆分→ledger；实时/今日/趋势→stats），**不得**为对齐数字而改动另一侧。**注入纪律**：stats 全部数据输入走**进程内直调**（`allStatuses` / `handler.StickySnapshot` / `ledger.Query`），**不得** HTTP 自环（R13）；`main.go` 须 `go appInst.StartStatsFeeders(sctx)`（漏接线即静默无数据，同 R34 家族） |
 | R44 | **小浣熊登录改用「网页版 CDP 捕获」，废弃桌面协议回调**（2026-10-10） | **背景**：原「浏览器授权登录」靠改写 HKCU 的 `office-raccoon://` 协议注册来接住深链授权码（R41），仅 Windows 可用、要求本机装官方客户端、且与客户端抢协议。**实测**（`ref/xiaohuanxiong_web_20261010.saz`）：网页版登录成功后前端 JS 会把凭据写进 Cookie `raccoon_refresh_token`（域 `.xiaohuanxiong.com`），且该凭据与桌面端**同一套**（JWT 无平台声明）——实测目录/余额/推理/刷新四项全通，`model_catalog` 的 **9 个模型全部可用**。**修法**：`internal/login_raccoon` 改为网页版流程（`web.go`）——拉起**独立 profile** 的 Edge/Chrome（复用 `internal/cdp`）打开 `office.xiaohuanxiong.com/home?loginModal=true` → CDP 轮询 Cookie → **判据是 JWT `owner_type==users`**（访客也下发 Cookie，见 R28 同款教训）→ 调 `/api/web/auth/v1/refresh` 换取并落盘凭据。**跨平台**（纯 HTTP + 系统浏览器，不再依赖注册表）；桌面协议登录代码（`protocol*.go` 的 Hijack/Backup/restore、`--raccoon-callback` 入口）**保留但不再调用**，仅作旧版注册表残留的启动自愈（`healRaccoonProtocol`）。**「从客户端导入」路径保留**（`import_local.go`）。**已知限制（面板弹窗已告知）**：上游 refresh **轮换 refresh_token**，若同账号凭据被本工具与浏览器/客户端**共用**会互踢；要并存须用本流程**单独登录一次**（新建独立会话，`sid` 不同）。回归测试 `internal/login_raccoon/login_test.go`（owner_type 甄别 / Poll 状态机 / 并发拒绝 / 幂等 Shutdown） |
 | R45 | **明细与刷新路径同源回写 pool 快照（`creditSnapshot`）**（2026-10-11） | **背景**：面板「同屏两个数字对不上」——账号卡片/汇总条的积分与 hover 明细弹层的数字不一致。**实测**：同一响应内上游汇总字段==明细池相加，确认非上游口径漂移；差异实为时差——旧实现里 pool 快照只被「刷新事件」（手动刷新/全部刷新/自动循环）更新，而明细是 hover 时的实时值，两者必然相差区间内消耗量。**修法**：`app.creditSnapshot` 取数成功即 `SetCreditDetail` + ledger 差分（`creditTotals` 与 `ResourceDetail` 共用，删掉三处各自回写）；`ResourceDetail` 扩展返回 expiring/unusable，`/api/account/resource_detail` 响应新增 `expiring_remain`；前端 `showCreditDetail` 用响应的 `usable_remain/expiring_remain/unusable_remain` 回写卡片与汇总条（`data-uid` 定位，不全量重绘以免丢失正在 hover 的 tooltip 锚点），`checkin/refreshOne/checkinAll/refreshAll` 成功后清 `detailCache`。回归测试 `TestResourceDetailWritesBackPoolSnapshot`（去掉回写即失败） |
+| R46 | **Cline 渠道（`cline/*`）= 多账号官方 API Key 池 + 免费模型调度器**（2026-10-10） | 凭据是**官方文档化的 `sk_` API Key**（app.cline.bot → Settings → API Keys），**不是** cline2api 那套 WorkOS device-code OAuth：实测两者模型面等价，而 Key 不过期、**不轮换** ⇒ R26/R44 的「同凭据多处使用互踢」在本渠道不存在，且零登录编排。**必带非空 `X-CLIENT-TYPE` 头**（值随意，实测 `bogus-value` 也放行；缺失/空值 ⇒ 全部 `cline-free/*` 返回 403 `API_REQUEST_ERROR_CODE`，且**不报错不崩溃**、只表现为免费模型消失，属 R34 家族的静默失效；由 `TestChatStreamAlwaysSendsClientTypeHeader` + live 的 `TestLiveAliasNeedsClientType` 双重锁死）。模型面**只收免费池**：硬编码 3 个（`stepfun/step-5-preview`、`xiaomi/mimo-v2.6-flash`、`meta/muse-spark-1.3-contributor`），一律用**厂商真实名**而非 `cline-free/` 别名——真实名免头可用、走 Cline 自有网关、带 `provider_metadata`、且本身在公开目录里（符合 R42），再并上动态 `recommended-models.free[]`；**不收** OpenRouter 长尾 `:free`（15 个，实测多很小众、加了没人用），**不收** `cline-pass/*`（真订阅权益 `ENTITLEMENT_ERROR`，加头无效）。上游**确无余额/额度端点**（`/credits` `/usage` `/billing` `/quota` `/me` 等 12 个候选实测全 404，只有 `/api-keys` 与 `/plans` 存在）⇒ `UserResource` 恒 0 且**不得返回 error**，面板积分位「不适用」（`creditsNAKind`），实际花费只来自逐请求 `usage.cost`（入 ledger）。签到/保活/定时任务**全关**（`CheckinHours`/`KeepaliveHours` = `[]int{}`，R39）+ **`go clineSch.Run(sctx)`**（R34）；`noExplicitCheckin` 含 Cline。**不承诺价格**：`free` 命名空间与 `is_byok`/`provider` 实测**都不能**当判据（同前缀有扣费、非 free 后缀反倒 cost=0，且同一 ID 相邻两笔计价会漂移）⇒ 费率表标「不适用」，一切以实测 `usage.cost` 为准。面板文案必须写明「额度按**账号**计（官方字段 `…UsageCostUSDPerUser`），同账号多把 Key 共享一份额度」，并在检测到同账号时告警（依据 `/api-keys` 返回本账号全部 Key）。 |
+| R47 | **Cline 的 429 分两类：OpenRouter 侧共享上限不得软化账号**（2026-10-10，R38 同族扩展） | 上游把真实状态**压平成 HTTP 500**（`… from Openrouter: request failed with status 429 …`）⇒ `Classify` 必须正则取**内层**三位状态码，否则 429 被归成 5xx（违反不变量 15 的「429 优先」）。挖开后是两种语义相反的 429：① **共享出口上限**——`limit_rpd` / `Daily limit reached` / `temporarily rate-limited`，落在「Cline 自己的 OpenRouter key」上（路由判据：响应 `id` 前缀 `gen-` = OpenRouter，`gen_` = Cline 自有网关，实测 9 个 ID 零反例，是成功路径上**唯一可用**的聚合器标识；`is_byok`/`provider` 均已被证伪）⇒ **换 Cline 账号必然复现** ⇒ 归 `ErrPassthrough`（不计账号错、不冷却、不换号），并把该 model 记入渠道内 `capped`（期间从 `/v1/models` 摘除，TTL 1h 自愈；实测 `gemma-4-26b` 上轮 429、本轮 200，故必须可恢复）；② 无上述文案的 429 ⇒ 才是真账号级（依据 `plans` 的 `…UsageCostUSDPerUser`）⇒ `ErrSoftRate` 冷却 + 同请求换号（R29 全量适用，本渠道**不置** `SingleAccount`）。**不区分的后果**：渠道只有 3 个模型，`pool.CooldownModel` 在 ≥2 模型冷却时升级整号冷却 ⇒ 所有 Key 被逐个轮空 → `503 no_healthy_account`（正是 R16/R38 的误伤形态）。另一族必须处理的是 **HTTP 200 + 流内 `error` 帧 + 上游自己发 `[DONE]`**（`stream_initialization_failed`，实测另有数字 `502`）：R36 的「截断时不发 [DONE]」在此不适用（上游已发），需要识别 error 帧 → 返回 `StreamError`（实现 `StreamErrorClassifier`，R40）；为此在 `internal/upstream` 新增最小导出 `StreamWith`（同时带 hintFn 与 onUsage 两个钩子，既有三个导出各只带一个）。`max_tokens` 实测：8→上游 400、16→500 `empty response content`（推理吃光预算 ⇒ 可见内容为 0）、64~200000 全通、1e6→拒 ⇒ `PrepareBody` 缺省**不传**、<64 抬到 64、>200000 压到 200000；**强制 stream=true 并不能豁免这条**。 |
 
 ## 2. 架构选型（依据）
 
@@ -124,6 +126,7 @@ POST /api/login/glm_auto           # 智谱清言自动登录：拉起独立 pro
 GET  /api/login/glm_auto_status    # → {status: idle|pending|success|failed|cancelled, uid?, nickname?, error?}
 POST /api/login/glm_auto_cancel    # 取消自动登录并关闭浏览器
 POST /api/login/glm_token          # {refresh_token} → {uid} 智谱清言手工兜底（见 R22）
+POST /api/login/cline_key           # {api_key} → {uid,warning} Cline 粘贴官方 sk_ Key（见 R46；只调 /api-keys 验证，零 token 消耗；warning=同账号告警）
 POST /api/login/cancel
 POST /api/account/checkin          # {uid}
 POST /api/account/checkin_all
@@ -151,7 +154,7 @@ GET  /api/logs                     # 最近 300 行日志
 POST /api/quit                     # 退出程序
 ```
 
-## 5. 渠道（已实现 WorkBuddyCN + WorkBuddyAI 国际版 + TraeWork + QoderCN + QoderCOM 国际版 + 千问办公 + MonkeyCode + 小浣熊 + Loomy + 智谱清言 + OpenCodeZen 匿名；旧 Qoder 已下线）
+## 5. 渠道（已实现 WorkBuddyCN + WorkBuddyAI 国际版 + TraeWork + QoderCN + QoderCOM 国际版 + 千问办公 + MonkeyCode + 小浣熊 + Loomy + 智谱清言 + OpenCodeZen 匿名 + Cline；旧 Qoder 已下线）
 
 1. 新建 `internal/<channel>/` 包，实现 `provider.Upstream` 接口
 2. `internal/auth` 增加对应 `Load<Channel>Dir()`（文件名前缀 `<channel>-*.json`；
@@ -191,6 +194,26 @@ POST /api/quit                     # 退出程序
 > 按「无 refresh token」跳过，但每天仍空跑一次并记失败）。鉴权失败是 **HTTP 200 +
 > 业务码 `100002`**（不是 401），业务码判定必须排在状态码判定之前。
 > 接口结构整理：`xxhhlk/loomy2api`（MIT）。
+> **Cline（`cline/*`）**：**粘贴型渠道** —— 凭据是官方文档化的 `sk_` API Key
+> （`app.cline.bot` → Settings → API Keys 创建，形如 `sk_` + 64 hex，**只在创建时完整显示一次**）。
+> 一个 Cline 账号一把 Key；**Key 不过期、不轮换** ⇒ 无 `RefreshToken`、无保活、无签到，
+> 也没有 R26/R44 那种「同凭据多处使用互踢」的问题（见 R46）。
+> **模型面只收免费池**：硬编码 3 个厂商真实名（`stepfun/step-5-preview`、`xiaomi/mimo-v2.6-flash`、
+> `meta/muse-spark-1.3-contributor`）+ 动态并 `recommended-models.free[]`；
+> 不收 OpenRouter 长尾 `:free`（小众），不收 `cline-pass/*`（订阅权益）。
+> **两个必须遵守的实现约束**：① 出站必带**非空 `X-CLIENT-TYPE`**，否则 `cline-free/*` 全量 403
+> 且**不报错**（值随意，缺失/空值才拒）；② `Classify` 必须从被压平成 500 的 body 里取**内层**状态码，
+> 并把 `limit_rpd`/`Daily limit reached`/`temporarily rate-limited` 归成**模型级**处置
+> （`ErrPassthrough` + 模型冷却），**绝不软化账号**（见 R47）。
+> **`max_tokens`**：客户端未给则**不传**（不传最稳），<64 抬到 64、>200000 压到 200000
+> ——实测 8 被上游拒、16 会造成 `empty response content`（推理吃光预算，流式同样中招）。
+> 上游**无余额/额度端点** ⇒ `UserResource` 恒 0（**不得返回 error**），面板显示「不适用」，
+> 实际花费来自逐请求 `usage.cost`。**不承诺价格**：`free` 前缀 / `is_byok` / `provider` 实测都不能
+> 当免费判据（同前缀有扣费、非 free 后缀反倒 cost=0，且同 ID 相邻两笔会漂移）。
+> 添加时只调 `GET /api/v1/api-keys` 验证（**零 token 消耗**），uid 取其 `apk-…` id；
+> 官方配额字段名是 `…UsageCostUSDPerUser`（按**账号**计）⇒ 同账号多把 Key 共享一份额度，须告警。
+> 依据与实测全表见 `docs/cline渠道接入计划.md` 与 `docs/cline2api线索项目评估.md`。
+
 > **OpenCodeZen（`oczen/*`，匿名免费）**：凭证固定字面量 `public`，无账号/无签到/无积分；
 > 免费档有三道闸门（规范 `ses_<12hex><14Base62>` 会话头 + `stream:true` 且 tools 含 `bash`/`read` +
 > OpenCode CLI 伪装头），缺一即 403 FreeTierError；面板固定一项「[OpenCodeZen] 匿名」、积分显示「不适用」，
@@ -341,7 +364,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 
 - [README.md](README.md) — 用户文档
 - [DEVELOPMENT.md](DEVELOPMENT.md) — 开发者文档（面向 AI Agent）
-- [AGENTS.md](AGENTS.md) — 本文件：决议项（R1–R45）、架构选型、不变量
+- [AGENTS.md](AGENTS.md) — 本文件：决议项（R1–R47）、架构选型、不变量
 - [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) — 三接口（Chat/Responses/Anthropic）兼容层架构决策、实施记录、验证清单、已知限制
 - [docs/用量积分流水记账备忘.md](docs/用量积分流水记账备忘.md) — 双流水统计（token/积分）架构、差分算法、实测验证、已知限制（R17）
 

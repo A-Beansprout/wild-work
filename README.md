@@ -1,6 +1,6 @@
 # wild-work
 
-> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、QoderCN、QoderCOM（国际版）、千问办公、MonkeyCode 平台托管模型、小浣熊、Loomy（讯飞）的多个账号聚合成一个 OpenAI 兼容 API，并额外提供**无需账号**的 OpenCodeZen 匿名免费通道，双击启动，浏览器管理。
+> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、QoderCN、QoderCOM（国际版）、千问办公、MonkeyCode 平台托管模型、小浣熊、Loomy（讯飞）、Cline（官方 API Key 免费池）的多个账号聚合成一个 OpenAI 兼容 API，并额外提供**无需账号**的 OpenCodeZen 匿名免费通道，双击启动，浏览器管理。
 
 [![GitHub](https://img.shields.io/badge/GitHub-rockswang%2Fworkbuddy--wild-blue)](https://github.com/rockswang/workbuddy-wild)
 
@@ -10,9 +10,10 @@
 - **请求体指纹脱敏**：自动清除 Claude Code / Codex CLI 注入的模板句，防止上游 11128 内容拦截
 - **OpenAI 兼容代理**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，模型前缀路由
 - **错误分类精细化**：区分「请求问题」与「账号问题」——内容拦截/上下文超限不罚号，限流/风控/账号故障分级冷却，429 不再误判余额耗尽；**单账号渠道（OpenCodeZen）例外：任何错误均不冷却**（无号可轮换，惩罚即等于整渠道下线）
-- **十一渠道聚合**：WorkBuddyCN(CodeBuddy) + WorkBuddyAI（国际版） + TraeWork + TraeCode + QoderCN + QoderCOM（国际版） + 千问办公 + MonkeyCode（`monkeycode/*`，平台托管模型） + 小浣熊（`raccoon/*`） + Loomy（讯飞，`loomy/*`） + OpenCodeZen（`oczen/*`，匿名免费、无需账号），模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；旧 Qoder（`qoder/*`）路由保留但已从界面下线
+- **十二渠道聚合**：WorkBuddyCN(CodeBuddy) + WorkBuddyAI（国际版） + TraeWork + TraeCode + QoderCN + QoderCOM（国际版） + 千问办公 + MonkeyCode（`monkeycode/*`，平台托管模型） + 小浣熊（`raccoon/*`） + Loomy（讯飞，`loomy/*`） + Cline（`cline/*`，粘贴官方 API Key，只调度免费模型） + OpenCodeZen（`oczen/*`，匿名免费、无需账号），模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；旧 Qoder（`qoder/*`）路由保留但已从界面下线
   小浣熊支持两条添加路径：面板登录按钮走**网页版自动登录**（拉起独立 profile 的浏览器，登录后经 CDP 捕获凭据，跨平台），弹窗里的次按钮「从客户端导入」则复用本机客户端凭据。
   Loomy 为**导入型**渠道（凭据不由本工具登录产生，从**本机已登录的官方客户端**读取；上游无 refresh 端点，session 约 14 天，到期需重新导入）。
+- **Cline 免费池**（`cline/*`）：粘贴官方 `sk_` API Key 即用（`app.cline.bot` 自行注册并创建，Key 不过期、不轮换、不与浏览器/客户端互踢）；本渠道**只调度免费模型**，多把 Key 须来自**多个独立账号**（官方额度按账号计，同账号多 Key 共享一份额度，面板会自动识别并提示）
 - **匿名免费通道**（OpenCodeZen）：内置 `public` 凭证即可调用 Zen 上的免费模型（含 `big-pickle`），无需注册/登录；面板固定一个 `[OpenCodeZen] 匿名` 条目（不可增删停用、无签到、积分显示「不适用」）
 - **自动签到**：每日定时签到领额度（Qoder 双区含 10:00–12:00 窗口重试，避免上游活动延迟导致漏领），token 保活，冷却状态机
 - **自动领日活奖励**（WorkBuddy 国际版）：定时自动用免费模型对话保活，自动领取每日活跃奖励，无需手动签到
@@ -69,7 +70,7 @@
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「+ WorkBuddyCN」/「+ WorkBuddyAI」/「+ TraeWork」/「+ QoderCN」/「+ QoderCOM」/「+ 千问办公」添加账号
-   （OpenCodeZen 无需添加账号，启动即已就绪）
+   （OpenCodeZen 无需添加账号，启动即已就绪；Cline 无需登录流程，直接粘贴 API Key）
 5. 根据下方配置说明接入你的 AI 客户端
 
 ### 托盘菜单
@@ -193,6 +194,38 @@ API Key:  WildWorkAPI
 ```
 
 模型 ID 需带渠道前缀：`workbuddy/<model>`、`workbuddyai/<model>`、`traework/<model>`、`traecode/<model>`、`qodercn/<model>`、`qodercom/<model>`、`qwenwork/<model>`、`monkeycode/<model>`、`raccoon/<model>`、`loomy/<model>`、`oczen/<model>`（旧 `qoder/<model>` 仍可用，已从界面下线）。
+
+#### Cline 免费池（`cline/*`）
+
+粘贴官方 **API Key** 即用，无需在本机安装任何 Cline 客户端：
+
+1. 打开 <https://app.cline.bot/> 自行注册 Cline 账号；
+2. `Settings` → `API Keys` → 创建 Key（用途选 Direct API calls / scripts / CI-CD）；
+   Key 形如 `sk_` + 64 位十六进制，**只在创建时完整显示一次**；
+3. 面板「账号管理」→「＋ Cline」→ 粘贴 Key → 添加。
+
+```bash
+curl http://127.0.0.1:7863/v1/chat/completions \
+  -H "Authorization: Bearer WildWorkAPI" -H "Content-Type: application/json" \
+  -d '{"model":"cline/stepfun/step-5-preview","messages":[{"role":"user","content":"你好"}]}'
+```
+
+- 可用模型：`cline/stepfun/step-5-preview`、`cline/xiaomi/mimo-v2.6-flash`、
+  `cline/meta/muse-spark-1.3-contributor`，另有 Cline 官方免费池动态下发的条目；
+  完整清单见 `/v1/models` 中 `cline/` 开头的条目。
+- **必须使用多个独立 Cline 账号各自的 Key**：官方免费额度按**账号**计
+  （其权益字段名为 `…UsageCostUSDPerUser`），**同一账号建多把 Key 共享一份额度，不会翻倍**。
+  面板在检测到新 Key 与已有账号同属一个 Cline 账号时会给出提示。
+- Key **不过期、不轮换**，也不会与浏览器 / 官方客户端互相挤下线（这是选 API Key 而不是
+  逆向 OAuth 登录的主要原因）。
+- 本渠道**只调度免费模型**：订阅池 `cline-pass` 与付费模型不在使用范围内
+  （请求它们会得到 `ENTITLEMENT_ERROR`）。上游无余额/额度查询接口，
+  因此积分显示「不适用」，实际花费见「用量与流水」（来自逐请求 `usage.cost`）。
+- 不做价格承诺：官方「free」标记与实际计价并不一致（实测同前缀有扣费、
+  非 free 后缀反倒 `cost=0`，且同一模型相邻两次请求计价可能漂移），
+  一切以实测 `usage.cost` 为准。
+- 免费池的上游限流（OpenRouter 侧 `limit_rpd` 日限 / 临时限流）属**共享出口**，
+  与你的账号数无关：本渠道对此只做模型级冷却，不会因此惩罚或轮换账号。
 
 #### OpenCodeZen 匿名免费模型（`oczen/*`）
 
@@ -338,10 +371,10 @@ curl -X POST "http://127.0.0.1:7863/v1/systemone" \
   - ⚠️ **关于小浣熊登录态互踢**：上游刷新时会轮换 refresh_token，若同一账号的凭据被本工具与浏览器 / 官方客户端**共用**，
   两边会争抢同一个 refresh_token，可能出现其中一侧被挤下线。要两边同时用，请用「网页版登录」在独立浏览器窗口里**单独登录一次**
   （本流程新建独立会话），而不是从浏览器复制凭据粘进来。
-  - ⚠️ **平台限制**：MonkeyCode / 小浣熊 / Loomy 的「从客户端导入」路径探测**跨平台**（用标准用户目录 / 环境变量定位客户端凭据，macOS / Linux 上客户端把配置写在标准位置即可命中，找不到则返回明确报错）。小浣熊的**网页版自动登录同样跨平台**（纯 HTTP + 系统 Edge/Chrome，不依赖注册表）；小浣熊 / Loomy 官方另有 macOS / Linux 客户端，MonkeyCode 客户端则仅发布过 Windows 版（其导入在非 Windows 仍会按上述口径尽力而为）。其余渠道（WorkBuddy 系 / Trae 系 / Qoder 系 / 千问办公 / 智谱清言）跨平台可用。
+  - ⚠️ **平台限制**：MonkeyCode / 小浣熊 / Loomy 的「从客户端导入」路径探测**跨平台**（用标准用户目录 / 环境变量定位客户端凭据，macOS / Linux 上客户端把配置写在标准位置即可命中，找不到则返回明确报错）。小浣熊的**网页版自动登录同样跨平台**（纯 HTTP + 系统 Edge/Chrome，不依赖注册表）；小浣熊 / Loomy 官方另有 macOS / Linux 客户端，MonkeyCode 客户端则仅发布过 Windows 版（其导入在非 Windows 仍会按上述口径尽力而为）。其余渠道（WorkBuddy 系 / Trae 系 / Qoder 系 / 千问办公 / 智谱清言 / Cline）跨平台可用（Cline 是纯 HTTP + 官方 API Key，不依赖本机客户端，天然跨平台）。
 - **账号管理**：卡片显示积分、签到状态（WorkBuddy 国际版显示「自动领日活奖励」）；图标按钮操作（签到 ✓ / 刷新 ↻ / 停用 ⏸ / 删除 ✕）
   - **修改显示名**：点击卡片上的账号名即可修改，用于给账号起好认的别名
-  - 账号按固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公 → MonkeyCode → 小浣熊 → Loomy
+  - 账号按固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公 → 智谱清言 → Cline → MonkeyCode → 小浣熊 → Loomy
   - 积分显示为「可用积分」；若该账号还有本工具用不了的额度（如 TraeWork 官方客户端专用池），会追加显示 `/ N 不可用`
 - **积分明细**：鼠标悬停积分数字显示套餐明细（含有效期与可用/不可用小计），条目多时用底部 `‹ ›` 翻页
 - **刷新积分**：面板顶部按钮，批量刷新全部账号余额

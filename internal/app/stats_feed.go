@@ -86,7 +86,7 @@ func (a *App) statsAccounts() []statsEngine.Account {
 			Reason:    s.Reason,
 			Disabled:  s.Disabled,
 			ErrCount:  s.ErrCount,
-			CreditsNA: group == provider.Oczen.String(),
+			CreditsNA: creditsNAKind(group),
 		})
 	}
 	return out

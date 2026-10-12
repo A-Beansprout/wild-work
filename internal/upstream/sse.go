@@ -490,6 +490,16 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 	return streamCore(w, r, hintFn, nil)
 }
 
+// StreamWith 同时需要两个钩子时的最小导出（既捕获上游 error 帧、又记末帧 usage）。
+// Stream / StreamCapture / StreamHint 各自只带一个钩子，而 cline 渠道两者都必需：
+// 它的失败形态是「HTTP 200 + 流内 error 帧 + 上游自己发 [DONE]」（R40 家族），
+// 不捕获 error 帧就会把失败伪装成空回答；不捕获 usage 就没法记 token 流水。
+// 仅转发 streamCore，无任何额外分支，与上述三个导出的行为完全一致。
+func StreamWith(w http.ResponseWriter, r io.Reader, hintFn func(string) string,
+	onUsage func(map[string]any)) error {
+	return streamCore(w, r, hintFn, onUsage)
+}
+
 func streamCore(w http.ResponseWriter, r io.Reader, hintFn func(string) string, onUsage func(map[string]any)) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
