@@ -271,6 +271,39 @@ func TestBuildFeesChannels(t *testing.T) {
 }
 
 // TestBuildFeesChannelsNoPricing 无费率数据时全部为 unknown，不应丢失模型。
+// TestFeeChannelOrderCoversAllKinds：费率面板的渠道清单必须覆盖**全部已实现渠道**。
+//
+// 为什么必须锁（2026-10-12 实测踩坑）：buildFeesChannels 只遍历 feeChannelOrder，
+// 没在表里的渠道**永远不会出现在面板**，而 /v1/models 与 CachedChannelModels 都有它
+// ⇒ 表现为「接口能调、模型列表里有、但费率面板没这个 tab」。cline 渠道接入时漏登此表，
+// 症状持续到手动排查才发现（与 R34「声明了没接线」同族：不报错、不崩溃、纯静默）。
+// 本测试直接以 provider.Kind 常量全集为准，新增渠道若不登记就会失败。
+//
+// 例外：旧 Qoder（QoderWork）已从界面下线（路由保留供存量账号用），故显式豁免。
+func TestFeeChannelOrderCoversAllKinds(t *testing.T) {
+	all := []provider.Kind{
+		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.TraeCode,
+		provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM,
+		provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Oczen, provider.Cline,
+		provider.Qoder, // 已下线，仅存量路由保留
+	}
+	inOrder := map[provider.Kind]bool{}
+	for _, k := range feeChannelOrder {
+		inOrder[k] = true
+	}
+	for _, k := range all {
+		if k == provider.Qoder {
+			continue // 旧 Qoder 已下线，不应出现在面板
+		}
+		if !inOrder[k] {
+			t.Errorf("渠道 %s 未登记进 feeChannelOrder ⇒ 费率面板不会出现该渠道 tab", k)
+		}
+	}
+	if inOrder[provider.Qoder] {
+		t.Error("旧 Qoder 已从界面下线，不应再登记进 feeChannelOrder")
+	}
+}
+
 func TestBuildFeesChannelsNoPricing(t *testing.T) {
 	models := map[provider.Kind][]provider.ModelInfo{
 		provider.TraeWork: {{ID: "glm-5.2"}, {ID: "kimi-k2.7"}},

@@ -309,6 +309,7 @@ var channelOrder = map[provider.Kind]int{
 var feeChannelOrder = []provider.Kind{
 	provider.Oczen, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN,
 	provider.QoderCOM, provider.TraeWork, provider.TraeCode, provider.QwenWork, provider.GLM,
+	provider.Cline, // 漏在此表 = 面板永远不出该渠道 tab（buildFeesChannels 只遍历本表）
 	provider.MonkeyCode,
 	provider.Raccoon,
 	provider.Loomy,
