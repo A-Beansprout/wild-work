@@ -304,6 +304,39 @@ func TestFeeChannelOrderCoversAllKinds(t *testing.T) {
 	}
 }
 
+// TestBuildFeesChannelsHandMeasured：本工具**手工实测**的上下文也要能在面板展示
+// （has_context=true），但必须同时带 hand_measured 标记让前端如实标注来源。
+//
+// 为什么单独一条：cline 这类渠道上游根本不返回上下文，若不把实测值放行，
+// 面板永远只显示「未知」（用户看不到实测的 1M）；但若直接置 ContextFromAPI=true
+// 就是把实测冒充成上游官方值（违反 R46/issue #40 的「不把缺失当结论」原则）。
+func TestBuildFeesChannelsHandMeasured(t *testing.T) {
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.Cline: {
+			{ID: "cline-free/step-5-preview", ContextWindow: 1_000_000, HandMeasured: true},
+			{ID: "cline-free/unknown-new", ContextWindow: 0}, // 无实测数据
+		},
+	}
+	got := buildFeesChannels(models, nil, []provider.Kind{provider.Cline})
+	if len(got) != 1 {
+		t.Fatalf("want 1 channel, got %d", len(got))
+	}
+	byID := map[string]feesModelRow{}
+	for _, r := range got[0].Models {
+		byID[r.Model] = r
+	}
+	step := byID["cline-free/step-5-preview"]
+	if !step.HasContext || step.ContextWindow != 1_000_000 {
+		t.Errorf("实测上下文应可展示（has_context=true, ctx=1M）：%+v", step)
+	}
+	if !step.HandMeasured {
+		t.Error("实测值必须带 hand_measured 标记，否则前端无从区分、会把它当上游官方值")
+	}
+	if newm := byID["cline-free/unknown-new"]; newm.HasContext || newm.HandMeasured {
+		t.Errorf("无实测数据的模型不得展示上下文：%+v", newm)
+	}
+}
+
 func TestBuildFeesChannelsNoPricing(t *testing.T) {
 	models := map[provider.Kind][]provider.ModelInfo{
 		provider.TraeWork: {{ID: "glm-5.2"}, {ID: "kimi-k2.7"}},

@@ -133,6 +133,16 @@ type ModelInfo struct {
 	// false 表示是硬编码估算/占位（如渠道不返回该字段），
 	// 消费方（面板/API）不应把估值当作真实容量展示。
 	ContextFromAPI bool
+	// HandMeasured 标记 ContextWindow/能力字段是**本工具手工实测**得出的（非上游下发、
+	// 也非拍脑袋估算）。首例：cline 的 `measuredCaps` —— 上游 recommended-models
+	// 完全不返回上下文/能力字段，只能逐个实测（三暗号回忆验证排除静默截断）。
+	//
+	// 与 ContextFromAPI 的关系：两者互斥，同置时以 ContextFromAPI 为准。
+	// 为什么单独一个标志而不是直接置 ContextFromAPI=true：口径不同——
+	// 实测值不是「上游声明」，面板展示时必须能如实标注来源（否则就是把实测
+	// 冒充成官方值，违反 R46/issue #40 的「不把缺失信息当成确定结论」原则）。
+	// 消费方约定：has_context = ContextFromAPI || HandMeasured。
+	HandMeasured bool
 	// 以下能力字段均为「已确认为 true」才置 true；数据缺失时保持 false（未知）。
 	// 未知与「明确不支持」在语义上不同，但对消费方（/v1/models 声明、UI 图标）
 	// 的处理一致：不声明该能力。需要区分时由各渠道自行记录来源。

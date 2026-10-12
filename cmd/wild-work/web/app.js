@@ -164,7 +164,8 @@ function renderModelSearch(q) {
   } else {
     box.innerHTML = shown.map(({ ch, m, short, full }) => {
       const caps = [m.supports_images ? "👁" : "", m.supports_reasoning ? "🧠" : ""].join("");
-      const ctx = (m.has_context && m.context_window) ? `(${fmtTokens(m.context_window)})` : "";
+      const ctx = (m.has_context && m.context_window)
+        ? `<span title="上下文窗口：${esc(fmtTokens(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokens(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
       const rate = m.free ? "Free" : (m.priced ? `x${m.rate.toFixed(2)}` : "unknown");
       return `<div class="ms-row" data-mid="${esc(full)}" role="button" tabindex="0" title="点击复制完整模型 ID：${esc(full)}">`
         + `<span class="badge ${chClass(ch)}">${esc(chLabel(ch))}</span>`
@@ -740,15 +741,18 @@ function renderFees(fees) {
   };
 
   // 上下文标记：模型 ID 后的 (1M)/(180K) 小字标。
-  // 只在上游接口真实返回时展示（has_context），不拿估算值充数。
+  // has_context = 上游接口真实返回或本工具手工实测；实测值加 * 且在 tooltip 标注来源，
+  // 既不冒充上游官方值，也不埋没它（cline 这类渠道上游根本不返回上下文）。
   const ctxTag = (m) => {
     if (!m || !m.has_context || !m.context_window) return "";
-    return ` <span class="ctx-tag" title="上下文窗口：${fmtTokens(m.context_window)} tokens">(${fmtTokens(m.context_window)})</span>`;
+    const hand = m.hand_measured ? "*" : "";
+    const src = m.hand_measured ? "本工具实测值（仅供参考，非上游官方声明）" : "上游接口返回";
+    return ` <span class="ctx-tag${m.hand_measured ? " hand" : ""}" title="上下文窗口：${fmtTokens(m.context_window)} tokens（${src}）">(${fmtTokens(m.context_window)}${hand})</span>`;
   };
 
   // 能力文字摘要，拼进模型 tooltip。
   // 措辞说明：上游模型列表接口未声明某能力时，本工具不自行断言其「不支持」，
-  // 只说「未声明」——避免把缺失信息当成否定结论。
+  // 只说「未声明」；hand_measured（本工具实测）时改说「实测不支持」，如实标出来源。
   const capText = (m) => {
     if (!m) return null;
     const yes = [], unknown = [];
@@ -756,7 +760,8 @@ function renderFees(fees) {
     (m.supports_reasoning ? yes : unknown).push("思考模式");
     const parts = [];
     if (yes.length) parts.push(`支持：${yes.join("、")}`);
-    if (unknown.length) parts.push(`上游未声明：${unknown.join("、")}`);
+    if (unknown.length) parts.push(`${m.hand_measured ? "实测不支持" : "上游未声明"}：${unknown.join("、")}`);
+    if (m.hand_measured) parts.push("（上下文与能力为本工具实测值，仅供参考）");
     return parts.join("；");
   };
 
@@ -764,7 +769,8 @@ function renderFees(fees) {
   const modelTip = (m) => {
     const parts = [`模型：${m.model}`];
     if (m.has_context && m.context_window) {
-      parts.push(`上下文窗口：${fmtTokens(m.context_window)}`);
+      const src = m.hand_measured ? "（本工具实测，非上游官方值）" : "";
+      parts.push(`上下文窗口：${fmtTokens(m.context_window)}${src}`);
       if (m.max_tokens) parts.push(`最大输出：${fmtTokens(m.max_tokens)}`);
     } else {
       parts.push("上下文窗口：未知");

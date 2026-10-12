@@ -2709,11 +2709,14 @@ type feesModelRow struct {
 	Note   string  `json:"note,omitempty"` // 促销/标签说明（已剔除颜色）
 	// Color 为促销标签颜色（形如 "#FF0000"），无则空。
 	Color string `json:"color,omitempty"`
-	// HasContext 标记该模型的上下文窗口/最大输出是否来自上游接口。
-	// false 表示无可靠数据（硬编码估算或上游不返回），前端提示「未知」而非展示数字。
+	// HasContext 标记该模型的上下文窗口/最大输出是否可展示：
+	// 上游接口真实返回（ContextFromAPI）或本工具手工实测（HandMeasured）均置 true。
+	// false 表示无可靠数据（硬编码估算或上游不返回且未实测），前端提示「未知」。
 	HasContext    bool  `json:"has_context"`
 	ContextWindow int64 `json:"context_window,omitempty"`
 	MaxTokens     int64 `json:"max_tokens,omitempty"`
+	// HandMeasured 标记上述上下文值是**本工具实测**（非上游声明），前端据此加「实测」标注。
+	HandMeasured bool `json:"hand_measured,omitempty"`
 	// 能力标记（与 /v1/models 同源），供 UI 在模型 ID 后展示图标。
 	SupportsImages    bool `json:"supports_images"`
 	SupportsReasoning bool `json:"supports_reasoning"`
@@ -2755,7 +2758,10 @@ func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
 				ContextWindow: mi.ContextWindow,
 				MaxTokens:     mi.MaxTokens,
 				// 仅上游接口返回的上下文可信；硬编码估算值不展示数字。
-				HasContext: mi.ContextFromAPI,
+				// 上游声明（API）或本工具手工实测均视为「有上下文可展示」；
+				// 前端据 hand_measured 区分并加「实测」标注，不把实测冒充成官方值。
+				HasContext:   mi.ContextFromAPI || mi.HandMeasured,
+				HandMeasured: mi.HandMeasured,
 				// 能力标记与 /v1/models 同源，保证 UI 图标与接口声明一致。
 				SupportsImages:    mi.SupportsImages,
 				SupportsReasoning: mi.SupportsReasoning,

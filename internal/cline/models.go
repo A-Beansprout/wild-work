@@ -77,13 +77,14 @@ var measuredCaps = map[string]measuredCap{
 }
 
 // modelInfoOf 组装单条模型信息：基础字段来自上游 free[]，上下文/能力来自实测表（若有）。
-// ContextFromAPI 保持 false：这些值确实不来自上游接口，不能冒充「上游声明」
-// （费率面板据此不把估值当真实容量展示，而 /v1/models 仍会带上，供客户端判断压缩时机）。
+// ContextFromAPI 保持 false：这些值确实不来自上游接口；另置 HandMeasured=true 如实标注
+// 来源（面板据此展示数字并标注「实测」，/v1/models 也照常带上，供客户端判断压缩时机）。
 func modelInfoOf(id, name string) provider.ModelInfo {
 	mi := provider.ModelInfo{ID: id, Name: name}
 	if c, ok := measuredCaps[id]; ok {
 		mi.ContextWindow = c.ctx
 		mi.SupportsImages = c.images
+		mi.HandMeasured = true
 	}
 	return mi
 }
