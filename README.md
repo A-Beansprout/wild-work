@@ -199,8 +199,8 @@ API Key:  WildWorkAPI
 
 粘贴官方 **API Key** 即用，无需在本机安装任何 Cline 客户端：
 
-1. 打开 <https://app.cline.bot/> 自行注册 Cline 账号；
-2. `Settings` → `API Keys` → 创建 Key（用途选 Direct API calls / scripts / CI-CD）；
+1. 打开 <https://app.cline.bot/> 并注册 Cline 账号；
+2. `Account / API Keys` → `Create API Key`；
    Key 形如 `sk_` + 64 位十六进制，**只在创建时完整显示一次**；
 3. 面板「账号管理」→「＋ Cline」→ 粘贴 Key → 添加。
 

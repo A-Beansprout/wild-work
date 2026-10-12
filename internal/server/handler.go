@@ -769,7 +769,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 被禁用只会是「Key 无效/已被删除」，唯一补救是换一把有数 Key 粘进来。
 		// 照搬「需重新登录」会把用户引到一个不存在的入口（R41 同族的文案误导）。
 		if keyPasteChannel(rt.Kind) {
-			hint = fmt.Sprintf("请在面板粘贴一把有效的 %s API Key（sk_…，在 app.cline.bot → Settings → API Keys 创建）", rt.Kind)
+			hint = fmt.Sprintf("请在面板粘贴一把有效的 %s API Key（sk_…，在 app.cline.bot → Account / API Keys 创建）", rt.Kind)
 		}
 		// 多数是限流冷却而非登录态问题：给出最早解冻时间，重登提示仅在无任何冷却时兜底。
 		if cooling > 0 && !earliest.IsZero() {

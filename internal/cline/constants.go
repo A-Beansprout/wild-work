@@ -1,7 +1,7 @@
 // Package cline 是 Cline（api.cline.bot）渠道的**免费模型池**上游实现。
 //
 // 凭据：官方文档化的 **API Key**（`sk_` + 64 hex），在 https://app.cline.bot/ →
-// Settings → API Keys 创建（创建时只显示一次）。**不走** WorkOS device-code OAuth ——
+// 注册账号 → Account / API Keys → Create API Key 创建（创建时只显示一次）。**不走** WorkOS device-code OAuth ——
 // 后者需要弹浏览器、refresh token 会轮换、同凭据多处使用会互踢（对照 R26/R44），
 // 而 Key 不轮换 ⇒ 本渠道没有 RefreshToken，也没有任何保活/签到需求。
 //

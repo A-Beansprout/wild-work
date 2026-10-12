@@ -238,7 +238,7 @@ func ValidateKey(key string) (*ProbeResult, error) { return New().probeKey(key) 
 func (c *Client) probeKey(key string) (*ProbeResult, error) {
 	key = strings.TrimSpace(key)
 	if !strings.HasPrefix(key, "sk_") {
-		return nil, fmt.Errorf("Cline API Key 应以 sk_ 开头（在 app.cline.bot → Settings → API Keys 创建）")
+		return nil, fmt.Errorf("Cline API Key 应以 sk_ 开头（在 app.cline.bot → Account / API Keys 创建）")
 	}
 	req, err := http.NewRequest(http.MethodGet, c.base()+EpAPIKeys, nil)
 	if err != nil {

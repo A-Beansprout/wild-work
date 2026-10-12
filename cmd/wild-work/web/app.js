@@ -441,7 +441,7 @@ const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 const WEB_LOGIN_CHANNELS = new Set(["raccoon"]);
 const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
 // 粘贴凭据型渠道：没有浏览器登录编排，凭据由用户从官方站点自行创建后粘贴进来。
-// Cline：app.cline.bot → Settings → API Keys 建 sk_ Key（见 internal/cline）。
+// Cline：app.cline.bot → 注册账号 → Account / API Keys 建 sk_ Key（见 internal/cline）。
 const PASTE_KEY_CHANNELS = new Set(["cline"]);
 const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
@@ -989,7 +989,7 @@ const NO_CHECKIN_LOGIN_HINT = {
   raccoon: "（支持「网页版登录」与「从客户端导入」两种方式；access_token 约 1 小时，本工具会自动续期，上游刷新时会轮换 refresh_token）",
   loomy: "（凭据来自本机已登录的 Loomy 客户端；上游无续期接口，约 14 天后需重新登录并再次导入）",
   glm: "（登录后请按下方指引复制 refresh_token 粘贴回来）",
-  cline: "（无需登录：在 app.cline.bot 自行注册账号并创建 API Key，粘贴即可；Key 不过期也不轮换）",
+  cline: "（无需登录：在 app.cline.bot 注册账号，Account / API Keys → Create API Key 后粘贴即可；Key 不过期也不轮换）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
