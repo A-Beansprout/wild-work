@@ -75,10 +75,9 @@ body {
   gap: 8px 10px;
 }
 .pa-right .btn { justify-self: stretch; white-space: nowrap; }
-/* 奇数个渠道时末位按钮横跨两列：11 个渠道在 6 列下 = 6+5，末位跨两列恰好补齐第二行右缘
-   （否则第二行只有 5 个、右侧留一个空位）。列数改动时自退：偶数个（如 12 个）时
-   :nth-child(odd) 不命中末位，自然变成 6+6，无需改样式。 */
-.pa-right .btn:nth-child(odd):last-child { grid-column: span 2; }
+/* 摆位与列配对由 DOM 顺序（行主序）决定：同列上下 = 同渠道的国内/国际版
+   （WorkBuddyCN/WorkBuddyAI、QoderCN/QoderCOM），Cline 占第一行末位、
+   第二行第 6 列留空（见 index.html 内注释与 ui-static-check 的顺序断言）。 */
 /* 紧凑档：比标准按钮小两号（14px/8px14px → 12px/6px10px），
    PC 默认宽度下一行能放下 6 个渠道按钮（实测阈值见下方媒体查询注释）。 */
 .panel-actions-wrap .btn { font-size: 12px; padding: 6px 10px; }
@@ -988,8 +987,6 @@ body {
   .pa-left { flex-direction: row; flex-wrap: wrap; }
   .pa-right { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); width: 100%; }
   .pa-right .btn { justify-self: stretch; padding: 8px 10px; }
-  /* 窄屏列数由视口决定，末位跨两列的补齐规则交给 auto-fit 自行处理 */
-  .pa-right .btn:nth-child(odd):last-child { grid-column: auto; }
 }
 
 /* 2) 顶栏接口信息：≤479px 单列。两列时 1fr 的 min-content 下界仍会撑破

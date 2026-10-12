@@ -358,8 +358,8 @@ for (const [label, re] of uniq) {
     // 响应式：断点是按实测溢出阈值卡位的，调宽会破坏桌面端逐像素一致性，调窄则手机仍溢出。
     ["渠道按钮基础为 6 列（PC 默认宽度 6+5 两行，消除第三行孤行）", css.includes("repeat(6, auto)")],
     ["渠道按钮摆位全归 CSS（index.html 不再内联 grid-column，否则窄屏无法重排）", !/btnAdd\w+" style="grid-column/.test(html)],
-    ["奇数个渠道时末位跨两列补齐第二行右缘（偶数个时自动不触发）",
-      /\.pa-right \.btn:nth-child\(odd\):last-child \{ grid-column: span 2; \}/.test(css)],
+    ["渠道按钮 DOM 顺序 = 列配对（同列上下 = 同渠道国内/国际版；Cline 占第一行末位）",
+      /btnAddWB\b[\s\S]*?btnAddQoderCN\b[\s\S]*?btnAddTrae\b[\s\S]*?btnAddMonkeyCode\b[\s\S]*?btnAddLoomy\b[\s\S]*?btnAddCline\b[\s\S]*?btnAddWBAI\b[\s\S]*?btnAddQoderCOM\b[\s\S]*?btnAddQwen\b[\s\S]*?btnAddRaccoon\b[\s\S]*?btnAddGLM\b/.test(html)],
     ["窄屏渠道按钮自适应列（auto-fit，118px 可在 320px 竖屏排出两列）", css.includes("repeat(auto-fit, minmax(118px, 1fr))")],
     ["按钮紧凑档字号（12px，PC 一行放下 6 个）", /\.panel-actions-wrap \.btn \{ font-size: 12px;/.test(css)],
     ["顶栏 1fr 下界解除（minmax(0,1fr)）", /\.top-info \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)],
