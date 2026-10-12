@@ -6,8 +6,8 @@
 // 而 Key 不轮换 ⇒ 本渠道没有 RefreshToken，也没有任何保活/签到需求。
 //
 // 渠道定位（决议 R46）：多账号 Key 池 + 免费额度调度器 + 反代。
-// 模型面只取 Cline 官方「免费池」（recommended-models 的 free 数组），
-// 不收公开 458 目录里的 OpenRouter `:free` 长尾（小众、无人使用）。
+// 模型面**不做任何本地假设**：绑死上游 recommended-models 的 free 数组原样透传
+// （ID 不改写、不过滤、无静态表、无本地配置）。
 //
 // 四个必须知道的实测事实（2026-10-10，逐项对照实验，详见 docs/cline渠道接入计划.md）：
 //  1. **`X-CLIENT-TYPE` 头必须非空**，否则所有 `cline-free/*` 别名一律 403
@@ -36,8 +36,7 @@ const Kind = provider.Cline
 const (
 	APIBase        = "https://api.cline.bot/api/v1"
 	EpChat         = "/chat/completions"
-	EpModels       = "/models"
-	EpRecommends   = "/ai/cline/recommended-models" // 返回 recommended/free/clinePass/clineCloud 四组
+	EpRecommends   = "/ai/cline/recommended-models" // 返回 recommended/free/clinePass/clineCloud 四组；free[] 是模型面唯一来源
 	EpAPIKeys      = "/api-keys"                    // 返回本账号全部 Key（uid 与同账号判定的来源）
 	EpPlans        = "/plans"                       // 权益目录（含 inferenceCapThreshold 结构）
 	defaultBaseURL = APIBase
@@ -74,10 +73,9 @@ func FarFutureExpiry() int64 { return time.Now().AddDate(80, 0, 0).Unix() }
 // freePrefix 是 Cline 自有免费命名空间；passPrefix/cloudPrefix 属订阅/云池，本渠道**不使用**
 // （cline-pass 需要订阅，实测加头也无效：ENTITLEMENT_ERROR）。
 const (
-	freePrefix       = "cline-free/"
-	passPrefix       = "cline-pass/"
-	cloudPrefix      = "cline-cloud/"
-	openaiFreeSuffix = ":free" // OpenRouter 约定，公开目录里的长尾免费档
+	freePrefix  = "cline-free/"
+	passPrefix  = "cline-pass/"
+	cloudPrefix = "cline-cloud/"
 )
 
 // routePrefix 判据：response.id 前缀 ⇒ 该请求实际走的是哪条链。

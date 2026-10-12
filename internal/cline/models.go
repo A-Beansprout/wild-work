@@ -12,74 +12,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 硬编码免费池（决议 R46：先上线公测，后续按反馈调整这张表）
+// 动态目录（唯一来源）
 // ---------------------------------------------------------------------------
 
-// staticFreeModels 是本渠道默认暴露的免费模型。一律用**厂商真实名**而非 `cline-free/` 别名，
-// 四条实测依据（见包注释第 4 点与 docs/cline渠道接入计划.md §3.2）：
-//  1. 真实名不依赖 X-CLIENT-TYPE 头（别名缺该头即全量 403）；
-//  2. `stepfun/step-5-preview`、`meta/muse-spark-1.3-contributor` 走 **Cline 自有网关**（gen_ 前缀），
-//     配额键名是 `…UsageCostUSDPerUser` ⇒ 多账号轮换才可能有意义；别名一律被甩给 OpenRouter；
-//  3. 网关路径带 provider_metadata（marketCost/routing/fallbacksAvailable）⇒ ledger 拿得到单价；
-//  4. 真实名本身就在公开目录里，符合 R42「静态 ∪ 动态」。
-//
-// 注意 `meta/muse-spark-1.3-contributor` 实测**会扣费**（7.12e-05~8.98e-05，且同 ID 曾出现 cost=0
-// ⇒ 计价逐请求抽签）。保留是用户的明确决定（公测期自行验证），兜底靠模型级冷却与运行期 cost 观测。
-var staticFreeModels = []provider.ModelInfo{
-	{ID: "stepfun/step-5-preview", Name: "Step 5 Preview (Free)"},
-	{ID: "xiaomi/mimo-v2.6-flash", Name: "MiMo V2.6 Flash (Free)"},
-	{ID: "meta/muse-spark-1.3-contributor", Name: "Muse Spark 1.3 Contributor (Free)"},
-}
-
-// StaticModels 实现 server.StaticModels 注入点。
-// ContextWindow/MaxTokens **留 0**：上游 recommended-models 与 /models 都不返回元数据，
-// 不得填猜测值 —— 面板按 0 隐藏该列（与不变量 18「不得用零值时间冒充永不过期」同一纪律）。
-func StaticModels() []provider.ModelInfo {
-	return append([]provider.ModelInfo{}, staticFreeModels...)
-}
-
-// KnownModel 静态表成员判定。
-func KnownModel(id string) bool {
-	id = strings.TrimSpace(id)
-	for _, m := range staticFreeModels {
-		if m.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// freePrefixes 是 Cline 自有路由前缀（参照 cline2api 的 clineModelPrefixes 思路）：
-// 查表/去重前必须先剥掉，否则 `cline-free/step-5-preview` 与 `stepfun/step-5-preview`
-// 会被当成两个不同模型同时出现在列表里。与 R33（glm 的 `:moe_53f` 后缀剥离）同族问题。
-var freePrefixes = []string{freePrefix, passPrefix, cloudPrefix}
-
-// baseName 去掉路由前缀与 OpenRouter 的 `:free` 后缀，得到可比较的基名。
-// `cline-free/step-5-preview` / `stepfun/step-5-preview` → `step-5-preview`
-// `cohere/north-mini-code:free` → `north-mini-code`
-func baseName(id string) string {
-	s := strings.TrimSpace(id)
-	for _, p := range freePrefixes {
-		if strings.HasPrefix(s, p) {
-			s = strings.TrimPrefix(s, p)
-			break
-		}
-	}
-	s = strings.TrimSuffix(s, openaiFreeSuffix)
-	if i := strings.LastIndex(s, "/"); i >= 0 {
-		s = s[i+1:]
-	}
-	return strings.ToLower(s)
-}
-
-// isClineFree 报告 ID 是否属于 Cline 自有免费池（别名空间）。
-// 公开 458 目录里的 `x/y:free` 是 OpenRouter 长尾免费档，**按裁定不暴露**（A 组小众）。
-func isClineFree(id string) bool { return strings.HasPrefix(strings.TrimSpace(id), freePrefix) }
-
-// ---------------------------------------------------------------------------
-// 动态目录
-// ---------------------------------------------------------------------------
-
+// remoteModel 是 recommended-models 数组元素的形状。
 type remoteModel struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -94,93 +30,62 @@ type recommendResp struct {
 	ClineCloud  []remoteModel `json:"clineCloud"`
 }
 
-// modelsEnvelope 是 /api/v1/models 的信封。实测它是 **OpenRouter 目录的镜像**
-// （里面就有 openrouter/auto、openrouter/free 这些 OpenRouter 元模型），
-// 且**无需鉴权**。本渠道只用它来**放宽校验**，不用它决定暴露清单。
-type modelsEnvelope struct {
-	Object string `json:"object"`
-	Data   []struct {
-		ID      string `json:"id"`
-		OwnedBy string `json:"owned_by"`
-	} `json:"data"`
-}
+// StaticModels 恒 nil：本渠道**不做任何本地假设**（无静态表、无映射、无过滤）。
+// 模型面完全由上游 recommended-models 的 free 数组决定，原样透传。
+// 兜底语义见 handler.CachedChannelModels —— 缓存优先于静态表，空表不会让渠道分组消失
+// （与 qodercn/qodercom 同款先例）。
+func StaticModels() []provider.ModelInfo { return nil }
 
-// FetchModels 返回「暴露集」= 静态表 ∪ recommended-models 的 free 数组（按基名去重）。
+// FetchModels 返回暴露集 = recommended-models 的 free 数组**原样透传**：
+//  1. 不碰 /models（458 条 OpenRouter 镜像，对「免费池」定位无信息量）；
+//  2. ID 不改名不改前缀（free[] 本身就是 `cline-free/*` 别名空间）；
+//  3. 不按 tag/后缀过滤、不做基名去重 —— 上游给的什么就暴露什么；
+//  4. 仅做两条机械兜底：精确 ID 去重、name 缺失时 prettifyID 兜底；
+//  5. free[] 条目顺带记入 knownIDs（本地校验集 = 暴露集，构造即一致）。
 //
-// 同时把两个目录里见到的全部 ID 记进 liveIDs（**只增不减**），供本地校验放宽用 ——
-// R42 的教训：只查静态表会把上游新模型误拒成 model_not_found，而它正被 /v1/models 正常列出。
-// 撞过共享上限的模型从暴露集里摘除（见 markCapped），解冻后自动回归。
+// 撞共享上限的模型从暴露集摘除（markCapped），解冻后自动回归。
 func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
-	seen := map[string]bool{}
-	out := []provider.ModelInfo{}
-	add := func(mi provider.ModelInfo) {
-		b := baseName(mi.ID)
-		if b == "" || seen[b] || c.isCapped(mi.ID) || isClinePassLike(mi.ID) {
-			return
-		}
-		seen[b] = true
-		out = append(out, mi)
-	}
-
-	// 静态表**先入**：真实名与 `cline-free/` 别名同基名时必须保留真实名
-	//（前者走 Cline 自有网关、配额按账号计、不依赖 X-CLIENT-TYPE，后者走 OpenRouter 共享出口）。
-	// 此前先入动态目录会让别名抢占基名，导致硬编码的真实名被去重掉。
-	for _, s := range staticFreeModels {
-		add(s)
-	}
-
-	var live []string
-
-	// ① Cline 官方免费池（权威来源，会随官方调整 ⇒ 硬编码表不必频繁改代码）。
 	var rec recommendResp
-	if raw, err := c.getJSON(a, EpRecommends); err == nil && json.Unmarshal(raw, &rec) == nil {
-		for _, m := range rec.Free {
-			if strings.TrimSpace(m.ID) == "" {
-				continue
-			}
-			live = append(live, m.ID)
-			if isClineFree(m.ID) {
-				name := m.Name
-				if name == "" || name == m.ID {
-					name = prettifyID(m.ID)
-				}
-				add(provider.ModelInfo{ID: m.ID, Name: name})
+	raw, err := c.getJSON(a, EpRecommends)
+	if err == nil {
+		err = json.Unmarshal(raw, &rec)
+	}
+	if err != nil {
+		// 兜底：free[] 为空但缓存尚有内容 ⇒ 返回缓存（上游目录瞬时抖动不掏空面板）
+		c.knownMu.RLock()
+		cached := make([]provider.ModelInfo, 0, len(c.knownIDs))
+		for id := range c.knownIDs {
+			if !c.isCapped(id) {
+				cached = append(cached, provider.ModelInfo{ID: id, Name: c.nameOf(id)})
 			}
 		}
-	} else if err != nil {
-		// 拉不到不致命：静态表兜底（同 R42 的「无静态兜底」反面教训 —— 这里两者都有）。
-		c.rememberUnreachable(err)
-	}
-
-	// ② 公开目录：只用于放宽校验，不进入暴露集。
-	if raw, err := c.getJSON(a, EpModels); err == nil {
-		var me modelsEnvelope
-		if json.Unmarshal(raw, &me) == nil {
-			for _, m := range me.Data {
-				live = append(live, m.ID)
-			}
+		c.knownMu.RUnlock()
+		sort.Slice(cached, func(i, j int) bool { return cached[i].ID < cached[j].ID })
+		if len(cached) > 0 {
+			return cached, nil
 		}
+		return nil, fmt.Errorf("cline: 免费模型目录拉取失败: %w", err)
 	}
-	c.rememberLiveModels(live...)
 
-	// 静态表已在最前，动态部分按 ID 排序保证面板顺序稳定。
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	res := append(StaticModels()[:0:0], out...)
-	// 重算一次：静态表中被冷却/与动态重基名的已在 add 里处理，这里只保证顺序。
-	seen2 := map[string]bool{}
-	final := make([]provider.ModelInfo, 0, len(res))
-	for _, m := range res {
-		b := baseName(m.ID)
-		if seen2[b] {
+	seen := map[string]bool{}
+	out := make([]provider.ModelInfo, 0, len(rec.Free))
+	live := make([]string, 0, len(rec.Free))
+	for _, m := range rec.Free {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] || c.isCapped(id) {
 			continue
 		}
-		seen2[b] = true
-		final = append(final, m)
+		seen[id] = true
+		live = append(live, id)
+		name := m.Name
+		if name == "" || name == id {
+			name = prettifyID(id)
+		}
+		out = append(out, provider.ModelInfo{ID: id, Name: name})
+		c.rememberLiveModel(id, name)
 	}
-	if len(final) == 0 {
-		return nil, fmt.Errorf("cline: 免费模型目录为空（静态表与动态目录都拿不到）")
-	}
-	return final, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 // RouteOf 按上游响应 id 的形态判断该请求实际走了哪条链。
@@ -205,18 +110,9 @@ func RouteOf(responseID string) string {
 	}
 }
 
-// isClinePassLike 拦掉订阅池/云池 ID：它们不是本渠道场景，实测也是硬 403
-// （ENTITLEMENT_ERROR / "This request is not supported"），列出来只会制造无效请求。
-func isClinePassLike(id string) bool {
-	return strings.HasPrefix(id, passPrefix) || strings.HasPrefix(id, cloudPrefix)
-}
-
 // prettifyID 把 `cline-free/step-5-preview` 这类裸 ID 变成可读展示名。
 func prettifyID(id string) string {
-	s := id
-	for _, p := range freePrefixes {
-		s = strings.TrimPrefix(s, p)
-	}
+	s := strings.TrimPrefix(strings.TrimSpace(id), freePrefix)
 	s = strings.ReplaceAll(s, "-", " ")
 	if r := []rune(s); len(r) > 0 {
 		return strings.ToUpper(string(r[0])) + string(r[1:])
@@ -228,29 +124,35 @@ func prettifyID(id string) string {
 // 校验集与模型级冷却
 // ---------------------------------------------------------------------------
 
-// knownModel 本地校验集合 = 静态表 ∪ 动态目录见过的全部 ID（含公开 :free 长尾）。
-// **故意比暴露集宽**：列表保守（不淹没用户）、校验宽松（不误拒手工填的模型）。
+// knownModel 本地校验。**冷启动放行**：目录尚未成功拉取过（knownIDs 为空）时不拦截 ——
+// 若拦，daemon 重启后第一批请求会全部被本地 404（等于「渠道周期性瘫痪」），
+// 而放行的最坏结果只是让上游给出权威错误。目录拉取成功后校验集 == 暴露集 == free[]，构造即一致。
 func (c *Client) knownModel(id string) bool {
-	if KnownModel(id) {
+	c.knownMu.RLock()
+	defer c.knownMu.RUnlock()
+	if len(c.knownIDs) == 0 {
 		return true
 	}
-	c.liveMu.RLock()
-	ok := c.liveIDs[id]
-	c.liveMu.RUnlock()
+	_, ok := c.knownIDs[id]
 	return ok
 }
 
-func (c *Client) rememberLiveModels(ids ...string) {
-	c.liveMu.Lock()
-	defer c.liveMu.Unlock()
-	if c.liveIDs == nil {
-		c.liveIDs = map[string]bool{}
+// rememberLiveModel 把 free[] 条目记入已知集（ID → name，**替换式**更新）：
+// name 跟随上游目录同步，避免用缓存里的旧名。同时清掉同名冷却残迹由 isCapped 的过期清理负责。
+func (c *Client) rememberLiveModel(id, name string) {
+	c.knownMu.Lock()
+	defer c.knownMu.Unlock()
+	if c.knownIDs == nil {
+		c.knownIDs = map[string]string{}
 	}
-	for _, id := range ids {
-		if id = strings.TrimSpace(id); id != "" {
-			c.liveIDs[id] = true
-		}
+	c.knownIDs[id] = name
+}
+
+func (c *Client) nameOf(id string) string {
+	if n, ok := c.knownIDs[id]; ok && n != "" {
+		return n
 	}
+	return prettifyID(id)
 }
 
 // capCooldown 撞共享上限后的默认摘除时长：`limit_rpd` 是**日**上限，给 1 小时足够
@@ -259,6 +161,7 @@ func (c *Client) rememberLiveModels(ids ...string) {
 const capCooldown = time.Hour
 
 // markCapped 记录「该模型此刻拿不到」，FetchModels 期间从暴露集摘除。
+// 键为**精确 ID**：free[] 本身就是别名空间（没有「别名 vs 真实名」对），无需基名归一。
 func (c *Client) markCapped(model string, d time.Duration) {
 	if strings.TrimSpace(model) == "" {
 		return
@@ -268,11 +171,7 @@ func (c *Client) markCapped(model string, d time.Duration) {
 	if c.capped == nil {
 		c.capped = map[string]time.Time{}
 	}
-	// 同基名一并标记：别名与真实名是同一个底层模型，只标一个会漏。
-	b := baseName(model)
-	for _, s := range []string{model, b} {
-		c.capped[s] = time.Now().Add(d)
-	}
+	c.capped[model] = time.Now().Add(d)
 	for k, t := range c.capped {
 		if time.Now().After(t) {
 			delete(c.capped, k)
@@ -280,20 +179,10 @@ func (c *Client) markCapped(model string, d time.Duration) {
 	}
 }
 
-// isCapped 按 ID 或基名判定。
+// isCapped 按精确 ID 判定。
 func (c *Client) isCapped(model string) bool {
-	b := baseName(model)
 	c.capMu.RLock()
 	defer c.capMu.RUnlock()
-	now := time.Now()
-	for _, s := range []string{model, b} {
-		if t, ok := c.capped[s]; ok && now.Before(t) {
-			return true
-		}
-	}
-	return false
+	t, ok := c.capped[model]
+	return ok && time.Now().Before(t)
 }
-
-func (c *Client) rememberUnreachable(err error) { c.lastErr = err }
-
-// liveBaseRe 兜底：从任意形态 ID 提基名做比较（已被 baseName 覆盖，保留给未来形态）。

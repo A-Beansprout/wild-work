@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,14 +179,14 @@ func TestStreamRealErrorFrameReturnsError(t *testing.T) {
 func TestStreamMarksCappedModel(t *testing.T) {
 	c := New()
 	rec := httptest.NewRecorder()
-	_, err := c.Stream(rec, strings.NewReader(capFrameDaily), "stepfun/step-5-preview")
+	_, err := c.Stream(rec, strings.NewReader(capFrameDaily), "cline-free/step-5-preview")
 	if err == nil {
 		t.Fatal("期望返回 error")
 	}
-	if !c.isCapped("stepfun/step-5-preview") {
+	if !c.isCapped("cline-free/step-5-preview") {
 		t.Error("该模型应被标记为暂时不可用（期间从 /v1/models 摘除）")
 	}
-	if c.isCapped("xiaomi/mimo-v2.6-flash") {
+	if c.isCapped("cline-free/mimo-v2.6-flash") {
 		t.Error("不得波及其他模型")
 	}
 }
@@ -258,7 +259,7 @@ func TestChatStreamAlwaysSendsClientTypeHeader(t *testing.T) {
 	c.Base = srv.URL
 	a := &auth.Auth{Kind: "cline", AccessToken: "sk_testkey", ExpiresAt: FarFutureExpiry()}
 	_, status, _, err := c.ChatStream(a,
-		[]byte(`{"model":"stepfun/step-5-preview","stream":true,"messages":[]}`))
+		[]byte(`{"model":"cline-free/step-5-preview","stream":true,"messages":[]}`))
 	if err != nil || status != 200 {
 		t.Fatalf("假上游应通：status=%d err=%v", status, err)
 	}
@@ -296,8 +297,10 @@ func TestClampMaxTokens(t *testing.T) {
 	}
 }
 
-// TestChatStreamRejectsUnknownModelLocally：本地校验集刻意宽松，但完全未知的名字要挡住。
-func TestChatStreamRejectsUnknownModelLocally(t *testing.T) {
+// TestChatStreamAcceptsBeforeCatalog：冷启动（目录未拉到）时本地校验放行，请求直达上游。
+// 若拦，daemon 重启后第一批请求会被本地 404 ⇒ 渠道「周期性瘫痪」；放行的最坏结果
+// 只是让上游给出权威错误，故 fail-open。
+func TestChatStreamAcceptsBeforeCatalog(t *testing.T) {
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -306,15 +309,46 @@ func TestChatStreamRejectsUnknownModelLocally(t *testing.T) {
 	defer srv.Close()
 	c := New()
 	c.Base = srv.URL
-	_, status, body, _ := c.ChatStream(&auth.Auth{Kind: "cline", AccessToken: "sk_x"},
+	_, status, _, err := c.ChatStream(&auth.Auth{Kind: "cline", AccessToken: "sk_x"},
 		[]byte(`{"model":"totally/unknown-model","stream":true,"messages":[]}`))
-	if status != http.StatusNotFound || hits != 0 {
-		t.Errorf("未知模型应本地 404 且不打上游，实得 status=%d hits=%d body=%.100s", status, hits, body)
+	if err != nil || status != 200 || hits != 1 {
+		t.Errorf("冷启动应放行并直达上游，实得 status=%d hits=%d err=%v", status, hits, err)
+	}
+}
+
+// TestChatStreamRejectsUnknownModelAfterCatalog：目录已拉到后，free[] 之外的名字本地 404 不打上游。
+func TestChatStreamRejectsUnknownModelAfterCatalog(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == EpRecommends {
+			_, _ = io.WriteString(w, `{"free":[{"id":"cline-free/step-5-preview","name":"Step 5 Preview"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c := New()
+	c.Base = srv.URL
+	a := &auth.Auth{Kind: "cline", AccessToken: "sk_x"}
+	if _, err := c.FetchModels(a); err != nil {
+		t.Fatal(err)
+	}
+	_, status, body, _ := c.ChatStream(a,
+		[]byte(`{"model":"totally/unknown-model","stream":true,"messages":[]}`))
+	if status != http.StatusNotFound || hits != 1 {
+		t.Errorf("目录建立后未知模型应本地 404 且不打上游，实得 status=%d hits=%d body=%.100s", status, hits, body)
+	}
+	// 已知模型正常直达
+	if _, status, _, err := c.ChatStream(a,
+		[]byte(`{"model":"cline-free/step-5-preview","stream":true,"messages":[]}`)); err != nil || status != 200 {
+		t.Errorf("free[] 内的模型应放行，实得 status=%d err=%v", status, err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 目录：只暴露 Cline 官方免费池（暴露保守 + 校验宽松）
+// 目录：free[] 原样透传（无静态表、无映射、无过滤）
 // ---------------------------------------------------------------------------
 
 func fakeCatalog() http.Handler {
@@ -324,20 +358,19 @@ func fakeCatalog() http.Handler {
 		case EpRecommends:
 			_, _ = io.WriteString(w, `{"recommended":[{"id":"anthropic/claude-sonnet-5.5"}],
 			  "free":[{"id":"cline-free/step-5-preview","name":"Step 5 Preview"},
-			         {"id":"cline-free/newcomer-x","name":""}],
+			         {"id":"cline-free/mimo-v2.6-flash","name":""},
+			         {"id":"cline-free/mimo-v2.6-flash","name":"重复条目应被去重"}],
 			  "clinePass":[{"id":"cline-pass/glm-5.3"}],
 			  "clineCloud":[{"id":"cline-cloud/deepseek-v4.1-flash"}]}`)
-		case EpModels:
-			_, _ = io.WriteString(w, `{"object":"list","data":[
-			  {"id":"cohere/north-mini-code:free","owned_by":"cohere"},
-			  {"id":"openai/gpt-6.1-sol","owned_by":"openai"}]}`)
 		default:
 			_, _ = io.WriteString(w, `{}`)
 		}
 	})
 }
 
-func TestFetchModelsExposesOnlyClineFree(t *testing.T) {
+// TestFetchModelsPassesFreeThroughAsIs：free[] 原样透传 —— ID 不改写、name 缺失时
+// prettifyID 兑底、精确 ID 去重；recommended/clinePass/clineCloud 与 /models 一概不收。
+func TestFetchModelsPassesFreeThroughAsIs(t *testing.T) {
 	srv := httptest.NewServer(fakeCatalog())
 	defer srv.Close()
 	c := New()
@@ -347,48 +380,41 @@ func TestFetchModelsExposesOnlyClineFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sb strings.Builder
-	for _, m := range models {
-		sb.WriteString(m.ID + " ")
+	if len(models) != 2 {
+		t.Fatalf("应恰好透传 2 条去重后的 free 条目，实得 %d：%v", len(models), models)
 	}
-	got := sb.String()
-	for _, want := range []string{"stepfun/step-5-preview", "xiaomi/mimo-v2.6-flash",
-		"meta/muse-spark-1.3-contributor", "cline-free/newcomer-x"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("应暴露 %s，实得：%s", want, got)
-		}
+	if models[0].ID != "cline-free/mimo-v2.6-flash" || models[1].ID != "cline-free/step-5-preview" {
+		t.Errorf("ID 应原样保留（不改前缀不映射），实得：%v", models)
 	}
-	// 别名与真实名同基名 ⇒ 只保留真实名一次
-	if n := strings.Count(got, "step-5-preview"); n != 1 {
-		t.Errorf("step-5-preview 应按基名去重，实际出现 %d 次：%s", n, got)
+	if models[0].Name != "Mimo v2.6 flash" {
+		t.Errorf("name 缺失时应 prettifyID 兑底，实得 %q", models[0].Name)
 	}
-	if strings.Contains(got, "cline-free/step-5-preview") {
-		t.Errorf("去重后必须保留真实名（走 Cline 网关、不依赖 X-CLIENT-TYPE），实得：%s", got)
-	}
-	for _, ban := range []string{"glm-5.3", "deepseek-v4.1-flash", "claude-sonnet-5.5", "north-mini-code"} {
-		if strings.Contains(got, ban) {
-			t.Errorf("%s 不该出现在暴露集（订阅池/云池/付费/OpenRouter 长尾）：%s", ban, got)
-		}
+	if models[1].Name != "Step 5 Preview" {
+		t.Errorf("上游 name 应原样保留，实得 %q", models[1].Name)
 	}
 }
 
-// TestKnownModelAcceptsLiveCatalog 是 R42 的回归：动态目录里的模型不得被本地校验误拒。
-func TestKnownModelAcceptsLiveCatalog(t *testing.T) {
+// TestKnownSetEqualsExposedSet：本地校验集 == 暴露集 == free[]（构造即一致，R42 回归）。
+func TestKnownSetEqualsExposedSet(t *testing.T) {
 	srv := httptest.NewServer(fakeCatalog())
 	defer srv.Close()
 	c := New()
 	c.Base = srv.URL
-	if _, err := c.FetchModels(&auth.Auth{Kind: "cline", AccessToken: "sk_x"}); err != nil {
+	a := &auth.Auth{Kind: "cline", AccessToken: "sk_x"}
+	models, err := c.FetchModels(a)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"cline-free/newcomer-x", "cohere/north-mini-code:free",
-		"stepfun/step-5-preview", "openai/gpt-6.1-sol"} {
-		if !c.knownModel(id) {
-			t.Errorf("%s 应被接受（静态 ∪ 动态目录）", id)
+	for _, m := range models {
+		if !c.knownModel(m.ID) {
+			t.Errorf("暴露的 %s 必须能通过本地校验（集合一致）", m.ID)
 		}
 	}
-	if c.knownModel("vendor/not-in-any-catalog") {
-		t.Error("目录外的名字仍应被拒")
+	for _, ban := range []string{"cline-pass/glm-5.3", "cline-cloud/deepseek-v4.1-flash",
+		"anthropic/claude-sonnet-5.5", "stepfun/step-5-preview"} {
+		if c.knownModel(ban) {
+			t.Errorf("%s 不在校验集（free[] 之外）", ban)
+		}
 	}
 }
 
@@ -400,13 +426,13 @@ func TestCappedModelAutoHidesAndReturns(t *testing.T) {
 	c.Base = srv.URL
 	a := &auth.Auth{Kind: "cline", AccessToken: "sk_x"}
 
-	c.markCapped("stepfun/step-5-preview", time.Hour)
+	c.markCapped("cline-free/step-5-preview", time.Hour)
 	for _, m := range mustModels(t, c, a) {
 		if strings.Contains(m.ID, "step-5-preview") {
 			t.Fatalf("冷却中的模型不得出现在 /v1/models：%v", m.ID)
 		}
 	}
-	c.markCapped("stepfun/step-5-preview", -time.Second) // 立即过期
+	c.markCapped("cline-free/step-5-preview", -time.Second) // 立即过期
 	found := false
 	for _, m := range mustModels(t, c, a) {
 		if strings.Contains(m.ID, "step-5-preview") {
@@ -415,6 +441,35 @@ func TestCappedModelAutoHidesAndReturns(t *testing.T) {
 	}
 	if !found {
 		t.Error("解冻后应自动回归列表")
+	}
+}
+
+// TestFetchModelsFallsBackToCache：上游抖动时用已知集兑底，不掏空面板。
+func TestFetchModelsFallsBackToCache(t *testing.T) {
+	var failing atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == EpRecommends && failing.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":"boom"}`)
+			return
+		}
+		fakeCatalog().ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c := New()
+	c.Base = srv.URL
+	a := &auth.Auth{Kind: "cline", AccessToken: "sk_x"}
+
+	if _, err := c.FetchModels(a); err != nil {
+		t.Fatal(err)
+	}
+	failing.Store(true)
+	models, err := c.FetchModels(a)
+	if err != nil {
+		t.Fatalf("有缓存时上游抖动不应报错，实得 %v", err)
+	}
+	if len(models) != 2 {
+		t.Errorf("应回退到缓存条目，实得 %v", models)
 	}
 }
 
@@ -492,7 +547,7 @@ func TestStreamNotBoundedByClientTimeout(t *testing.T) {
 	a := &auth.Auth{Kind: "cline", AccessToken: "sk_x", ExpiresAt: FarFutureExpiry()}
 
 	rc, status, _, err := c.ChatStream(a,
-		[]byte(`{"model":"stepfun/step-5-preview","stream":true}`))
+		[]byte(`{"model":"cline-free/step-5-preview","stream":true}`))
 	if err != nil || status != 200 {
 		t.Fatalf("流式应走无总超时的 StreamHTTP：status=%d err=%v", status, err)
 	}
@@ -550,23 +605,6 @@ func TestValidateKeyShape(t *testing.T) {
 func TestValidateKeyRejectsNonSK(t *testing.T) {
 	if _, err := ValidateKey("workos:abc"); err == nil || !strings.Contains(err.Error(), "sk_") {
 		t.Errorf("非 sk_ 前缀应直接报错并给出申请指引，实得 %v", err)
-	}
-}
-
-// TestBaseName 锁基名归一（R33 同款：查表/去重前必须剥路由前后缀）。
-func TestBaseName(t *testing.T) {
-	for id, want := range map[string]string{
-		"cline-free/step-5-preview":        "step-5-preview",
-		"cline-pass/glm-5.3-flash":         "glm-5.3-flash",
-		"cline-cloud/deepseek-v4.1-flash":  "deepseek-v4.1-flash",
-		"stepfun/step-5-preview":           "step-5-preview",
-		"cohere/north-mini-code:free":      "north-mini-code",
-		`  xiaomi/mimo-v2.6-flash  `:       "mimo-v2.6-flash",
-		"cline-free/step-5-preview:unused": "step-5-preview:unused",
-	} {
-		if got := baseName(id); got != want {
-			t.Errorf("baseName(%q)=%q 期望 %q", id, got, want)
-		}
 	}
 }
 

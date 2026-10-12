@@ -31,11 +31,12 @@ type Client struct {
 	// Base 网关基址（默认 APIBase）；测试注入 httptest 假上游用，生产不设。
 	Base string
 
-	liveMu  sync.RWMutex
-	liveIDs map[string]bool
-	capMu   sync.RWMutex
-	capped  map[string]time.Time
-	lastErr error // 最近一次目录拉取失败，仅诊断用
+	knownMu sync.RWMutex
+	// knownIDs 是已知模型集（ID → 展示名，来自 free[]），也是 ChatStream 的本地校验集。
+	// 冷启动（未拉到目录）时校验放行 —— 见 models.go 的 knownModel 注释。
+	knownIDs map[string]string
+	capMu    sync.RWMutex
+	capped   map[string]time.Time
 }
 
 // New 构造客户端（非流式 120s 总超时；一问一答需要兜底，故保留 Timeout）。
@@ -44,7 +45,7 @@ func New() *Client {
 	return &Client{
 		HTTP:       &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		StreamHTTP: &http.Client{Transport: tr},
-		liveIDs:    map[string]bool{},
+		knownIDs:   map[string]string{},
 		capped:     map[string]time.Time{},
 	}
 }
@@ -127,8 +128,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 	if m == "" {
 		return nil, http.StatusBadRequest, []byte(`{"error":{"message":"model is required"}}`), nil
 	}
-	// 本地校验刻意宽松（静态 ∪ 全部动态目录，见 knownModel 注释）：
-	// 只查静态表会误拒上游新模型，而它正被 /v1/models 列出（R42 的实测教训）。
+	// 本地校验：集合 == 暴露集 == free[]（构造即一致）；目录未拉到过时放行（fail-open）。
+	// R42 的教训：校验过严会误拒上游新模型，故冷启动不拦、集合跟随上游同步。
 	if !c.knownModel(m) {
 		return nil, http.StatusNotFound,
 			[]byte(fmt.Sprintf(`{"error":{"message":"model not found in cline free catalog: %s",

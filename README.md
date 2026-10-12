@@ -207,19 +207,19 @@ API Key:  WildWorkAPI
 ```bash
 curl http://127.0.0.1:7863/v1/chat/completions \
   -H "Authorization: Bearer WildWorkAPI" -H "Content-Type: application/json" \
-  -d '{"model":"cline/stepfun/step-5-preview","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"cline/cline-free/step-5-preview","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-- 可用模型：`cline/stepfun/step-5-preview`、`cline/xiaomi/mimo-v2.6-flash`、
-  `cline/meta/muse-spark-1.3-contributor`，另有 Cline 官方免费池动态下发的条目；
-  完整清单见 `/v1/models` 中 `cline/` 开头的条目。
+- 可用模型：完全跟随 Cline 官方免费池动态下发（`recommended-models` 的 free 组，
+  原样透传，不做任何本地筛选），典型如 `cline/cline-free/step-5-preview`、
+  `cline/cline-free/mimo-v2.6-flash` 等；完整清单见 `/v1/models` 中 `cline/` 开头的条目。
 - **必须使用多个独立 Cline 账号各自的 Key**：官方免费额度按**账号**计
   （其权益字段名为 `…UsageCostUSDPerUser`），**同一账号建多把 Key 共享一份额度，不会翻倍**。
   面板在检测到新 Key 与已有账号同属一个 Cline 账号时会给出提示。
 - Key **不过期、不轮换**，也不会与浏览器 / 官方客户端互相挤下线（这是选 API Key 而不是
   逆向 OAuth 登录的主要原因）。
-- 本渠道**只调度免费模型**：订阅池 `cline-pass` 与付费模型不在使用范围内
-  （请求它们会得到 `ENTITLEMENT_ERROR`）。上游无余额/额度查询接口，
+- 本渠道**只暴露官方免费池**（`cline-free` 命名空间）：订阅池 `cline-pass` 与云池 `cline-cloud`
+  不在使用范围内（请求它们会得到 `ENTITLEMENT_ERROR`）。上游无余额/额度查询接口，
   因此积分显示「不适用」，实际花费见「用量与流水」（来自逐请求 `usage.cost`）。
 - 不做价格承诺：官方「free」标记与实际计价并不一致（实测同前缀有扣费、
   非 free 后缀反倒 `cost=0`，且同一模型相邻两次请求计价可能漂移），

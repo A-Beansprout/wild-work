@@ -83,22 +83,23 @@ func TestLiveCatalog(t *testing.T) {
 		t.Fatal("暴露集为空")
 	}
 	for _, m := range models {
-		if strings.Contains(m.ID, "cline-pass/") || strings.HasSuffix(m.ID, ":free") {
-			t.Errorf("暴露集混入了不该有的模型：%s", m.ID)
+		// 暴露集必须逐字来自 free[]：ID 带 cline-free/ 前缀、非订阅池、非 OpenRouter 长尾
+		if !strings.HasPrefix(m.ID, freePrefix) {
+			t.Errorf("暴露集混入了 free[] 之外的模型：%s", m.ID)
 		}
-		t.Logf("暴露 %s", m.ID)
+		if m.Name == "" {
+			t.Errorf("%s 缺展示名（上游 name 缺失时应已兑底 prettifyID）", m.ID)
+		}
+		t.Logf("暴露 %s (%s)", m.ID, m.Name)
 	}
-	// 三个硬编码模型必须在列
-	for _, want := range []string{"step-5-preview", "mimo-v2.6-flash", "muse-spark"} {
-		hit := false
-		for _, m := range models {
-			if strings.Contains(m.ID, want) {
-				hit = true
-			}
+	// 校验集 == 暴露集：透传出来的都能过本地校验，free[] 之外的一概拒
+	for _, m := range models {
+		if !c.knownModel(m.ID) {
+			t.Errorf("暴露的 %s 未通过本地校验（集合应一致）", m.ID)
 		}
-		if !hit {
-			t.Errorf("硬编码模型 %s 未出现在暴露集", want)
-		}
+	}
+	if c.knownModel("vendor/not-in-free") {
+		t.Error("free[] 之外的模型不应通过本地校验")
 	}
 }
 
@@ -108,7 +109,7 @@ func TestLiveChatRealModel(t *testing.T) {
 	c := liveClient()
 	a := &auth.Auth{Kind: "cline", UID: "live", AccessToken: key, ExpiresAt: FarFutureExpiry()}
 	body, _ := json.Marshal(map[string]any{
-		"model":    "stepfun/step-5-preview",
+		"model":    "cline-free/mimo-v2.6-flash",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "Reply with exactly: OK"}},
 	})
@@ -124,7 +125,7 @@ func TestLiveChatRealModel(t *testing.T) {
 
 	// 非流式对照：读完整帧序列，验证 cost 与路由前缀
 	body2, _ := json.Marshal(map[string]any{
-		"model":    "stepfun/step-5-preview",
+		"model":    "cline-free/mimo-v2.6-flash",
 		"stream":   false,
 		"messages": []map[string]string{{"role": "user", "content": "What is 17*8? Reply only the number."}},
 	})
