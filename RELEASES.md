@@ -1422,7 +1422,8 @@ WorkBuddy 每日签到包落在「明日到期」的资源 key 上且提前一�
 
 > 发布主题：**新增 Cline 渠道**（官方 `sk_` API Key 免费池，issue #62）、**模型思考档位透传**
 > （上游声明才展示，issue #96）、**Token 用量缓存利用率列**（区分「命中 0%」与「未知」）、
-> 以及**积分明细同源回写快照**、**空壳 assistant 消息修复**、**手机竖屏响应式 UI** 等一批修复与易用性改进。
+> 以及**积分明细同源回写快照**、**空壳 assistant 消息修复**等一批修复与易用性改进，
+> 并完成**手机竖屏响应式 UI**。
 > 上次 tag v2.6.3 之后累积 19 个提交 + 3 个合并 PR（#92/#93/#94，来自
 > [@bertchiangchiang](https://github.com/bertchiangchiang) 与 [@xxhhlk](https://github.com/xxhhlk)）。
 
