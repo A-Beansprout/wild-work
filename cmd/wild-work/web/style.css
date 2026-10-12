@@ -446,28 +446,38 @@ body {
 /* toast */
 .toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); background: rgba(31,35,41,.92); color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 14px; z-index: 200; box-shadow: 0 4px 16px rgba(0,0,0,.2); max-width: 80vw; }
 
-/* 积分明细浮层 */
+/* 积分明细浮层：点击积分标签打开，✕ / 点击浮层外 / Esc 关闭（桌面与触屏同一套交互）。
+   为什么不再用 hover：① 浮窗开着时后台 loadState() 会重建卡片 DOM，被替换的元素不再派发
+   mouseleave ⇒ 浮窗残留关不掉；② 触屏没有 mouseenter/mouseleave，手机上根本关不掉。
+   位置固定（水平居中、距顶 12vh）而不贴被点卡片：重渲染/滚动都不会飘走。 */
 .credit-tip {
   position: fixed; display: none; z-index: 150;
+  left: 50%; top: 12vh; transform: translateX(-50%);
+  width: min(420px, calc(100vw - 24px)); /* 窄屏自适应：手机竖屏不再溢出屏幕 */
+  max-height: 72vh; overflow-y: auto;
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 10px 12px;
   box-shadow: 0 4px 16px rgba(0,0,0,.15); font-size: 12px;
-  min-width: 300px; max-width: 420px;
-}
-.credit-tip {
-  position: fixed; display: none; z-index: 150;
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 10px 12px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.15); font-size: 12px;
-  width: 380px; /* 固定宽度：翻页时浮窗不再变形/宽度跳动 */
   box-sizing: border-box;
 }
 .credit-tip .detail-head {
-  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-  margin-bottom: 6px;
+  display: grid; grid-template-columns: 1fr auto 1fr auto; align-items: center;
+  gap: 6px; margin-bottom: 6px;
 }
 .credit-tip .detail-title { font-weight: 600; text-align: right; }
 .credit-tip .detail-count { font-weight: 400; color: var(--muted); font-size: 11px; }
+/* 关闭按钮：固定最右一列，与顶部翻页器互不干扰 */
+.credit-tip .detail-close {
+  width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--muted); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; padding: 0;
+}
+.credit-tip .detail-close:hover { color: var(--danger); border-color: var(--danger); background: #fef2f2; }
+/* 积分标签变成点击入口：给出可点暗示 */
+.acct-card .acct-credits.clickable { cursor: pointer; }
+.acct-card .acct-credits.clickable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.acct-card .acct-credits.clickable:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 /* 翻页器在浮窗顶部居中：鼠标从卡片过来路径最短，不跨出浮窗 */
 .detail-pager { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
 .detail-pg {
@@ -947,3 +957,84 @@ body {
 .btn.primary.alt.cline:hover { background: #166534; }
 .badge.cline { background: #15803d; }
 .fees .ch-header.cline td { color: #15803d; }
+
+/* ==========================================================================
+   响应式适配（手机/平板竖屏）
+   —— 原实现只有「卡片改单列 / 使用卡 2 列」两条窄屏规则，其余区块在手机竖屏
+   都会水平溢出（实测 390px 视口下 scrollWidth=711px）。溢出除本身难看外还有个
+   隐蔽后果：.overlay{position:fixed;inset:0} 的包含块是 ICB（=scrollWidth），
+   页面一溢出，所有弹层（设置/帮助/添加账号）都会整体偏移到屏外。
+   原则：所有新规则都关在 max-width 媒体查询里，≥900px 完全走原桌面样式。
+   ========================================================================== */
+
+/* 1) 账号管理按钮区：窄屏改上下两段，渠道按钮由固定 5 列改自适应列
+   —— 原 grid-template-columns:repeat(5,auto) + 每个按钮的内联 grid-column:1..5
+   是手机端溢出的主因（390px 下 pa-right 宽 598px，溢出 321px）。
+   内联 grid-column 用带 !important 的窄屏覆盖，无需改 index.html 的按钮标记
+   （桌面端仍由内联声明完整驱动）。
+   759px 是实测阈值：.panel-actions-wrap 的最小内容宽 = 左组 78 + 右组 598 + 间距，
+   视口 ≥ 760px 时已不再溢出（768px 平板竖屏实测 0 溢出），故断点卡在 759。 */
+@media (max-width: 759px) {
+  .panel-actions-wrap { flex-direction: column; align-items: stretch; gap: 8px; }
+  .pa-spacer { display: none; }
+  .pa-left { flex-direction: row; flex-wrap: wrap; }
+  .pa-right { grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); width: 100%; }
+  .pa-right .btn { justify-self: stretch; padding: 9px 10px; grid-column: auto !important; grid-row: auto !important; }
+}
+
+/* 2) 顶栏：1fr 的隐含下界是 min-content，"API-Key" 那一格拒绝收缩，
+   实测 ≤470px 才溢出（480px 时已为 0），故 479px 以下整行换行、信息独占一行。 */
+@media (max-width: 479px) {
+  .topbar { row-gap: 8px; }
+  .brand { order: 1; }
+  .top-icons { order: 2; margin-left: auto; }
+  .top-info { order: 3; flex: none; width: 100%; grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 3) 账号卡片：1fr 轨道的 min 是 min-content，操作按钮行（4×28px ≈ 365px）
+   在窄屏会撑破卡片并被 .panel 裁掉（实测 660px 视口溢出 16px）。 */
+@media (max-width: 679px) {
+  .acct-grid { grid-template-columns: minmax(0, 1fr); }
+  .acct-card { min-width: 0; }
+  .acct-card .acct-top,
+  .acct-card .acct-mid { flex-wrap: wrap; }
+}
+
+/* 4) 费率表：4 列（模型|倍率|模型|倍率）必然溢出（390px 下 634px）。
+   实测 700px 时残余 4px、720px 已为 0，故 719px 以下只留「模型|倍率」两列。 */
+@media (max-width: 719px) {
+  .fees table th:nth-child(n+3),
+  .fees table td:nth-child(n+3) { display: none; }
+  .fees .full-id { white-space: normal; word-break: break-all; }
+}
+
+/* 5) 运行统计：平台表/临期表/异常表是固定 N 列 grid。平台表实测最小内容宽度 790px
+   （区块可用宽 = 视口 − 65），实测 vw ≤ 880 时单元格越出卡片被裁、vw ≥ 900 时恰好为 0
+   （由于页面本身在更窄处就有滚动，且单元格会被 .panel 裁掉，所以这是「直接视口看不出来」
+   的隐蔽截断）。≤899px 给容器横向滚动；≥900px 走原样，保持与旧版逐像素一致。
+   统计列都有信息量，横向滚动比隐藏列更可接受。 */
+@media (max-width: 899px) {
+  #mtabStats .st-plat,
+  #mtabStats .st-ex-scroll,
+  #mtabStats .st-ab-scroll,
+  #mtabStats .st-scroll { max-width: 100%; overflow-x: auto; }
+}
+
+/* 6) 用量与流水：模型表压缩内边距（列内文字可折行），流水行宽度写死会在窄屏被裁。 */
+@media (max-width: 640px) {
+  .table th, .table td { padding: 7px 6px; }
+  #tabToken { overflow-x: auto; }
+  .rline { flex-wrap: wrap; }
+  .rline .rtime,
+  .rline .ramount,
+  .rline .rname { width: auto; max-width: none; }
+}
+
+/* 7) 触控目标：图标按钮 28×28、图标链 32×32 都低于 44px 的触控建议值。
+   只在「无 hover + 粗指针」设备放大，桌面鼠标设备不受影响。 */
+@media (hover: none) and (pointer: coarse) {
+  .icon-op { width: 34px; height: 34px; font-size: 15px; }
+  .icon-link { width: 38px; height: 38px; }
+  .fees-tab { padding: 7px 12px; }
+  .credit-tip .detail-close { width: 30px; height: 30px; }
+}

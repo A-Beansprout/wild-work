@@ -334,5 +334,43 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 积分明细浮窗点击式 + 手机竖屏响应式 ----
+// 与 R34/R41 同族：这两处都是「改了交互/样式但没接线/被后写规则覆盖」就静默失效，
+// 且宽度断点一旦被人调大就会重新弄坏桌面端（本次就是靠像素级 diff 才发现过一次），故在此锁死。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const need = [
+    // 积分明细：点击式。hover 版在「浮窗开着时后台 loadState() 重建卡片 DOM」会让
+    // mouseleave 不再派发，浮窗永久残留（用户反馈的「经常不能自动关闭」），触屏更是关不掉。
+    ["明细标签已改为点击触发（不再用 onmouseenter）", raw.includes('onclick="showCreditDetail(event,')],
+    ["明细标签不再残留 hover 处理器", !raw.includes("onmouseenter=")],
+    ["hover 关闭函数与定时器已删除（防回退；注释提及不算）", !/\bdetailTimer\b/.test(raw.replace(/^\/\/.*$/gm, "")) && !raw.includes("hideCreditDetail")],
+    ["浮窗渲染右上角关闭按钮", raw.includes('data-close-credit-tip="1"')],
+    ["存在统一关闭入口 closeCreditDetail", /function closeCreditDetail\(/.test(raw)],
+    ["存在序号竞态守卫 detailOpenSeq（连点两账号只让最后一次上屏）", /let detailOpenSeq = 0;/.test(raw) && raw.includes("seq !== detailOpenSeq")],
+    ["外部关闭路径已绑定一次", raw.includes("bindCreditDetailDismiss()")],
+    ["关闭判定用 composedPath（syncCreditsFromDetail 会在派发途中重写积分格，e.target 会变 detached）",
+      /bindCreditDetailDismiss[\s\S]{0,900}composedPath/.test(raw) && !/closest\("\.acct-credits"\)/.test(raw)],
+    ["切主 tab 仍会收起浮窗", /切换主 tab 强制收起积分明细浮窗[\s\S]{0,80}closeCreditDetail\(\)/.test(raw)],
+    [".credit-tip 不再重复定义（原两块，后者静默覆盖前者）", (css.match(/^\.credit-tip \{/gm) || []).length === 1],
+    ["浮窗宽度自适应视口（手机不再溢出）", /width: min\(420px, calc\(100vw - 24px\)\)/.test(css)],
+    // 响应式：断点是按实测溢出阈值卡位的，调宽会破坏桌面端逐像素一致性，调窄则手机仍溢出。
+    ["窄屏渠道按钮自适应列（auto-fit）", css.includes("repeat(auto-fit, minmax(148px, 1fr))")],
+    ["内联 grid-column 必须用 !important 窄屏覆盖（内联优先级高于样式表）", /\.pa-right \.btn \{[^}]*grid-column: auto !important/.test(css)],
+    ["顶栏 1fr 下界解除（minmax(0,1fr)）", /\.top-info \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)],
+    ["账号卡片允许收缩（minmax(0,1fr)）", /\.acct-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/.test(css)],
+    ["费率表窄屏隐藏第 3/4 列（4 列布局手机必溢出）", /\.fees table th:nth-child\(n\+3\)[\s\S]*?display: none/.test(css)],
+    ["运行统计宽表给横向滚动容器", /#mtabStats \.st-plat,\s*\n\s*#mtabStats \.st-ex-scroll,\s*\n\s*#mtabStats \.st-ab-scroll,\s*\n\s*#mtabStats \.st-scroll \{ max-width: 100%; overflow-x: auto; \}/.test(css)],
+    ["触控目标仅在粗指针设备放大（桌面鼠标不吃）", /@media \(hover: none\) and \(pointer: coarse\)/.test(css)],
+    ["渠道按钮的内联 grid-column 可被窄屏 CSS 覆盖（保留了内联声明，窄屏用 !important 回流）",
+      /btnAdd\w+" style="grid-column/.test(html) && /\.pa-right \.btn \{[^}]*grid-column: auto !important/.test(css)],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

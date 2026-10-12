@@ -184,31 +184,68 @@ function renderModelSearch(q) {
         : `共 ${hit.length} 个匹配`));
 }
 
-// ---------- 积分明细 tooltip ----------
+// ---------- 积分明细浮窗 ----------
 // 明细条数可能很多（TraeWork 每个签到奖励都是独立条目，常见 30+），
 // 故分页展示：每页 DETAIL_PAGE_SIZE 条，页码状态存在 detailState 里，
 // 翻页不重新请求（detailCache 已缓存该账号的完整响应）。
+//
+// 交互：**点击**积分标签打开，✕ / 点击浮窗之外 / Esc 关闭（三个关闭路径都归一到
+// closeCreditDetail）。为什么不用 hover：
+//   ① 浮窗开着时后台 loadState() 会重建卡片 DOM，被替换的元素不再派发 mouseleave
+//      ⇒ 浮窗变成孤儿、关不掉（用户实际遇到的「经常不能自动关闭」就是这个）；
+//   ② 触屏设备不派发 mouseenter/mouseleave，手机上既打不开也关不掉；
+//   ③ hover 模型把「翻页」与「移出即关」耦合成矛盾诉求（要翻页就得移进浮窗）。
 const DETAIL_PAGE_SIZE = 8;
-let detailTimer = null;
 let detailCache = {};
-// detailState 当前 tooltip 的展示状态：{uid, page}。
-// detailState 当前 tooltip 的展示状态：{uid, page}。
+// detailState 当前浮窗的展示状态：{uid, page}。
 let detailState = null;
+// detailOpenSeq 打开序号：快速连点两个账号时，只让「最后一次点击」的响应上屏。
+// 取代了 hover 版靠 detailTimer 的竞态守卫（点击式没有「等待期间鼠标移开」这回事）。
+let detailOpenSeq = 0;
+
+// closeCreditDetail 关闭浮窗（唯一的关闭入口，X / 点外部 / Esc / 切 tab 都走它）。
+function closeCreditDetail() {
+  const tip = $("creditTip");
+  if (tip) tip.style.display = "none";
+  detailOpenSeq++; // 让在途的明细请求失效，避免关掉后又被异步回调弹出来
+}
+
+// bindCreditDetailDismiss 绑定浮窗的外部关闭路径（绑定一次）。
+// 为什么用 document 级委托而不是给每个入口挂 handler：浮窗与卡片都是动态重建的，
+// 委托不受重建影响——这正是旧 hover 实现的失效根源（元素换掉后监听器一起消失）。
+function bindCreditDetailDismiss() {
+  document.addEventListener("click", (e) => {
+    const tip = $("creditTip");
+    if (!tip || tip.style.display === "none") return;
+    // 归属判定必须用事件传播路径（composedPath），不能用 e.target.closest：
+    // showCreditDetail → syncCreditsFromDetail 会在本次派发途中重写积分格 innerHTML，
+    // 把被点的 SPAN 从 DOM 摘掉；detached 节点的 closest() 恒为 null，
+    // 会让「点另一个账号的标签」被误判成「点外部」而把刚打开的浮窗关掉。
+    // composedPath 在派发时就已固化，不受中途 DOM 替换影响。
+    const path = e.composedPath ? e.composedPath() : [];
+    const inPath = (pick) => path.some((n) => n instanceof Element && pick(n));
+    if (inPath((n) => n.getAttribute("data-close-credit-tip") === "1")) { closeCreditDetail(); return; }
+    if (path.includes(tip) || tip.contains(e.target)) return;          // 浮窗内部（含翻页）不关
+    if (inPath((n) => n.classList.contains("acct-credits"))) return;   // 点另一个账号的标签 = 切换，不关
+    closeCreditDetail();                                               // 其余任何位置都关
+  });
+  // Esc 关闭：与其它弹层（设置/帮助/查找模型）的键盘行为一致
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCreditDetail(); });
+}
 
 async function showCreditDetail(e, uid) {
   const el = e.currentTarget;
-  if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; }
+  const seq = ++detailOpenSeq; // 本次打开的身份；被更晚的打开或关闭动作作废时不再上屏
 
-  // 切换到另一个账号时重置页码；同一账号重复 hover 保留原页码。
+  // 切换到另一个账号时重置页码；同一账号重复点击保留原页码。
   const page = (detailState && detailState.uid === uid) ? detailState.page : 0;
 
   let d = detailCache[uid];
   if (!d) {
     try {
       d = await api("/api/account/resource_detail", { uid });
-      // 竞态守卫：等待接口期间鼠标已移开（hideCreditDetail 已排定关闭且未被
-      // tip hover/翻页取消）→ 不再弹出，避免 tooltip 残留在页面上。
-      if (detailTimer !== null) return;
+      // 竞态守卫：等待接口期间用户又点了别的账号 / 关闭了浮窗 → 本次结果作废。
+      if (seq !== detailOpenSeq) return;
       detailCache[uid] = d;
       syncCreditsFromDetail(uid, d);
     } catch (err) { return; }
@@ -223,17 +260,12 @@ async function showCreditDetail(e, uid) {
     document.body.appendChild(tip);
   }
 
-  const rect = el.getBoundingClientRect();
+  // 位置由 CSS 固定（水平居中、距顶 12vh）：不再跟着被点卡片算 left/top，
+  // 这样后台重渲染、滚动都不会让浮窗跑偏，也避免窄屏越界。
+  void el;
   detailState = { uid, page };
   renderCreditDetail();
-  // 先渲染再量尺寸，才能决定向上还是向下弹出。
-  const h = tip.offsetHeight;
-  let top = rect.bottom + 4;
-  if (top + h > window.innerHeight) top = Math.max(4, rect.top - h - 4);
-  let left = rect.left;
-  if (left + tip.offsetWidth > window.innerWidth) left = Math.max(4, window.innerWidth - tip.offsetWidth - 10);
-  tip.style.left = left + "px";
-  tip.style.top = top + "px";
+  tip.style.display = "block";
 }
 
 // syncCreditsFromDetail 把卡片与汇总条的积分数字回写成明细响应的同源代码。
@@ -293,7 +325,10 @@ function renderCreditDetail() {
     html += `<span class="detail-pg${page >= pages - 1 ? " off" : ""}" data-pg="${page + 1}">›</span>`;
     html += `</span>`;
   }
-  html += `<span class="detail-title">积分明细</span></div>`;
+  html += `<span class="detail-title">积分明细</span>`;
+  // 关闭按钮：桌面与触屏共用同一入口（触屏没有 hover，只能靠显式按钮）
+  html += `<button type="button" class="detail-close" data-close-credit-tip="1" title="关闭" aria-label="关闭积分明细">✕</button>`;
+  html += `</div>`;
   html += `<table class="detail-table"><thead><tr><th>套餐</th><th>总额</th><th>已用</th><th>剩余</th>`;
   if (hasExpiry) html += `<th>有效期</th>`;
   html += `</tr></thead><tbody>`;
@@ -341,28 +376,15 @@ function renderCreditDetail() {
   tip.innerHTML = html;
   tip.style.display = "block";
 
-  // 翻页：只改状态重绘，不重新请求接口。事件重挂由 hideCreditDetail 统一负责。
+  // 翻页：只改状态重绘，不重新请求接口。关闭路径由 bindCreditDetailDismiss 统一接管。
   tip.querySelectorAll(".detail-pg").forEach((btn) => {
     if (btn.classList.contains("off")) return;
     btn.onclick = (ev) => {
       ev.stopPropagation();
-      if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; } // 翻页即取消关闭
       const target = Number(btn.dataset.pg);
       if (Number.isFinite(target)) { detailState.page = target; renderCreditDetail(); }
     };
   });
-}
-
-function hideCreditDetail() {
-  detailTimer = setTimeout(() => {
-    const tip = $("creditTip");
-    if (tip) tip.style.display = "none";
-  }, 300);
-  const tip = $("creditTip");
-  if (tip) {
-    tip.onmouseenter = () => { if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; } };
-    tip.onmouseleave = () => { tip.style.display = "none"; };
-  }
 }
 
 // ---------- 渲染 ----------
@@ -634,7 +656,7 @@ function renderAccounts() {
       </div>
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
-        <div class="acct-credits" data-uid="${a.uid}"${noCredits ? "" : ` onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()"`}>${creditsText(a)}</div>
+        <div class="acct-credits${noCredits ? "" : " clickable"}" data-uid="${a.uid}"${noCredits ? "" : ` onclick="showCreditDetail(event,'${a.uid}')" title="点击查看积分明细（含分页）" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showCreditDetail(event,'${a.uid}')}"`}>${creditsText(a)}</div>
         <div class="acct-checkin">${coolingTag}${checkinTag}</div>
       </div>
     </div>`;
@@ -1680,6 +1702,10 @@ function bind() {
   $("renameOverlay").onclick = (e) => { if (e.target === $("renameOverlay")) closeRename(); };
   $("helpOverlay").onclick = (e) => { if (e.target === $("helpOverlay")) closeHelp(); };
 
+  // 积分明细浮窗的外部关闭路径（✕ / 点浮窗之外 / Esc）：document 级委托，绑定一次。
+  // 浮窗与账号卡片都会随时重建，委托不受重建影响。
+  bindCreditDetailDismiss();
+
   $("btnHelp").onclick = openHelp;
   $("btnAbout").onclick = openAbout;
   $("btnHelpClose").onclick = closeHelp;
@@ -1895,9 +1921,8 @@ function bindMainTabs() {
       $("mtabAccounts").classList.toggle("hidden", b.dataset.mtab !== "accounts");
       $("mtabUsage").classList.toggle("hidden", b.dataset.mtab !== "usage");
       $("mtabStats").classList.toggle("hidden", b.dataset.mtab !== "stats");
-      // 切换主 tab 强制收起积分明细 tooltip，避免残留浮在其他页签上
-      const tip = $("creditTip");
-      if (tip) { tip.style.display = "none"; if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; } }
+      // 切换主 tab 强制收起积分明细浮窗，避免残留浮在其他页签上
+      closeCreditDetail();
       if (b.dataset.mtab === "usage") {
         loadUsage(); // 切到用量 tab 时拉最新（首次渲染自动刷新）
         if (usageChart) usageChart.resize();
