@@ -405,6 +405,8 @@ func TestFetchModelsAppliesMeasuredCaps(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"free":[{"id":"cline-free/step-5-preview","name":"Step 5 Preview"},
 		 {"id":"cline-free/solar-mini4","name":"Solar Mini4"},
+		 {"id":"cline-free/mimo-v2.6-flash","name":"MiMo"},
+		 {"id":"cline-free/muse-spark-1.3-contributor","name":"Muse Spark"},
 		 {"id":"cline-free/brand-new-model","name":"Brand New"}]}`)
 	}))
 	defer srv.Close()
@@ -419,8 +421,9 @@ func TestFetchModelsAppliesMeasuredCaps(t *testing.T) {
 		byID[m.ID] = m
 	}
 	step := byID["cline-free/step-5-preview"]
-	if step.ContextWindow != 768_000 {
-		t.Errorf("step-5-preview 上下文应为实测值 768000，实得 %d", step.ContextWindow)
+	// 实测下界向上取一档（用户裁定）：step-5 实测 800K → 报 1M
+	if step.ContextWindow != 1_000_000 {
+		t.Errorf("step-5-preview 上下文应为实测上取一档后的 1000000，实得 %d", step.ContextWindow)
 	}
 	if !step.SupportsImages {
 		t.Error("step-5-preview 实测支持图像，应置 SupportsImages=true（否则 /v1/models 会声明纯文本）")
@@ -431,7 +434,17 @@ func TestFetchModelsAppliesMeasuredCaps(t *testing.T) {
 	if ids := step.InputModalities(); len(ids) != 2 || ids[1] != "image" {
 		t.Errorf("支持图像时 input_modalities 应为 [text image]，实得 %v", ids)
 	}
+	// 实测下界向上取一档（用户裁定 2026-10-12）：mimo 实测 728K / muse 928K / step-5 800K → 报 1M
+	if mimo := byID["cline-free/mimo-v2.6-flash"]; mimo.ContextWindow != 1_000_000 {
+		t.Errorf("mimo-v2.6-flash 上下文应为 1000000，实得 %d", mimo.ContextWindow)
+	}
+	if muse := byID["cline-free/muse-spark-1.3-contributor"]; muse.ContextWindow != 1_000_000 {
+		t.Errorf("muse-spark 上下文应为 1000000，实得 %d", muse.ContextWindow)
+	}
 	solar := byID["cline-free/solar-mini4"]
+	if solar.ContextWindow != 512_000 {
+		t.Errorf("solar-mini4 上下文（实测 400K 上取一档）应为 512000，实得 %d", solar.ContextWindow)
+	}
 	if solar.SupportsImages {
 		t.Error("solar-mini4 上游明确 404 no endpoints that support image input，不得声明支持图像")
 	}

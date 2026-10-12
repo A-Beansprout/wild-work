@@ -51,11 +51,15 @@ type measuredCap struct {
 //
 // 口径与边界（勿当官方值，也勿当作永久真值）：
 //  1. ctx = 实测「成功返回且三暗号（头/中/尾）全部回忆正确」的最大 prompt_tokens，
-//     再向下取到常用档位（256K/512K/768K/1M）。三暗号验证是为了排除上游静默截断
-//     （只保留尾部）把实测值抬高到虚假水平。
+//     再**向上取到常用档位并留一档余量**（用户裁定 2026-10-12）：实测值被本工具
+//     90s 响应头超时与探针阶梯双重压制，必然偏低；且客户端把 context_length 当作
+//     「可用输入上限」用于压缩时机，略微宽报比偏窄更贴合上游真实容量（上游超限会
+//     给出权威错误，不会静默错误回答）。具体：mimo 实测 728K → 报 1M；
+//     muse 实测 928K → 报 1M；step-5 实测 800K → 报 1M；solar 实测 400K → 报 512K。
+//     三暗号验证是为了排除上游静默截断（只保留尾部）把实测值抬高到虚假水平。
 //  2. 超大 prompt（>~700k）常因上游首字节耗时过长而被本工具 client 的
-//     90s ResponseHeaderTimeout 中断 —— 故这些值是**保守下界**，且 >90s 首字节
-//     本身已无实用意义，不再继续抬高求证。
+//     90s ResponseHeaderTimeout 中断 —— 故实测值只是**下界**（第 1 条已据此上取
+//     一档），且 >90s 首字节本身已无实用意义，不再继续抬高求证。
 //  3. images 由「发图是否被上游接受」实测；solar-mini4 上游明确回
 //     404 `No endpoints found that support image input`。
 //     mimo / muse / step 三者的实测均能正确识别图片内容（红/蓝/黄圆）。
@@ -66,10 +70,10 @@ type measuredCap struct {
 //  6. 未列入本表的模型（上游新增）仍然照常暴露，但没有上下文/能力声明 ——
 //     这与 R46「模型面绑死上游 free[]」不矛盾：本表只补元数据，不增删模型。
 var measuredCaps = map[string]measuredCap{
-	"cline-free/mimo-v2.6-flash":            {ctx: 512_000, images: true},
-	"cline-free/muse-spark-1.3-contributor": {ctx: 768_000, images: true},
-	"cline-free/solar-mini4":                {ctx: 256_000, images: false},
-	"cline-free/step-5-preview":             {ctx: 768_000, images: true},
+	"cline-free/mimo-v2.6-flash":            {ctx: 1_000_000, images: true},
+	"cline-free/muse-spark-1.3-contributor": {ctx: 1_000_000, images: true},
+	"cline-free/solar-mini4":                {ctx: 512_000, images: false},
+	"cline-free/step-5-preview":             {ctx: 1_000_000, images: true},
 }
 
 // modelInfoOf 组装单条模型信息：基础字段来自上游 free[]，上下文/能力来自实测表（若有）。
