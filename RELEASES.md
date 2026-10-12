@@ -1418,9 +1418,85 @@ WorkBuddy 每日签到包落在「明日到期」的资源 key 上且提前一�
 | — | 小浣熊登录仅 Windows 可用、需装客户端、与客户端抢注册表 | ✅ 本版修复（登录改用网页版 CDP 捕获，跨平台） |
 ---
 
-# wild-work v2.6.4 — Token 用量表新增「缓存利用率」列 + 渠道缓存字段实地取证
+# wild-work v2.7.0 — Cline 免费模型渠道 + 模型思考档位透传 + 缓存利用率 + 面板易用性
 
-## ✨ 新功能：「缓存利用率」列
+> 发布主题：**新增 Cline 渠道**（官方 `sk_` API Key 免费池，issue #62）、**模型思考档位透传**
+> （上游声明才展示，issue #96）、**Token 用量缓存利用率列**（区分「命中 0%」与「未知」）、
+> 以及**积分明细同源回写快照**、**空壳 assistant 消息修复**、**手机竖屏响应式 UI** 等一批修复与易用性改进。
+> 上次 tag v2.6.3 之后累积 19 个提交 + 3 个合并 PR（#92/#93/#94，来自
+> [@bertchiangchiang](https://github.com/bertchiangchiang) 与 [@xxhhlk](https://github.com/xxhhlk)）。
+
+---
+
+## 🆕 新渠道：Cline 免费池（`cline/*`，修复 #62）
+
+新增 **Cline 渠道**：粘贴官方 **API Key** 即用，无需在本机安装 Cline 客户端、零登录编排。
+
+- **凭据**：官方文档化的 `sk_` API Key（`app.cline.bot` → 注册账号 → `Account / API Keys` →
+  `Create API Key`）。Key 不过期、不轮换、不与浏览器/客户端互踢。一个 Cline 账号一把 Key。
+- **额度按账号计**：官方字段 `…UsageCostUSDPerUser`，同账号多把 Key 共享一份额度。面板会自动识别
+  同账号多把 Key 并告警。上游确无余额/额度端点（12 个候选实测全 404），故积分位显示「不适用」，
+  实际花费来自逐请求 `usage.cost`（入 ledger）。
+- **只调度免费模型**：绑死上游 `recommended-models` 的 `free[]` 数组原样透传（ID 保留 `cline-free/*`
+  别名不改写），本地不设任何静态表/假设。本地校验集 = 暴露集，冷启动放行。
+- **模型实测能力表**：上游 `free[]` 不返回上下文/能力字段，本渠道维护 `measuredCaps` 实测表——
+  上下文按实测向上取一档（mimo/muse/step-5 报 1M、solar 报 512K），图像能力实测标注，tool_calls 实测通过。
+- **关键实现约束**：出站必带非空 `X-CLIENT-TYPE` 头（缺失 ⇒ 全部免费模型 403 且不报错）；
+  发往上游的 body 强制 `stream:true`（否则非流式请求 502 并冷却整条渠道）；地区限制模型归
+  `ErrPassthrough` 不罚号；429 分两类处置（OpenRouter 共享出口上限不软化账号、账号级才冷却换号）；
+  `max_tokens` 缺省不传、<64 抬到 64、>200000 压到 200000。
+- 面板 Cline 添加弹层展示实测的免费模型上下文/能力表，并订正开卡路径话术（入口是
+  `Account / API Keys` 而非 Settings）。
+
+## 🧠 模型思考档位透传（issue #96）
+
+**只透传上游声明，绝不编造**：上游模型目录里声明了可调档位才展示，未声明时整个 reasoning 对象不出现。
+
+- `provider.ModelInfo` 新增 `ReasoningEfforts` / `DefaultReasoningEffort` / `CanDisableThinking`；
+  `/v1/models` 新加 `supports_reasoning` + `reasoning{supported_efforts,default_effort,can_disable_thinking}`，
+  `/api/fees` 新加 `reasoning_efforts` / `default_reasoning_effort`。
+- 接线渠道：WorkBuddyCN、WorkBuddyAI（国际版）、Loomy（上游 `reasoning_efforts` 权威）。
+  deepseek 系只有老式 `effort` 默认档时回退取它；mergeV3 非空者优先。
+- **清洗**：`provider.CleanEfforts` 去空白/去重/丢空串，全部无效归 nil（上游实测下发过
+  `"max","max",""` 这种脏列表）。
+- 面板费率表模型 ID 后的 `[low·high·max]` 紫色小字标 + 模型搜索框同款，tooltip 标注默认档；
+  客户端传 `reasoning_effort` 即可调档。
+- qoder 系 / qwenwork / glm / raccoon / oczen / cline / monkeycode 上游无档位声明，不参与。
+
+## 🗂 积分明细同源回写 pool 快照（R45，PR #94）
+
+面板「同屏两个数字对不上」——账号卡片/汇总条的积分与 hover 明细弹层的数字时不时的差一点。
+根因是**时差**：pool 快照只被「刷新事件」更新，明细是 hover 时的实时值，两者必然相差区间内消耗量。
+
+- `creditSnapshot` 取数成功即 `SetCreditDetail` + ledger 差分（`creditTotals` 与 `ResourceDetail` 共用，
+  删掉三处各自回写）；`/api/account/resource_detail` 新增 `expiring_remain`。
+- 前端 `showCreditDetail` 用响应回写卡片与汇总条，签到/刷新成功后清 `detailCache`。
+
+## 🧹 空壳 assistant 消息补 content（R48，PR #95）
+
+CodeBuddy 在「思考中途被打断」时会存下 `{"role":"assistant","reasoning":…}` 的空壳消息；
+留在历史里会让 traecode/SOLO 对**每一发**请求都回流内 `event:error` `4001 the param is invalid`
+（重启客户端也不恢复，只能新建会话）。本版：`normalizeToolTurnContent` 对 `assistant`/`tool` 一律补
+`content:""`（不再以 tool_calls 为前提），reasoning 字段保留不误删。
+
+## 📱 手机竖屏响应式 UI
+
+- 移动端竖屏响应式布局：账号卡片、费率表、渠道按钮等组件在窄屏下自动重排，不再溢出；
+  触控目标仅在粗指针设备放大（桌面鼠标不吃这套）。
+- 顶栏 `1fr` 下界解除（`minmax(0,1fr)`）、账号卡片允许收缩、费率表窄屏隐藏第 3/4 列、
+  运行统计宽表给横向滚动容器。
+- 积分明细浮窗改为**点击式**（X / Esc / 点外关闭），手机不再依赖 hover。
+- 渠道按钮 6 列两行 + 紧凑档字号（Cline 移到第一行末位、保留列配对）；修复顶栏 650–750px 溢出带。
+
+## 🛡 其它合并（PR #92 / #93 / #94）
+
+- **#92 stream passthrough single account**：单账号渠道流透传（stream passthrough）。
+- **#93 import macos**：macOS 客户端导入路径补全。
+- **#94 credit detail snapshot sync**：见上行「积分明细同源回写快照」。
+
+---
+
+## ✨ 新功能：「缓存利用率」列（原 v2.6.4 草稿内容）
 
 「用量与流水 → Token 用量」的模型表新增**缓存**列，并在汇总卡区新增**缓存利用率**卡片；
 「运行统计 → 模型消耗」表同步新增该列。数值口径为
@@ -1488,3 +1564,18 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 - **无需迁移**：流水新增的 `cr`/`cr_cov` 字段均为 omitempty，未上报时不写出——
   与旧版本产出的行**逐字节相同**，旧流水读出来即「未上报」，面板显示「—」。
 - **历史数据**：缓存列只统计升级后的新请求（老流水没有缓存字段，无数据可算）。
+
+---
+
+## 🐛 修复清单（对照 issue）
+
+| Issue/PR | 问题 | 状态 |
+|---|---|---|
+| #62 | 希望把 Cline 合入项目（新增渠道） | ✅ 本版新增（Cline 免费 API Key 池） |
+| #96 | 模型列表希望显示模型支持的思考等级 | ✅ 本版新增（思考档位透传） |
+| #94 | 明细与刷新路径不同源、面板同屏两个数字对不上 | ✅ 本版修复（积分明细回写快照） |
+| #95 | 空壳 assistant 消息致 traecode/SOLO 4001 | ✅ 本版修复（补 content:""） |
+| #92 | 单账号渠道流透传 | ✅ 本版合并（PR #92） |
+| #93 | macOS 客户端导入路径 | ✅ 本版合并（PR #93） |
+| — | Token 用量表缺缓存利用率维度、MonkeyCode 缓存字段被丢弃 | ✅ 本版修复（缓存列 + devdump 取证） |
+| — | Cline 非流式请求 502 冷却整条渠道 / 漏 X-CLIENT-TYPE / 地区限制误罚号 | ✅ 本版修复（forceStream + 头强制 + 分类豁免） |
