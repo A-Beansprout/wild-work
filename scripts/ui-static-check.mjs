@@ -356,15 +356,17 @@ for (const [label, re] of uniq) {
     [".credit-tip 不再重复定义（原两块，后者静默覆盖前者）", (css.match(/^\.credit-tip \{/gm) || []).length === 1],
     ["浮窗宽度自适应视口（手机不再溢出）", /width: min\(420px, calc\(100vw - 24px\)\)/.test(css)],
     // 响应式：断点是按实测溢出阈值卡位的，调宽会破坏桌面端逐像素一致性，调窄则手机仍溢出。
-    ["窄屏渠道按钮自适应列（auto-fit）", css.includes("repeat(auto-fit, minmax(148px, 1fr))")],
-    ["内联 grid-column 必须用 !important 窄屏覆盖（内联优先级高于样式表）", /\.pa-right \.btn \{[^}]*grid-column: auto !important/.test(css)],
+    ["渠道按钮基础为 6 列（PC 默认宽度 6+5 两行，消除第三行孤行）", css.includes("repeat(6, auto)")],
+    ["渠道按钮摆位全归 CSS（index.html 不再内联 grid-column，否则窄屏无法重排）", !/btnAdd\w+" style="grid-column/.test(html)],
+    ["奇数个渠道时末位跨两列补齐第二行右缘（偶数个时自动不触发）",
+      /\.pa-right \.btn:nth-child\(odd\):last-child \{ grid-column: span 2; \}/.test(css)],
+    ["窄屏渠道按钮自适应列（auto-fit，118px 可在 320px 竖屏排出两列）", css.includes("repeat(auto-fit, minmax(118px, 1fr))")],
+    ["按钮紧凑档字号（12px，PC 一行放下 6 个）", /\.panel-actions-wrap \.btn \{ font-size: 12px;/.test(css)],
     ["顶栏 1fr 下界解除（minmax(0,1fr)）", /\.top-info \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)],
     ["账号卡片允许收缩（minmax(0,1fr)）", /\.acct-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/.test(css)],
     ["费率表窄屏隐藏第 3/4 列（4 列布局手机必溢出）", /\.fees table th:nth-child\(n\+3\)[\s\S]*?display: none/.test(css)],
     ["运行统计宽表给横向滚动容器", /#mtabStats \.st-plat,\s*\n\s*#mtabStats \.st-ex-scroll,\s*\n\s*#mtabStats \.st-ab-scroll,\s*\n\s*#mtabStats \.st-scroll \{ max-width: 100%; overflow-x: auto; \}/.test(css)],
     ["触控目标仅在粗指针设备放大（桌面鼠标不吃）", /@media \(hover: none\) and \(pointer: coarse\)/.test(css)],
-    ["渠道按钮的内联 grid-column 可被窄屏 CSS 覆盖（保留了内联声明，窄屏用 !important 回流）",
-      /btnAdd\w+" style="grid-column/.test(html) && /\.pa-right \.btn \{[^}]*grid-column: auto !important/.test(css)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
