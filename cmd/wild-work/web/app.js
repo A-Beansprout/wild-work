@@ -1752,6 +1752,32 @@ function bind() {
   $("aboutOverlay").onclick = (e) => { if (e.target === $("aboutOverlay")) closeAbout(); };
 }
 
+// ---------- 用量与流水面板（变量声明必须在 init 执行前——bindUsage() 在 init 顶部调用） ----------
+// usageDays 从 localStorage 恢复上次选择（今日/7日），刷新页面不重置回 7 日。
+// 存储键与 TOAST_SEEN_KEY 同族（usage-range-seen）；非法值回退默认 7。
+// ⚠️ 本段必须在 init() 之前执行：bindUsage() 在 init 顶部被调用并引用 usageDays，
+//    若声明滞后于 init（IIFE 立即执行），let 处于暂时性死区（TDZ）会抛
+//    ReferenceError 中断整个 init —— 实测表现：账号卡片/费率表全空白、
+//    控制台报 "Cannot access 'usageDays' before initialization"。
+const USAGE_DAYS_KEY = "usage-range-seen";
+const USAGE_DAYS_VALID = [1, 7];
+let usageDays = 7;
+try {
+  const v = parseInt(localStorage.getItem(USAGE_DAYS_KEY) || "", 10);
+  if (USAGE_DAYS_VALID.includes(v)) usageDays = v;
+} catch (e) { /* localStorage 不可用时保持默认 */ }
+// persistUsageDays 落盘当前区间（不可用存储时静默失败，不阻塞功能）。
+function persistUsageDays() {
+  try { localStorage.setItem(USAGE_DAYS_KEY, String(usageDays)); } catch (e) { /* 忽略 */ }
+}
+let usageChart = null;    // token 折线图（echarts 实例）
+let creditChart = null;   // 积分消耗折线图（echarts 实例）
+let recentAll = [];       // 全量最近流水（分页源，时间升序）
+let recentPage = 0;
+let lastNames = {};       // 最近一次渲染的 uid→昵称表（翻页时复用）
+const RECENT_PAGE_SIZE = 20;
+const MODEL_TOP_N = 20;   // 模型榜只保留前 N 名
+
 // ---------- 初始化 ----------
 (async function init() {
   bind();
@@ -1772,29 +1798,6 @@ function bind() {
   loadAppLog();
   setInterval(loadAppLog, APPLOG_POLL_MS);
 })();
-
-// ---------- 用量与流水面板 ----------
-// usageDays 从 localStorage 恢复上次选择（今日/7日），刷新页面不重置到 7 日。
-// 存储键与 TOAST_SEEN_KEY 同族（usage-range-seen）；非法值回退默认 7。
-const USAGE_DAYS_KEY = "usage-range-seen";
-const USAGE_DAYS_VALID = [1, 7];
-let usageDays = (() => {
-  try {
-    const v = parseInt(localStorage.getItem(USAGE_DAYS_KEY) || "", 10);
-    return USAGE_DAYS_VALID.includes(v) ? v : 7;
-  } catch (e) { return 7; }
-})();
-// persistUsageDays 落盘当前区间（不可用存储时静默失败，不阻塞功能）。
-function persistUsageDays() {
-  try { localStorage.setItem(USAGE_DAYS_KEY, String(usageDays)); } catch (e) { /* 忽略 */ }
-}
-let usageChart = null;    // token 折线图（echarts 实例）
-let creditChart = null;   // 积分消耗折线图（echarts 实例）
-let recentAll = [];       // 全量最近流水（分页源，时间升序）
-let recentPage = 0;
-let lastNames = {};       // 最近一次渲染的 uid→昵称表（翻页时复用）
-const RECENT_PAGE_SIZE = 20;
-const MODEL_TOP_N = 20;   // 模型榜只保留前 N 名
 
 function fmtCredits(n) {
   if (n == null) return "-";
@@ -1856,11 +1859,20 @@ function renderUsage(st) {
   $("ucSpend").textContent = fmtCredits(st.credit.spend);
   $("ucEarn").textContent = fmtCredits(st.credit.earn);
   renderUsageCacheCard(st.token || {});
+  syncUsageRangeActive(); // 高亮始终跟随 usageDays（含异步返回路径）
 
   renderModelTable(st.token.by_model || [], usageDays);
   renderCreditTab(st.credit || {});
   renderUsageChart(st);
   renderCreditChart(st.credit || {});
+}
+
+// syncUsageRangeActive 把「今日/7日」按钮高亮同步为当前 usageDays。
+// 单一入口：初始化、点击切换、异步返回都走它，避免三处 toggle 竞态
+// （此前点击后 loadUsage 异步返回时高亮被回写错误的 bug）。
+function syncUsageRangeActive() {
+  $("usageRange").querySelectorAll(".seg-btn").forEach((x) =>
+    x.classList.toggle("active", parseInt(x.dataset.days, 10) === usageDays));
 }
 
 function renderModelTable(rows, days) {
@@ -2021,13 +2033,11 @@ function bindUsage() {
     b.onclick = () => {
       usageDays = parseInt(b.dataset.days, 10);
       persistUsageDays(); // 记住选择，刷新不重置
-      $("usageRange").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
+      syncUsageRangeActive(); // 单一入口同步高亮
       loadUsage();
     };
   });
-  // 初始高亮按恢复的 usageDays（localStorage 命中「今日」时不要显示 7日 高亮）
-  $("usageRange").querySelectorAll(".seg-btn").forEach((x) =>
-    x.classList.toggle("active", parseInt(x.dataset.days, 10) === usageDays));
+  syncUsageRangeActive(); // 初始高亮按恢复的 usageDays（localStorage 命中「今日」不显示 7日 高亮）
   document.querySelectorAll(".tabs .tab").forEach((b) => {
     b.onclick = () => {
       document.querySelectorAll(".tabs .tab").forEach((x) => x.classList.toggle("active", x === b));
