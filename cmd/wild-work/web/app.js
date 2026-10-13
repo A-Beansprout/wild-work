@@ -825,8 +825,11 @@ function renderFees(fees) {
     const raw = m.model;
     // 短名：去掉渠道前缀（`xxx/name` -> `name`），展示在上行的模型名位置
     const short = raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw;
-    // 完整 ID：裸名补上渠道前缀；模型名本身已带前缀则原样用
-    const full = raw.includes("/") ? raw : (chPrefix ? `${chPrefix}/${raw}` : raw);
+    // 完整 ID 一律补渠道前缀：服务端 runtimeForModel 按第一个 "/" 拆渠道，
+    // 客户端必须给 `<渠道>/<上游ID>` 形态。上游 ID 自带命名空间（如 cline 免费档的
+    // `cline-free/*`）时得到 `cline/cline-free/*` 双层路径——这才是可用形态；
+    // 仅当裸名已以渠道前缀开头时原样保留（防重复）。
+    const full = chPrefix && !raw.startsWith(`${chPrefix}/`) ? `${chPrefix}/${raw}` : raw;
     const copyTip = `点击复制：${full}`;
     const line = `<div class="mline"><code class="fee-model-copy" data-mid="${esc(full)}" role="button" tabindex="0" title="${esc(modelTip(m))}\n${copyTip}">${esc(short)}</code>${ctxTag(m)}${effortTag(m)}${capIcons(m)}${noteCell(m)}</div>`;
     // 仅当完整ID != 短名时才显示可复制的完整 ID 行，避免裸名模型重复
