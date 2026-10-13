@@ -240,6 +240,11 @@ func AggregateWithModel(r io.Reader, model string) (map[string]any, error) {
 		},
 	}
 	if usage != nil {
+		// 缓存计量归一化（issue #104）：trae 上游下发的是 Anthropic 字段名
+		// （cache_read_input_tokens / cache_creation_input_tokens），下游按 OpenAI 规范
+		// 解析（prompt_tokens_details.cached_tokens ?? prompt_cache_hit_tokens）两条都读不到
+		// ⇒ 命中率恒 0%、费用高估。此处补 OpenAI 形状子字段，原始字段保留。
+		provider.NormalizeUsageShape(usage)
 		resp["usage"] = usage
 	}
 	return resp, nil
@@ -457,6 +462,12 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 					}
 				}
 			case "token_usage":
+				// 缓存计量归一化（issue #104）放在**捕获点**而非写出点：这样
+				// onUsage 回调、返回给调用方的 usage、以及「不含 done 的异常收尾」
+				// 三条路径都拿到 OpenAI 形状（trae 上游给的是 Anthropic 字段名）。
+				if ev.Usage != nil {
+					provider.NormalizeUsageShape(ev.Usage)
+				}
 				pendingUsage = ev.Usage
 				if onUsage != nil && ev.Usage != nil {
 					onUsage(ev.Usage)

@@ -1,10 +1,12 @@
 package server
 
-// cacheusage.go 从上游 usage 帧提取「缓存命中 token」——面板「缓存利用率」的唯一取数点。
+import "wild-work/internal/provider"
+
+// cacheusage.go 从上游 usage 帧提取「缓存命中 token」——面板「缓存利用率」的取数点。
 //
-// 为什么单独成文件：这是**唯一**需要按渠道族区分口径的地方，判定规则多且每条都有实测
-// 依据（见下）。把它集中在这里，其余调用方（ledger / stats / handler）只拿到
-// 「cached / reported」两个数，不必各自理解渠道差异。
+// 取数规则已收敛到 internal/provider.ExtractUsageCache（唯一真源，因为
+// /v1/responses 与 /v1/messages 两个转换器也要用同一套优先级）；本文件只保留
+// 面板专用类型与适配。实测依据与三条语义仍见下方。
 //
 // 实测依据（2026-10-12，24 份真实上游快照，见 AGENTS.md §8.5 devdump）：
 //
@@ -47,60 +49,12 @@ type cacheUsage struct {
 //
 // 传入的 u 是**上游原始 usage 对象**（OpenAI 形状；traework 的 SOLO token_usage 亦兼容）。
 // u 为 nil 或非 map 时返回「未上报」。
+//
+// **实现在 internal/provider.ExtractUsageCache**（唯一真源）：本函数只做类型适配。
+// 抽取原因：/v1/responses 与 /v1/messages 两个转换器各写了一套取数优先级且已开始
+// 漂移（转换器先读顶层裸 cached_tokens，而它在 workbuddy 系实测恒 0 是噪声，
+// 会把真值掩盖）。收敛到一处后，面板与三接口对外声明的缓存数字必然同源。
 func cacheUsageOf(u map[string]any) cacheUsage {
-	if u == nil {
-		return cacheUsage{}
-	}
-	// ① workbuddy / workbuddyai 主字段：prompt_cache_hit_tokens。
-	//    实测与 prompt_cache_miss_tokens 互补且和恒等于 prompt_tokens（子集口径）。
-	if v, ok := presentNum(u, "prompt_cache_hit_tokens"); ok {
-		return cacheUsage{cached: v, reported: true}
-	}
-	// ② traework / traecode：Anthropic 命名的 cache_read_input_tokens。
-	//    注意**只取 read（命中）**，不把 cache_creation（写入）算进命中——
-	//    写入是「为下次缓存付的费」，计入命中率会虚高。
-	if v, ok := presentNum(u, "cache_read_input_tokens"); ok {
-		return cacheUsage{cached: v, reported: true}
-	}
-	// ③ 其余渠道（qodercn/qodercom/qwenwork/cline/oczen/monkeycode）：
-	//    details 子对象里的 cached_tokens。**子对象必须非空且确有该键**——
-	//    raccoon 下发空 {} 即在此被正确判为「未上报」（见文件头语义 2）。
-	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
-		d, ok := u[key].(map[string]any)
-		if !ok || len(d) == 0 {
-			continue
-		}
-		if v, ok := presentNum(d, "cached_tokens"); ok {
-			return cacheUsage{cached: v, reported: true}
-		}
-	}
-	return cacheUsage{}
-}
-
-// presentNum 取字段值：**键存在且可转数值**才算命中（区别于 numField 的「缺失即 0」）。
-// 这是语义 2 的实现基础——必须能分辨「0」与「没有」。
-// 上游既有 float64（标准 json 解码）也有 json.Number（网关层解码）两种形态。
-func presentNum(m map[string]any, key string) (int64, bool) {
-	v, ok := m[key]
-	if !ok || v == nil {
-		return 0, false
-	}
-	switch n := v.(type) {
-	case float64:
-		if n < 0 {
-			return 0, true // 负数钳 0（坏数据），但仍算「已上报」
-		}
-		return int64(n), true
-	case int64:
-		if n < 0 {
-			return 0, true
-		}
-		return n, true
-	case int:
-		if n < 0 {
-			return 0, true
-		}
-		return int64(n), true
-	}
-	return 0, false
+	c := provider.ExtractUsageCache(u)
+	return cacheUsage{cached: c.Cached, reported: c.CachedReported}
 }
