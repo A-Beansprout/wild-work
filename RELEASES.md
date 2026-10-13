@@ -1581,7 +1581,7 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 | — | Token 用量表缺缓存利用率维度、MonkeyCode 缓存字段被丢弃 | ✅ 本版修复（缓存列 + devdump 取证） |
 | — | Cline 非流式请求 502 冷却整条渠道 / 漏 X-CLIENT-TYPE / 地区限制误罚号 | ✅ 本版修复（forceStream + 头强制 + 分类豁免） |
 
-# wild-work v2.7.1 — 思考链死循环检测（防癫拦截）+ OpenRouter 思考字段修复 + 面板改进
+# wild-work v2.7.1 — 思考链死循环检测（防癫拦截）+ trae 系 usage 缓存修复 + 面板改进
 
 > 发布主题：**思考链死循环（发癫）检测**——deepseek v4.1 flash 等模型偶发思维链复读/空转，
 > 单块思考几十万字符、烧光额度。本版在抽象层**实时逐帧检测**推理增量，命中即中断 SSE、
@@ -1590,7 +1590,14 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 > 兼修同渠道防癫守卫失效）、**面板四项易用性改进**（费率独立 tab / 用量平均速度列 /
 > 区间记忆 / 五卡同行）、**费率完整 ID 双层路径修复**（修 Cline 免费档复制出的 ID 不可用）、
 > 以及 **TDZ 回归修复**（修 PR #101 引入的面板空白），分别来自
-> [@jianzhangg](https://github.com/jianzhangg) 与 [@bertchiangchiang](https://github.com/bertchiangchiang)。
+> [@jianzhangg](https://github.com/jianzhangg) 与 [@bertchiangchiang](https://github.com/bertchiangchiang)
+> （含 PR #105 统计重启缓存丢失修复）。
+>
+> 本版另有**两项自行修复**：**trae 系 usage 缓存字段归一化**（issue #104，
+> 修下游命中率恒 0%、费用高估约 50 倍）与**防癫检测误伤修复**（agent 在思维链里
+> 正常写代码被误杀）。
+>
+> ⚠️ 本版为**同版本重发**（v2.7.1），已知旧包不含后续修复。
 
 ---
 
@@ -1639,17 +1646,64 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 | PR #101 | 费率区块埋没在页面底部 / 用量表无速度列 / 区间刷新重置 / 五卡片换行 | ✅ 本版改进（独立 tab + 速度列 + 区间记忆 + 五卡同行） |
 | PR #102 | Cline 免费档复制出的完整模型 ID 缺渠道前缀，请求报 `provider "cline-free" is not configured` | ✅ 本版修复（完整 ID 一律补前缀） |
 | PR #103 | PR #101 引入 TDZ 致 init 中断，账号/费率面板全空白 | ✅ 本版修复（声明前移 + 高亮单一入口） |
+| PR #105 | 每次重启后运行统计「模型消耗」缓存列大面积回退成「—」 | ✅ 本版修复（缓存三项随 stats.json 持久化） |
 | — | PR #102 只修了费率表、漏了**模型查找面板**（同一 `raw.includes("/")` 误判，从搜索框复制的 cline ID 仍不可用） | ✅ 本版一并修复（两处口径统一 + 静态回归） |
+| #104 | trae 系（`traework/*`、`traecode/*`）usage 未归一化：缓存命中信息丢失，下游命中率恒 0%、费用高估约 50 倍 | ✅ 本版修复（内层补齐 OpenAI 形状 + 三接口取数收敛为唯一真源） |
+| — | 防癫检测误伤：agent 在思维链里正常写代码（60 行里 30+ 行 `}`）被 short-line-repeat 掐断 | ✅ 本版修复（围栏豁免扩展 + 结构行豁免） |
+
+---
+
+## 🔄 trae 系 usage 缓存字段归一化（issue #104）
+
+**现象**：经网关使用 `traework/*`、`traecode/*` 时，下游客户端**拿不到任何缓存命中信息**——
+命中率恒 0%、所有 prompt token 按「未缓存输入」计价（按常见价表 input 0.165 vs cacheRead 0.0033 计，**费用高估约 50 倍**），而 `workbuddy/*` 一切正常。
+
+**根因**：trae 上游的 token_usage 用 **Anthropic 命名**（`cache_read_input_tokens` /
+`cache_creation_input_tokens`），内层原样透传；下游按 OpenAI 规范解析
+（实测读法 `prompt_tokens_details?.cached_tokens ?? prompt_cache_hit_tokens ?? 0`）两条都命中不了。
+
+**修复**：在**内层补齐 OpenAI 形状**（而非让下游兼容 Anthropic——后者要改所有客户端）：
+
+- 新增 `provider.NormalizeUsageShape`：补 `prompt_tokens_details.cached_tokens` /
+  `cache_write_tokens`，**保留原始字段**（不破坏已有依赖）、**只在缺失时写入**、
+  **认「字段存在」而非「值 > 0」**（0 是「明确未命中」的有效值）。
+- 接线 traework 的**流式**（在 token_usage 捕获点，覆盖回调/返回值/异常收尾三条路径）
+  与**非流式**两个出口。
+- **取数收敛为唯一真源** `provider.ExtractUsageCache`：此前 `/v1/responses`、`/v1/messages`、
+  面板**各写一套优先级且已开始漂移**（转换器先读在 workbuddy 系恒 0 的噪声字段，
+  且用 `> 0` 判定会把「明确未命中」丢成「未提供」）。
+- **`/v1/messages`（Claude Code 路径）语义换算**：Anthropic 的 `input_tokens` 是
+  「未命中且未写入」的部分，客户端自行相加还原总输入；而内层 `prompt_tokens` 已是总输入。
+  故 `input_tokens = prompt_tokens − cached − write`——不下发缓存字段（费用高估）与
+  下发了却不减（客户端求和近两倍）都是错的。三段相加恒等于原 `prompt_tokens`。
+
+---
+
+## 🛡 防癫检测误伤修复（R50 修订）
+
+**现场**：agent 在思维链里正常生成 Go 代码，60 行里 30+ 行是 `}`，被短行高频判据
+误判为「空转」而掐断流。根因是 DSH 原实现为**思维链散文**标定，未预见「思维链里写代码」。
+
+**修复（两层）**：
+
+- **围栏豁免从 ④ 扩展到 ②③**：原实现只豁免行内判据，围栏内代码的 `}` 短行照样进
+  短行/唯一率窗口被误杀；现围栏内的行不进 ②③ 窗口（① 同行连续保持不豁免——
+  连续 8 行相同长行即使围栏内也几乎必是发癫）。
+- **结构行豁免**：兜住无围栏裸代码（DeepSeek 系思维链常不挂围栏、fence 状态机管不到）——
+  trim 后无字母/数字的行（`}` `{` `});`）与无空白/标点的连续词行（`break`/`return`）
+  不进 ②③ 窗口；发癫短句必含标点或空白（「做。」、`ok then.`）不受影响。
+
+已知残留风险：`else {` 这类带结构符号的关键字组合仍计窗（密度低，遇实锤再收）。
 
 ---
 
 ## 🙏 致谢
 
-本版含 4 个社区贡献（均已合入 master 并保留作者署名）：
+本版含 4 个社区 PR（均已合入 master 并保留作者署名）：
 
 | 贡献者 | 内容 |
 |--------|------|
-| [@jianzhangg](https://github.com/jianzhangg) | #100 OpenRouter 系思考字段归一化（修 Cline 免费池思考丢失 + 防癫守卫失效）、#101 面板四项易用性改进、#103 TDZ 回归修复 |
+| [@jianzhangg](https://github.com/jianzhangg) | #100 OpenRouter 系思考字段归一化、#101 面板四项易用性改进、#103 TDZ 回归修复、#105 统计缓存持久化修复 |
 | [@bertchiangchiang](https://github.com/bertchiangchiang) | #102 费率完整模型 ID 补渠道前缀（修 Cline 免费档路径） |
 
 以及算法来源：[dsh-attention-health](https://github.com/donghangxunlang-cmd/dsh-attention-health)
