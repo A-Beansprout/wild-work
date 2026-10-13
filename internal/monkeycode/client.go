@@ -138,9 +138,13 @@ func StaticModels() []provider.ModelInfo { return modelInfos() }
 
 // modelInfos 构造静态模型表。
 //
-// ContextWindow/MaxTokens 取自客户端 settings.json 的托管条目（200000 / 32000），
-// 是上游声明的真实容量而非估算，故 ContextFromAPI 置 true —— 让 /v1/models
-// 正常透出容量，客户端据此做上下文预算。
+// 来源标注（issue 报告 #6）：ContextWindow/MaxTokens（200000 / 32000）抄自官方
+// 客户端 settings.json 的托管条目，属上游声明容量，但并非模型目录接口字段——
+// 严格按 provider.go 口径，ContextFromAPI（上游接口返回）与 HandMeasured（本工具
+// 实测）都不完全匹配。仍取 ContextFromAPI=true 的取舍：值确系上游声明而非估算，
+// 两个标志全关会让费用面板按「未知」处理、丢失这批模型的容量展示（/v1/models
+// 不受此标志门控，照常透出）；而 HandMeasured 会给从未实测的值冒充「实测」标注，
+// 更不实。若上游未来下发模型目录接口，应改为真实解析并更新本说明。
 func modelInfos() []provider.ModelInfo {
 	out := make([]provider.ModelInfo, 0, len(staticModels))
 	for _, id := range staticModels {
