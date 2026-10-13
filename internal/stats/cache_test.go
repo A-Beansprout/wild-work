@@ -63,3 +63,38 @@ func TestCacheSurvivesDayRollover(t *testing.T) {
 		t.Fatalf("跨天后缓存口径应重置为今日值，实际 %d/%d", m.CR, m.CRCov)
 	}
 }
+
+// TestCacheSurvivesRestart 重启（flush → 新引擎 load）后，今日缓存样本必须恢复。
+// 回归：persist.go 的 modelPersist 曾遗漏 cr/cr_cov/cr_reqs 三字段，2026-10-13
+// 线上实测每次重启丢失今日缓存（workbuddyai 98%→—），面板「缓存」列大面积回退。
+func TestCacheSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	now := time.Now()
+	// workbuddyai：上报 569 次，命中 180355328 / 分母 183851354（线上量级）
+	s.AddUsage("workbuddyai/deepseek-v4.1-flash", 183851354, 783024, 0, 4522, 4085, 180355328, true, now)
+	// workbuddy：上报但 0 命中（必须恢复成 0% 而非「—」）
+	s.AddUsage("workbuddy/step-5-preview", 549, 5465, 0, 10159, 19, 0, true, now)
+	s.FlushNow()
+
+	s2, err := New(dir, nil)
+	if err != nil {
+		t.Fatalf("重开引擎: %v", err)
+	}
+	snap := s2.Snapshot(now)
+	byModel := map[string]ModelStat{}
+	for _, m := range snap.Models {
+		byModel[m.Model] = m
+	}
+	m1 := byModel["workbuddyai/deepseek-v4.1-flash"]
+	if m1.CR != 180355328 || m1.CRCov != 183851354 || m1.CRReqs != 1 {
+		t.Fatalf("重启后缓存样本丢失: cr/cr_cov/cr_reqs = %d/%d/%d", m1.CR, m1.CRCov, m1.CRReqs)
+	}
+	m2 := byModel["workbuddy/step-5-preview"]
+	if m2.CRCov != 549 || m2.CR != 0 || m2.CRReqs != 1 {
+		t.Fatalf("0 命中上报重启后应保持 0%%（非—）: cr/cr_cov/cr_reqs = %d/%d/%d", m2.CR, m2.CRCov, m2.CRReqs)
+	}
+}
