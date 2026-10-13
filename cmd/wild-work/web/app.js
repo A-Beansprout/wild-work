@@ -2204,6 +2204,7 @@ async function loadStats() {
     ]);
     renderStats(s);
     renderAbnormal(s.abnormal || []);
+    renderFallbacks(s.fallbacks || []);
     if (lg) renderLogs(lg.rows || []);
     stMarkUpdated();
   } catch (e) {
@@ -2450,6 +2451,43 @@ function renderLogs(rows) {
   }
   $("stLogs").innerHTML = rows.length ? h : `<tr><td class="st-empty">暂无请求</td></tr>`;
 }
+
+// ---------- 降级记录（主模型全冷切备胎的事件流；无事件整块隐藏） ----------
+// fmtFbDur 秒数 → 紧凑文案（"42 秒" / "3 分 12 秒" / "1 时 02 分"）
+function fmtFbDur(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  if (sec < 60) return sec + " 秒";
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + " 分 " + s + " 秒";
+  return Math.floor(m / 60) + " 时 " + String(m % 60).padStart(2, "0") + " 分";
+}
+
+function renderFallbacks(evs) {
+  const block = $("stFbBlock");
+  if (!evs.length) { block.hidden = true; return; }
+  block.hidden = false;
+  let h = `<tr><th>#</th><th>降级时间</th><th>原模型</th><th></th><th>备胎</th><th>恢复</th><th>持续</th></tr>`;
+  evs.forEach((e, i) => {
+    h += `<tr class="${e.active ? "fb-active" : ""}">` +
+      `<td>${i + 1}</td>` +
+      `<td class="st-mono">${esc(e.at)}</td>` +
+      `<td class="st-mono" title="${esc(e.from)}">${esc(e.from)}</td>` +
+      `<td class="fb-arrow">→</td>` +
+      `<td class="st-mono" title="${esc(e.to)}">${esc(e.to)}</td>` +
+      (e.active
+        ? `<td><span class="fb-live">● 降级中</span></td><td><span class="fb-live" data-fb-epoch="${e.at_unix}"></span></td>`
+        : `<td class="st-mono">${esc(e.recovered || "—")}</td><td>${fmtFbDur(e.dur_sec)}</td>`) +
+      `</tr>`;
+  });
+  $("stFbs").innerHTML = h;
+}
+
+// 进行中事件的「持续」每秒重算（只改文本不重渲染；元素不存在时空转，开销可忽略）
+setInterval(() => {
+  document.querySelectorAll("[data-fb-epoch]").forEach((el) => {
+    el.textContent = "已 " + fmtFbDur((Date.now() - Number(el.dataset.fbEpoch) * 1000) / 1000);
+  });
+}, 1000);
 
 // 异常账号（三级：disabled 已停用 / cool 整号冷却 / err 错误累计；无异常整块隐藏）
 const ABNORMAL_META = {

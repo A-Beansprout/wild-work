@@ -19,6 +19,7 @@ import (
 	"wild-work/internal/oczen"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
+	"wild-work/internal/stats"
 )
 
 // newFbHandler 装配两个渠道（oczen=主、workbuddy=备）的 handler，各一个账号。
@@ -122,6 +123,44 @@ func TestModelFallbackExposesActualModelInBody(t *testing.T) {
 	_ = json.Unmarshal(rec2.Body.Bytes(), &resp)
 	if resp["model"] != "workbuddy/glm-free" {
 		t.Errorf("降级后 model=%v，want 备胎 workbuddy/glm-free（agent 感知）", resp["model"])
+	}
+}
+
+// TestModelFallbackFeedsStatsEvents 降级/恢复事件喂入运行统计（面板「降级记录」）：
+// 降级命中记 Active 事件；原模型容量回归后的下一请求关闭事件（恢复）。
+func TestModelFallbackFeedsStatsEvents(t *testing.T) {
+	st, err := stats.New(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upA, upB := &fbUpstream{}, &fbUpstream{}
+	h, pa, _ := newFbHandler(t, upA, upB, []config.ModelFallbackRule{
+		{From: "oczen/big-pickle", To: []string{"workbuddy/glm-free"}},
+	})
+	h.stats = st // 测试直装（newFbHandler 未暴露 Stats 配置；同包可见）
+
+	// 健康请求：恢复探针空转，无事件
+	callModel(h, "oczen/big-pickle")
+	if n := len(st.Snapshot(time.Now()).Fallbacks); n != 0 {
+		t.Fatalf("健康请求不应产生事件: %d 条", n)
+	}
+
+	// 全冷 → 降级：事件 Active（from=请求名，to=备胎）
+	// （短冷却 50ms + sleep，同 TestModelFallbackUnfreezeAutoSwitchBack 的解冻手法；
+	// ClearPenalty 不清模型级冷却，不能用于此处解冻）
+	pa.CooldownModel(oczen.AnonymousUID, "big-pickle", 50*time.Millisecond, "test")
+	callModel(h, "oczen/big-pickle")
+	evs := st.Snapshot(time.Now()).Fallbacks
+	if len(evs) != 1 || !evs[0].Active || evs[0].From != "oczen/big-pickle" || evs[0].To != "workbuddy/glm-free" {
+		t.Fatalf("降级事件不符: %+v", evs)
+	}
+
+	// 解冻 → 下一请求走原模型并顺带关闭事件
+	time.Sleep(80 * time.Millisecond)
+	callModel(h, "oczen/big-pickle")
+	evs = st.Snapshot(time.Now()).Fallbacks
+	if len(evs) != 1 || evs[0].Active || evs[0].Recovered == "" || evs[0].DurSec < 0 {
+		t.Fatalf("恢复后事件不符: %+v", evs)
 	}
 }
 

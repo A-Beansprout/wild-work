@@ -499,6 +499,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if fbApplied != "" {
 		dispModel = fbApplied
 	}
+	// 降级事件喂入运行统计（面板「降级记录」区块）：降级命中记一条；未降级的请求
+	// 顺带当恢复探针——原模型容量回归即关闭其进行中事件（本请求后续成败不影响，
+	// 恢复语义=「重新有可用账号」而非「重新请求成功」）。
+	if h.stats != nil {
+		if fbApplied != "" {
+			h.stats.NoteFallback(clientModel, fbApplied, time.Now())
+		} else {
+			h.stats.NoteFallbackRecovery(clientModel, time.Now())
+		}
+	}
 	body, err = rewriteModel(body, model)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
