@@ -2464,8 +2464,12 @@ function fmtFbDur(sec) {
 
 function renderFallbacks(evs) {
   const block = $("stFbBlock");
-  if (!evs.length) { block.hidden = true; return; }
-  block.hidden = false;
+  block.hidden = false; // 常显：让用户随时知道有这个区块；无事件显示占位行
+  const $t = $("stFbs");
+  if (!evs.length) {
+    $t.innerHTML = `<tr><td class="st-empty">暂无降级记录——主模型全冷切备胎时这里会出现事件（降级/恢复时刻与持续时长）</td></tr>`;
+    return;
+  }
   let h = `<tr><th>#</th><th>降级时间</th><th>原模型</th><th></th><th>备胎</th><th>恢复</th><th>持续</th></tr>`;
   evs.forEach((e, i) => {
     h += `<tr class="${e.active ? "fb-active" : ""}">` +
