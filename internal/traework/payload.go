@@ -82,11 +82,11 @@ func PrepareBody(src []byte, function string) []byte {
 	}
 	obj["function"] = function
 	normalizeToolChoice(obj)
-	// Kimi/Moonshot 系后端拒绝含递归 $ref 的 tool schema（4027 无限递归），
-	// 须在 normalizeTools 把 parameters 字符串化之前打断引用环。
-	if isMoonshotBacked(model) {
-		breakToolSchemaCycles(obj)
-	}
+	// Kimi/Moonshot 系后端拒绝 tool schema 中的 $ref（4027 无限递归，2026-10-13
+	// 实测对保留的非环 $ref 亦然），须在 normalizeTools 把 parameters 字符串化
+	// 之前全量内联。不按模型名门控：客户端可能用自定义模型别名（不含 kimi
+	// 字样）；对容忍递归的后端，展开后的有限 schema 依旧合法。
+	breakToolSchemaCycles(obj)
 	normalizeTools(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
