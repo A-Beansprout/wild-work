@@ -125,7 +125,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		}
 	}
 	// mergeMessageFields 把非 delta 的完整 message 内容并入聚合（message 是整条下发，
-	// 非流式拼接，content 只取一次）。role/reasoning_content/tool_calls 与 delta 分支
+	// 非流式拼接，content 只取一次）。role/reasoning/tool_calls 与 delta 分支
 	// 同构透出；content 同样置 gotAnyContent，与 delta 路径的 latch 语义一致
 	// （一帧整条 message 之后，后续 delta 帧不重复追加）。
 	mergeMessageFields := func(msg map[string]any) {
@@ -135,7 +135,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		if txt, ok := msg["content"].(string); ok {
 			appendContent(txt)
 		}
-		if rc, ok := msg["reasoning_content"].(string); ok {
+		if rc := reasoningDeltaOf(msg); rc != "" {
 			reasoning.WriteString(rc)
 		}
 		if tcs, ok := msg["tool_calls"].([]any); ok {
@@ -187,7 +187,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 								if txt, ok := delta["content"].(string); ok {
 									appendContent(txt)
 								}
-								if rc, ok := delta["reasoning_content"].(string); ok {
+								if rc := reasoningDeltaOf(delta); rc != "" {
 									reasoning.WriteString(rc)
 								}
 								if tcs, ok := delta["tool_calls"].([]any); ok {
@@ -195,7 +195,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 								}
 							}
 							// 有的上游把完整消息放在 message 里（非 delta）：
-							// 整条并入（role/content/reasoning_content/tool_calls），
+							// 整条并入（role/content/reasoning/tool_calls），
 							// 与 delta 分支同构。delta 已取过正文（gotAnyContent）则跳过
 							// （避免与 delta 路径重复拼接——PR #134 的 latch 语义）。
 							if msg, ok := c["message"].(map[string]any); ok && !gotAnyContent {
@@ -387,10 +387,70 @@ func stripToolCallNames(obj map[string]any, seen map[int]bool) {
 	}
 }
 
+// reasoningDeltaOf 从 OpenAI 形状的 delta 里提取思考增量，归一化到
+// `reasoning_content` 单字段下发。
+//
+// 上游对思考增量有三种字段名，实测并存：
+//   - `reasoning_content`：DeepSeek 系 / WorkBuddy 系（本仓库历史唯一形态）；
+//   - `reasoning`：OpenRouter 归一化字段（Cline 免费池、OpenZen 等走 OpenRouter
+//     的渠道实测下发；`@ai-sdk/openai-compatible` 的读取式是
+//     `delta.reasoning_content ?? delta.reasoning`，即下游本就兼容两者）；
+//   - `reasoning_details`：OpenRouter 结构化块数组，`reasoning.summary` 条目
+//     的 `summary` 文本与同帧 `reasoning` 逐字相同（2026-10-13 实抓比对：
+//     拼接后长度 179 == 179 且全等），`reasoning.encrypted` 条目是回放用密文、
+//     无可读文本。
+//
+// 归一化方向选 `reasoning_content` 而非 `reasoning`：前者是本仓库九渠道
+// 白名单、loopguard 判据、gateway 的 Anthropic 转换共同认定的唯一字段，
+// 改成后者要动四处；且 AI SDK 优先读前者。
+//
+// 三者的优先级：`reasoning_content` > `reasoning` > `reasoning_details`。
+// 同一帧通常只出现一种（实测 `reasoning` 与 `reasoning_details.summary` 并存时
+// 内容相同，取前者避免重复拼接）。`reasoning_details` 内部再分两级：
+// `reasoning.text`（原始全文）优先于 `reasoning.summary`（高层摘要），
+// 两者都取则同一段推理会以两种粒度重复下发。
+func reasoningDeltaOf(d map[string]any) string {
+	if v, ok := d["reasoning_content"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := d["reasoning"].(string); ok && v != "" {
+		return v
+	}
+	items, ok := d["reasoning_details"].([]any)
+	if !ok {
+		return ""
+	}
+	var full, summary strings.Builder
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		switch m["type"] {
+		case "reasoning.text": // 原始全文（anthropic-claude-v1 等格式）
+			if s, ok := m["text"].(string); ok {
+				full.WriteString(s)
+			}
+		case "reasoning.summary": // 高层摘要（meta-responses-v1 等格式）
+			if s, ok := m["summary"].(string); ok {
+				summary.WriteString(s)
+			}
+			// 其余类型（encrypted 为密文、无可读文本）不取
+		}
+	}
+	if full.Len() > 0 {
+		return full.String()
+	}
+	return summary.String()
+}
+
 // normalizeFrame 以 OpenAI 流式规范白名单重建帧：仅保留标准字段，
 // 剔除上游噪声（finish_reason:"" → null、空 content/refusal、空 tool_calls 列表、
 // 空占位 function_call、顶层未知字段），空 delta 键一律省略，
 // usage 缺失 → null，保证任意标准客户端按规范解析。
+//
+// 思考增量经 reasoningDeltaOf 归一化到 `reasoning_content` 单字段
+// （OpenRouter 的 `reasoning`/`reasoning_details` 上游字段名不直接透出）。
 func normalizeFrame(obj map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{"id", "object", "created", "model", "system_fingerprint", "service_tier"} {
@@ -423,7 +483,7 @@ func normalizeFrame(obj map[string]any) map[string]any {
 				if v, ok := d["content"].(string); ok && v != "" {
 					delta["content"] = v
 				}
-				if v, ok := d["reasoning_content"].(string); ok && v != "" {
+				if v := reasoningDeltaOf(d); v != "" {
 					delta["reasoning_content"] = v
 				}
 				if v, ok := d["refusal"].(string); ok && v != "" {
