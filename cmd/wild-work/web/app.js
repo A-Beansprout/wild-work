@@ -1298,6 +1298,51 @@ async function toggleAutostart() {
   } catch (e) { toast(e.message); loadState(); }
 }
 
+// ---------- 模型降级链（设置弹层：主模型全冷时按链顶备胎，不粘滞自动切回） ----------
+// fbRules 编辑态副本（openSettings 时从 state.model_fallback 深拷贝；保存成功后由 loadState 刷新）
+let fbRules = [];
+
+// renderFbList 渲染降级链编辑区：每条规则一行（主模型 → 备胎1 ×… ＋输入 ＋ | 🗑）。
+// 交互全部事件委托在 #fbList 上（data-del-rule / data-del-to / data-add-to）。
+function renderFbList() {
+  const rows = fbRules.map((r, i) => {
+    const tos = r.to.map((t, j) =>
+      `<span class="fb-to" style="display:inline-flex;align-items:center;gap:2px;background:var(--card,#f5f5f5);border:1px solid var(--line,#ddd);border-radius:10px;padding:1px 7px;margin:0 3px;font-family:ui-monospace,monospace;font-size:12px">${esc(t)}<a data-del-to="${i}:${j}" title="移除该备胎" style="cursor:pointer;color:var(--danger);margin-left:3px">×</a></span>`
+    ).join("");
+    return `<div class="row proxy-row" style="align-items:flex-start">
+      <span class="lbl wide" style="max-width:260px;overflow-wrap:anywhere;font-family:ui-monospace,monospace" title="${esc(r.from)}">${esc(r.from)}</span>
+      <span style="margin:0 4px">→</span>
+      <span style="flex:1;overflow-wrap:anywhere">${tos || "（无备胎）"}</span>
+      <input class="input fb-to-add" data-add-idx="${i}" style="width:170px" spellcheck="false" placeholder="＋备胎 ID（回车添加）">
+      <button class="icon-btn" data-add-to="${i}" title="把左侧备胎追加到该规则末尾">＋</button>
+      <button class="icon-btn" data-del-rule="${i}" title="删除整条规则">🗑</button>
+    </div>`;
+  }).join("");
+  $("fbList").innerHTML = rows || `<div class="hint">（暂无规则——主模型全冷时将直接返回 503 提示）</div>`;
+  $("fbErr").textContent = "";
+}
+
+// parseModelList 解析备胎输入：逗号/空格/换行分隔多个 channel/model，本地形态校验。
+function parseModelList(raw) {
+  const out = [];
+  for (const p of String(raw || "").split(/[,，\s]+/)) {
+    const t = p.trim();
+    if (!t) continue;
+    if (!/^[^/]+\/.+/.test(t)) return [null, `备胎模型 ${t} 需为 channel/model 形式（如 workbuddyai/glm-5.2）`];
+    out.push(t);
+  }
+  return [out, ""];
+}
+
+async function saveModelFallback() {
+  try {
+    await api("/api/config/model_fallback", { rules: fbRules });
+    toast("降级链已保存（热生效）");
+    $("fbErr").textContent = "";
+    loadState();
+  } catch (e) { $("fbErr").textContent = e.message; }
+}
+
 // ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/渠道代理） ----------
 // PROXY_CHANNELS 渠道上游代理列表（顺序与面板渠道序一致；旧 qoder 已下线不提供代理配置）。
 const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "qwenwork", "glm", "cline", "monkeycode", "raccoon", "loomy"];
@@ -1377,6 +1422,10 @@ function openSettings() {
   renderProxyList();
   $("oczenKeyInput").value = state.oczen_api_key || ""; // 回显脱敏值；未改动则原样回传，后端按脱敏值识别为「未变」
   $("oczenKeyInput").dataset.touched = "";
+  // 模型降级链
+  fbRules = JSON.parse(JSON.stringify(state.model_fallback || []));
+  renderFbList();
+  $("fbFromInput").value = ""; $("fbToInput").value = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
@@ -1732,6 +1781,56 @@ function bind() {
   // oczen key 用户改动标记：避免把脱敏回显值误存回
   $("oczenKeyInput").addEventListener("input", (e) => { e.target.dataset.touched = "1"; });
   $("btnOczenTest").onclick = testOczenKey;
+
+  // 模型降级链：添加规则 / 保存 / 列表内事件委托（删规则、删备胎、追加备胎、回车添加）
+  $("btnFbAdd").onclick = () => {
+    const from = $("fbFromInput").value.trim();
+    if (!/^[^/]+\/.+/.test(from)) { $("fbErr").textContent = "主模型需为 channel/model 形式（如 workbuddyai/deepseek-v4.1-flash）"; return; }
+    if (fbRules.some((r) => r.from === from)) { $("fbErr").textContent = `主模型 ${from} 已有规则（每个主模型只允许一条）`; return; }
+    const [tos, err] = parseModelList($("fbToInput").value);
+    if (err) { $("fbErr").textContent = err; return; }
+    if (tos.length === 0) { $("fbErr").textContent = "至少填一个备胎模型"; return; }
+    fbRules.push({ from, to: tos });
+    $("fbFromInput").value = ""; $("fbToInput").value = "";
+    renderFbList();
+  };
+  $("fbToInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnFbAdd").onclick(); });
+  $("btnFbSave").onclick = saveModelFallback;
+  $("fbList").addEventListener("click", async (e) => {
+    const addBtn = e.target.closest("[data-add-to]");
+    if (addBtn) {
+      const i = +addBtn.dataset.addTo;
+      const inp = document.querySelector(`.fb-to-add[data-add-idx="${i}"]`);
+      const [tos, err] = parseModelList(inp && inp.value);
+      if (err) { $("fbErr").textContent = err; return; }
+      if (tos.length === 0) { $("fbErr").textContent = "先在输入框填备胎 ID 再点 ＋"; return; }
+      fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
+      renderFbList();
+      return;
+    }
+    const delTo = e.target.closest("[data-del-to]");
+    if (delTo) {
+      const [i, j] = delTo.dataset.delTo.split(":").map(Number);
+      fbRules[i].to.splice(j, 1);
+      renderFbList();
+      return;
+    }
+    const delRule = e.target.closest("[data-del-rule]");
+    if (delRule) {
+      fbRules.splice(+delRule.dataset.delRule, 1);
+      renderFbList();
+    }
+  });
+  // 行内备胎输入框回车 = 追加到该规则（事件委托 keydown）
+  $("fbList").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !e.target.classList.contains("fb-to-add")) return;
+    const i = +e.target.dataset.addIdx;
+    const [tos, err] = parseModelList(e.target.value);
+    if (err) { $("fbErr").textContent = err; return; }
+    if (tos.length === 0) return;
+    fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
+    renderFbList();
+  });
 
   // 点击弹层空白处关闭
   $("settingsOverlay").onclick = (e) => { if (e.target === $("settingsOverlay")) closeSettings(); };

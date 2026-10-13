@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/config"
 	"wild-work/internal/ledger"
 	"wild-work/internal/loopguard"
 	"wild-work/internal/pool"
@@ -79,6 +80,9 @@ type Config struct {
 	ErrThreshold int
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
+
+	// ModelFallbacks 模型降级链初始值（面板保存后经 SetModelFallbacks 热更新）。
+	ModelFallbacks []config.ModelFallbackRule
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -101,6 +105,16 @@ type Handler struct {
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
+
+	fbMu       sync.RWMutex                  // 保护 fallbacks（面板可运行时修改）
+	fallbacks  []config.ModelFallbackRule    // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
+}
+
+// SetModelFallbacks 热更新模型降级链（面板保存后由 app 层回调；nil/空 = 清空禁用）。
+func (h *Handler) SetModelFallbacks(rules []config.ModelFallbackRule) {
+	h.fbMu.Lock()
+	h.fallbacks = rules
+	h.fbMu.Unlock()
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -127,7 +141,7 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats, fallbacks: cfg.ModelFallbacks}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -465,6 +479,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
+	// 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account 的「模型全冷」
+	// 形态，pickWithSticky 必败）时，按用户配置的链找第一个仍有可用账号的备胎模型顶上。
+	// 仅此场景触发，正常路由零开销；不粘滞——每个请求都按原模型重新判定，上游解冻即自动切回。
+	if fbID := h.pickModelFallback(rt, model); fbID != "" {
+		if rt2, m2, err := h.runtimeForModel(fbID); err == nil {
+			log.Printf("model fallback platform=%s from=%s to=%s", rt.Kind, clientModel, fbID)
+			// 响应头标注实际备胎（必须在任何 WriteHeader 之前；sw 透传 Header）
+			w.Header().Set("X-Model-Fallback", clientModel+" -> "+fbID)
+			rt, model = rt2, m2
+		}
+	}
 	body, err = rewriteModel(body, model)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -888,6 +913,67 @@ func stripChannel(model string) string {
 		return model[i+1:]
 	}
 	return model
+}
+
+// modelHasCapacity 报告 rt 渠道此刻是否有账号能承载 model（非禁用/非整号冷却/
+// 该模型不在模型级冷却中；冷却按到期时间精确比较，过期条目视为已解冻）。
+func modelHasCapacity(rt *Runtime, model string) bool {
+	now := time.Now()
+	for _, s := range rt.Pool.List() {
+		if s.Disabled || s.Cooling {
+			continue
+		}
+		if t, ok := s.ModelCooling[model]; ok && t.After(now) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// pickModelFallback 模型降级链解析：仅当请求模型在自身渠道全部账号上限流冷却
+// （存在健康账号但 modelHasCapacity 全否，同 no_healthy_account「模型全冷」分支口径）
+// 时，按规则顺序（规则间按配置顺序、链内按 To 顺序）找第一个有容量的备胎模型
+// 全路径 ID；未全冷/无规则/无可用备胎返回 ""（走原路由或原报错）。
+// 备胎允许跨渠道（To 为 "channel/model" 全路径，经 runtimeForModel 解析）。
+func (h *Handler) pickModelFallback(rt *Runtime, model string) string {
+	h.fbMu.RLock()
+	rules := h.fallbacks
+	h.fbMu.RUnlock()
+	if len(rules) == 0 {
+		return ""
+	}
+	// 全冷判定：至少一个健康账号（否则交原报错分支给针对性提示），且没有任何账号能承载该模型。
+	hasHealthy := false
+	for _, s := range rt.Pool.List() {
+		if !s.Disabled && !s.Cooling {
+			hasHealthy = true
+			break
+		}
+	}
+	if !hasHealthy || modelHasCapacity(rt, model) {
+		return ""
+	}
+	for _, rule := range rules {
+		ch, inner, ok := strings.Cut(strings.TrimSpace(rule.From), "/")
+		if !ok || ch != rt.Kind.String() || inner != model {
+			continue
+		}
+		for _, to := range rule.To {
+			to = strings.TrimSpace(to)
+			if to == "" {
+				continue
+			}
+			rt2, m2, err := h.runtimeForModel(to)
+			if err != nil || rt2 == nil {
+				continue
+			}
+			if modelHasCapacity(rt2, m2) {
+				return to
+			}
+		}
+	}
+	return ""
 }
 
 // usageCredit 从 usage 对象取上游下发的单次积分（WorkBuddy 系会回；

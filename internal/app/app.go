@@ -128,6 +128,10 @@ type App struct {
 	// 由 main.go 注入；nil 时仅写配置不热更。
 	oczenSyncer func(key string)
 
+	// fbSyncer 面板保存模型降级链后推给 server.Handler（热更新降级路由）。
+	// 由 main.go 注入；nil 时仅写配置不热更。
+	fbSyncer func(rules []config.ModelFallbackRule)
+
 	refreshMu  sync.Mutex // 防并发刷新积分
 	refreshing bool
 
@@ -1897,6 +1901,57 @@ func (a *App) SetCompatSyncer(fn func(defaultChannel string, maxTokensCap int, m
 // SetProxySyncer 注入代理热更新回调（由 main.go 注入：重新套各渠道 HTTP client）。
 func (a *App) SetProxySyncer(fn func(proxies map[string]string)) { a.proxySyncer = fn }
 
+// SetModelFallbackSyncer 注入模型降级链热更新回调（由 main.go 注入：推给 server.Handler）。
+func (a *App) SetModelFallbackSyncer(fn func(rules []config.ModelFallbackRule)) { a.fbSyncer = fn }
+
+// SetModelFallback 保存模型降级链（设置面板可视化编辑）。
+// 校验：From/To 均须 "channel/model" 全路径；From 全局唯一；每链 To 至少一项、
+// 不含 From 自身（不自环）；空规则列表 = 清空禁用。保存即热生效（fbSyncer）。
+func (a *App) SetModelFallback(rules []config.ModelFallbackRule) error {
+	seen := map[string]bool{}
+	for i := range rules {
+		r := &rules[i]
+		r.From = strings.TrimSpace(r.From)
+		if strings.Index(r.From, "/") <= 0 {
+			return fmt.Errorf("规则 %d 的主模型 %q 需为 channel/model 形式", i+1, r.From)
+		}
+		if seen[r.From] {
+			return fmt.Errorf("主模型 %q 重复（每个主模型只允许一条规则）", r.From)
+		}
+		seen[r.From] = true
+		tos := make([]string, 0, len(r.To))
+		for _, to := range r.To {
+			to = strings.TrimSpace(to)
+			if to == "" {
+				continue
+			}
+			if strings.Index(to, "/") <= 0 {
+				return fmt.Errorf("主模型 %q 的备胎 %q 需为 channel/model 形式", r.From, to)
+			}
+			if to == r.From {
+				return fmt.Errorf("主模型 %q 的备胎不能是它自己", r.From)
+			}
+			tos = append(tos, to)
+		}
+		if len(tos) == 0 {
+			return fmt.Errorf("主模型 %q 的降级链为空（至少填一个备胎模型）", r.From)
+		}
+		r.To = tos
+	}
+	a.mu.Lock()
+	a.cfg.ModelFallback = rules
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if a.fbSyncer != nil {
+		a.fbSyncer(rules)
+	}
+	log.Printf("模型降级链已更新（%d 条规则，保存即热生效）", len(rules))
+	return nil
+}
+
 // SetOczenSyncer 注入 oczen key 热更新回调（由 main.go 注入：写入渠道 client）。
 func (a *App) SetOczenSyncer(fn func(key string)) { a.oczenSyncer = fn }
 
@@ -2105,6 +2160,9 @@ type State struct {
 
 	// LoopGuard 思考链死循环检测（发癫拦截）是否开启（只读，保存走 POST /api/config/loop_guard）。
 	LoopGuard bool `json:"loop_guard"`
+
+	// ModelFallback 模型降级链（保存走 POST /api/config/model_fallback）。
+	ModelFallback []config.ModelFallbackRule `json:"model_fallback"`
 }
 
 // GetState 返回面板初始数据。
@@ -2138,6 +2196,7 @@ func (a *App) GetState() State {
 		ExpiringDays:   int(a.cfg.ExpiringThresholdDur / (24 * time.Hour)),
 		LoopGuard:      a.cfg.Features.LoopGuard,
 	}
+	st.ModelFallback = a.cfg.ModelFallback
 	st.Compat.DefaultChannel = a.cfg.Compat.DefaultChannel
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
@@ -2550,6 +2609,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetAutostart(req.On); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/model_fallback", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Rules []config.ModelFallbackRule `json:"rules"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetModelFallback(req.Rules); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

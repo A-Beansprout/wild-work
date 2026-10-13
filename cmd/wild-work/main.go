@@ -513,6 +513,10 @@ func main() {
 	appInst.SetCompatSyncer(func(defaultChannel string, maxTokensCap int, modelMap map[string]string) {
 		compat.SetCompat(defaultChannel, maxTokensCap, modelMap, channels)
 	})
+	// 面板保存模型降级链时热更新内层 handler（不然新链要重启才生效）
+	appInst.SetModelFallbackSyncer(func(rules []config.ModelFallbackRule) {
+		inner.SetModelFallbacks(rules)
+	})
 	// 面板保存代理配置时热更新各渠道 HTTP client（重建 Transport，无需重启）
 	appInst.SetProxySyncer(func(proxies map[string]string) {
 		next := *cfg
