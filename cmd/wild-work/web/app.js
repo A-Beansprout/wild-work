@@ -1771,7 +1771,20 @@ function bind() {
 })();
 
 // ---------- 用量与流水面板 ----------
-let usageDays = 7;
+// usageDays 从 localStorage 恢复上次选择（今日/7日），刷新页面不重置到 7 日。
+// 存储键与 TOAST_SEEN_KEY 同族（usage-range-seen）；非法值回退默认 7。
+const USAGE_DAYS_KEY = "usage-range-seen";
+const USAGE_DAYS_VALID = [1, 7];
+let usageDays = (() => {
+  try {
+    const v = parseInt(localStorage.getItem(USAGE_DAYS_KEY) || "", 10);
+    return USAGE_DAYS_VALID.includes(v) ? v : 7;
+  } catch (e) { return 7; }
+})();
+// persistUsageDays 落盘当前区间（不可用存储时静默失败，不阻塞功能）。
+function persistUsageDays() {
+  try { localStorage.setItem(USAGE_DAYS_KEY, String(usageDays)); } catch (e) { /* 忽略 */ }
+}
 let usageChart = null;    // token 折线图（echarts 实例）
 let creditChart = null;   // 积分消耗折线图（echarts 实例）
 let recentAll = [];       // 全量最近流水（分页源，时间升序）
@@ -1849,7 +1862,7 @@ function renderUsage(st) {
 
 function renderModelTable(rows, days) {
   const tb = $("tblModels").querySelector("tbody");
-  if (!rows.length) { tb.innerHTML = `<tr><td colspan="6" class="empty-cell">暂无数据（流水自本功能上线后开始记录）</td></tr>`; return; }
+  if (!rows.length) { tb.innerHTML = `<tr><td colspan="7" class="empty-cell">暂无数据（流水自本功能上线后开始记录）</td></tr>`; return; }
   const top = rows.slice(0, MODEL_TOP_N); // 前 20 名，已按 token 降序
   tb.innerHTML = top.map((r) => {
     const avg = days > 1 ? Math.round((r.pt + r.ct) / days) : (r.pt + r.ct);
@@ -1857,7 +1870,7 @@ function renderModelTable(rows, days) {
       <td>${esc(r.model)}</td><td><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span></td>
       <td class="num">${fmtCredits(r.requests)}</td><td class="num">${fmtTokensFull(r.pt + r.ct)}</td>
       <td class="num">${fmtTokensFull(avg)}</td>
-      <td class="num">${cacheCell(r)}</td></tr>`;
+      <td class="num">${cacheCell(r)}</td><td class="num">${perfCellFor(r.channel, r.model)}</td></tr>`;
   }).join("");
 }
 
@@ -1972,7 +1985,7 @@ function fmtDay(ts) {
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-// 主面板 tab 切换（账号管理 / 用量与流水 / 运行统计）
+// 主面板 tab 切换（账号管理 / 用量与流水 / 运行统计 / 模型列表和费率）
 function bindMainTabs() {
   document.querySelectorAll(".main-tabs .mtab").forEach((b) => {
     b.onclick = () => {
@@ -1980,6 +1993,7 @@ function bindMainTabs() {
       $("mtabAccounts").classList.toggle("hidden", b.dataset.mtab !== "accounts");
       $("mtabUsage").classList.toggle("hidden", b.dataset.mtab !== "usage");
       $("mtabStats").classList.toggle("hidden", b.dataset.mtab !== "stats");
+      $("mtabFees").classList.toggle("hidden", b.dataset.mtab !== "fees");
       // 切换主 tab 强制收起积分明细浮窗，避免残留浮在其他页签上
       closeCreditDetail();
       if (b.dataset.mtab === "usage") {
@@ -2003,10 +2017,14 @@ function bindUsage() {
   $("usageRange").querySelectorAll(".seg-btn").forEach((b) => {
     b.onclick = () => {
       usageDays = parseInt(b.dataset.days, 10);
+      persistUsageDays(); // 记住选择，刷新不重置
       $("usageRange").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
       loadUsage();
     };
   });
+  // 初始高亮按恢复的 usageDays（localStorage 命中「今日」时不要显示 7日 高亮）
+  $("usageRange").querySelectorAll(".seg-btn").forEach((x) =>
+    x.classList.toggle("active", parseInt(x.dataset.days, 10) === usageDays));
   document.querySelectorAll(".tabs .tab").forEach((b) => {
     b.onclick = () => {
       document.querySelectorAll(".tabs .tab").forEach((x) => x.classList.toggle("active", x === b));
@@ -2099,6 +2117,33 @@ function stTkItem(label, val) {
   return `<span class="st-tk-item">${label} <span class="st-tk-val">${val}</span></span>`;
 }
 
+// perfLookup 运行统计引擎的「模型 → 速度」索引（key = "channel/model"）。
+// 速度数据只存在于 stats 引擎内存（ledger 只扫文件、无速度字段），
+// 用量 tab 展示平均速度时按此表匹配；键形与 stats 的 models[].model 一致。
+let perfLookup = {};
+
+// perfCellFor 按 "channel/model" 取速度单元格；无样本显示「—」（与运行统计同款三态）。
+function perfCellFor(channel, model) {
+  const m = perfLookup[channel + "/" + model];
+  if (!m) return `<span class="muted" title="该模型暂无成功请求的速度样本">—</span>`;
+  const tps = Number(m.avg_tok_per_sec) || 0;
+  const ttfb = Number(m.avg_ttfb_ms) || 0;
+  const parts = [];
+  if (tps > 0) parts.push(fmtPct(tps) + " tok/s");
+  if (ttfb > 0) parts.push(fmtCredits(ttfb) + "ms");
+  if (!parts.length) return `<span class="muted" title="无速度样本">—</span>`;
+  return `<span title="样本 ${fmtCredits(m.perf_samples)} 次成功请求">${parts.join(" · ")}</span>`;
+}
+
+// buildPerfLookup 用 stats 快照的 models[] 建索引（30s 轮询时刷新）。
+function buildPerfLookup(models) {
+  const lk = {};
+  for (const m of models || []) {
+    if (m && m.model) lk[m.model] = m;
+  }
+  perfLookup = lk;
+}
+
 function renderStats(s) {
   const tu = s.token_usage || {};
   // 汇总横条：作废/今日到期仅 >0 时出现（避免每天多条 0 值噪音）
@@ -2125,6 +2170,7 @@ function renderStats(s) {
   renderRotation(s.rotation || []);
   renderExpiry(s.expiry || []);
   renderModels(s.models || []);
+  buildPerfLookup(s.models || []); // 用量 tab 的速度列数据源（同源同频刷新）
   handleToasts(s.toasts || []);
 }
 

@@ -41,6 +41,7 @@
       <button class="mtab active" data-mtab="accounts">账号管理</button>
       <button class="mtab" data-mtab="usage">用量与流水</button>
       <button class="mtab" data-mtab="stats">运行统计</button>
+      <button class="mtab" data-mtab="fees">模型列表和费率</button>
     </div>
 
     <!-- ===== Tab: 账号管理 ===== -->
@@ -108,7 +109,7 @@
     <div class="tab-body" id="tabToken">
       <div id="usageChart" class="chart-box">图表库加载中…</div>
       <table class="table" id="tblModels">
-        <thead><tr><th>模型</th><th>渠道</th><th class="num">请求数</th><th class="num">Token</th><th class="num">日均</th><th class="num" title="缓存命中 token ÷ 该模型「上报了缓存字段」的请求的 prompt token（加总口径，非逐请求平均）。上游不提供该维度时显示「—」。">缓存</th></tr></thead>
+        <thead><tr><th>模型</th><th>渠道</th><th class="num">请求数</th><th class="num">Token</th><th class="num">日均</th><th class="num" title="缓存命中 token ÷ 该模型「上报了缓存字段」的请求的 prompt token（加总口径，非逐请求平均）。上游不提供该维度时显示「—」。">缓存</th><th class="num" title="成功请求实测均值（来自运行统计引擎）：tok/s = 生成 token ÷ 生成耗时（按时长加权）；TTFB = 首字节耗时算术平均">平均速度</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -146,15 +147,15 @@
       <div class="st-logbox" id="stApplog"><div class="st-empty">加载中…</div></div>
     </div>
     </div>
-  </section>
 
-  <!-- 模型列表和费率 -->
-  <section class="panel">
+    <!-- ===== Tab: 模型列表和费率 ===== -->
+    <div class="mtab-body hidden" id="mtabFees">
     <div class="panel-head">
       <h2>模型列表和费率 <button class="icon-btn search-btn" id="btnModelSearch" title="查找模型（按关键字快速定位全渠道模型）">🔍</button></h2>
       <button class="btn small" id="btnRefreshFees">刷新</button>
     </div>
     <div id="feesBox" class="fees"></div>
+    </div>
   </section>
 
   <div class="footer">wild-work — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
