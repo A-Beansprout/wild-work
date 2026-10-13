@@ -16,6 +16,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/ledger"
+	"wild-work/internal/loopguard"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	// 别名 statsEngine：与运行统计引擎包名一致（本包无同名局部变量，别名仅为与 app 包对齐可读）
@@ -648,6 +649,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				statRow.Credit = usageCredit(usage)
 			}
 			if serr != nil {
+				// 思考链死循环（发癫）命中：模型/请求级问题，不罚账号（换号必然复现），
+				// 错误帧已透传给客户端，由下游 agent 自行重试。仅记日志。
+				var lge *loopguard.Error
+				if errors.As(serr, &lge) {
+					log.Printf("reasoning loop intercepted platform=%s uid=%s model=%s kind=%s reason=%s",
+						rt.Kind, acct.UID, clientModel, lge.Hit.Kind, lge.Hit.Reason)
+					return
+				}
 				// 上游中断/空流已尽力透传，错误仅在日志可见
 				log.Printf("stream relay end platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
 				// 流内业务错误（traework SOLO 的 event:error，如 3004 限流）：

@@ -31,5 +31,8 @@
     }
   },
   "proxies": {
+  },
+  "features": {
+    "loop_guard": true
   }
 }

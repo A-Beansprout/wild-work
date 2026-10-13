@@ -1580,3 +1580,42 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 | #93 | macOS 客户端导入路径 | ✅ 本版合并（PR #93） |
 | — | Token 用量表缺缓存利用率维度、MonkeyCode 缓存字段被丢弃 | ✅ 本版修复（缓存列 + devdump 取证） |
 | — | Cline 非流式请求 502 冷却整条渠道 / 漏 X-CLIENT-TYPE / 地区限制误罚号 | ✅ 本版修复（forceStream + 头强制 + 分类豁免） |
+
+# wild-work v2.7.1 — 思考链死循环检测（防癫拦截）
+
+> 发布主题：**思考链死循环（发癫）检测**——deepseek v4.1 flash 等模型偶发思维链复读/空转，
+> 单块思考几十万字符、烧光额度。本版在抽象层**实时逐帧检测**推理增量，命中即中断 SSE、
+> 向客户端返回错误，由下游 AI 客户端（Claude Code / Codex 等）自行重试恢复。
+
+---
+
+## 🧠 思考链死循环检测（防癫拦截）
+
+新增 `internal/loopguard` 模块，算法移植自 [dsh-attention-health](https://github.com/donghangxunlang-cmd/dsh-attention-health)
+的 `lib/guard.js`（只取死循环检测，忽略健康评估/工作交接/会话日志）。
+
+- **四条判据**（阈值采用 DSH 在 79+ 真实会话上标定的值，宁可漏报不误杀）：
+  - 同行连续重复 ≥8 次（行长 ≥12 字符）；
+  - 短行高频交替：最近 60 个 ≤11 字符短行里同一短行 ≥30 次；
+  - 滑动窗口空转：最近 40 行不同行占比 ≤25%；
+  - 行内周期复读：周期 2–40 字符，重复 ≥16 次且累计 ≥160 字。
+- **防误杀护栏**：周期单元须含字母/汉字（纯符号分隔线、纯数字命令参数不算）、
+  十六进制字节周期豁免、代码围栏内豁免。
+- **全渠道覆盖**：WorkBuddy CN/AI、TraeWork/TraeCode（deepseek-v4.1-flash 所在）、
+  Qoder 系、千问办公、MonkeyCode、小浣熊、Loomy、OpenCodeZen、Cline。
+- **命中行为**：下发一帧 OpenAI 规范错误（`code=upstream_reasoning_loop`）、不补 `[DONE]`、
+  错误透传给客户端；**不罚账号**（死循环是模型级问题，换号必然复现，冷却只会误伤整条渠道）。
+- **零误伤兼容**：只在 `reasoning_content` 非空时喂入，无思维链的模型/配置不经过守卫。
+- **配置开关**（默认开启）：`config.features.loop_guard` + 面板「设置 → 思考链防癫」开关
+  （热切换无需重启）+ 环境变量 `WILDWORK_LOOP_GUARD=0` 可关闭。
+
+> 注：本版未做实盘触发验证（死循环难以稳定复现），先行发版交由社区实测反馈，
+> 阈值/判据后续按反馈校准。
+
+---
+
+## 🐛 修复清单（对照 issue）
+
+| Issue/PR | 问题 | 状态 |
+|---|---|---|
+| — | 模型思维链死循环烧光额度，无拦截手段 | ✅ 本版新增（思考链防癫检测） |

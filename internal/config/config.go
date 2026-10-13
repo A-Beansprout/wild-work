@@ -151,6 +151,13 @@ type Config struct {
 	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
 	OczenAPIKey string `json:"oczen_api_key,omitempty"`
 
+	// Features 功能开关（面板「设置」可切换，默认全部开启）。
+	Features struct {
+		// LoopGuard 思考链死循环检测（发癫拦截）：流式生成中检测推理复读/空转，
+		// 命中即中断 SSE 并返回错误，由下游 agent 自行重试。默认 true。
+		LoopGuard bool `json:"loop_guard"`
+	} `json:"features"`
+
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
@@ -180,6 +187,7 @@ func Default() *Config {
 	c.Compat.DefaultChannel = "workbuddy"
 	c.Compat.MaxTokensCap = 32000
 	c.Proxies = map[string]string{}
+	c.Features.LoopGuard = true // 思考链死循环检测默认开启（面板可关）
 	return c
 }
 
@@ -317,6 +325,10 @@ func applyEnv(c *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Compat.MaxTokensCap = n
 		}
+	}
+	if v := os.Getenv("WILDWORK_LOOP_GUARD"); v != "" {
+		// 环境变量覆盖："0"/"false"/"no" 关闭，其余开启。
+		c.Features.LoopGuard = !(v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "no"))
 	}
 }
 

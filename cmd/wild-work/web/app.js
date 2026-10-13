@@ -1374,6 +1374,7 @@ function openSettings() {
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
+  $("chkLoopGuard").checked = state.loop_guard !== false; // 缺省（旧后端）按开启显示
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
   $("settingsOverlay").classList.remove("hidden");
 }
@@ -1481,6 +1482,14 @@ async function saveSettings() {
   if (expDays !== (state.expiring_days || 1)) {
     try {
       await api("/api/config/expiring_days", { days: expDays });
+    } catch (e) { toast(e.message); return; }
+  }
+
+  // 4.5) 思考链防癫开关（独立端点即时生效）
+  const loopGuardOn = $("chkLoopGuard").checked;
+  if (loopGuardOn !== (state.loop_guard !== false)) {
+    try {
+      await api("/api/config/loop_guard", { on: loopGuardOn });
     } catch (e) { toast(e.message); return; }
   }
 

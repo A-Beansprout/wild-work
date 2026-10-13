@@ -413,6 +413,11 @@
           <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
           <span class="hint" style="margin-left:8px">程序随系统启动自动运行</span>
         </div>
+        <div class="row" style="margin-top:8px">
+          <label class="lbl wide" title="流式生成中检测思考链复读/空转（发癫），命中即中断并返回错误，由下游 AI 客户端自行重试恢复">思考链防癫</label>
+          <label class="switch"><input type="checkbox" id="chkLoopGuard"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">检测模型思维链死循环，命中即中断</span>
+        </div>
       </div>
 
       <!-- 单渠道上游代理 -->

@@ -32,6 +32,7 @@ import (
 	loginraccoon "wild-work/internal/login_raccoon"
 	logintrae "wild-work/internal/login_trae"
 	"wild-work/internal/login_wbai"
+	"wild-work/internal/loopguard"
 	"wild-work/internal/oczen"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
@@ -49,7 +50,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.7.0"
+const Version = "2.7.1"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -1758,6 +1759,22 @@ func (a *App) SetExpiringDays(days int) error {
 	return nil
 }
 
+// SetLoopGuard 更新思考链死循环检测（发癫拦截）开关：保存配置并即时生效。
+// 生效机制：loopguard 的全局 atomic 开关，各渠道 Stream 在每次请求时读取，
+// 热切换无需重启（下一个流式请求即按新值）。
+func (a *App) SetLoopGuard(on bool) error {
+	a.mu.Lock()
+	a.cfg.Features.LoopGuard = on
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	loopguard.SetEnabled(on)
+	log.Printf("思考链死循环检测已%s", map[bool]string{true: "开启", false: "关闭"}[on])
+	return nil
+}
+
 // SetListen 修改 API 监听主机 + 端口：保存配置并热切换监听。
 func (a *App) SetListen(host string, port int) error {
 	if port <= 0 || port > 65535 {
@@ -2085,6 +2102,9 @@ type State struct {
 
 	// OczenAPIKey OpenCodeZen 自定义 API key（只读脱敏回显：sk-xxx…尾4位；保存走同端点）。
 	OczenAPIKey string `json:"oczen_api_key"`
+
+	// LoopGuard 思考链死循环检测（发癫拦截）是否开启（只读，保存走 POST /api/config/loop_guard）。
+	LoopGuard bool `json:"loop_guard"`
 }
 
 // GetState 返回面板初始数据。
@@ -2116,6 +2136,7 @@ func (a *App) GetState() State {
 		Running:        a.ServerRunning(),
 		LanIP:          lanIP(),
 		ExpiringDays:   int(a.cfg.ExpiringThresholdDur / (24 * time.Hour)),
+		LoopGuard:      a.cfg.Features.LoopGuard,
 	}
 	st.Compat.DefaultChannel = a.cfg.Compat.DefaultChannel
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
@@ -2464,6 +2485,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetExpiringDays(req.Days); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/loop_guard", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			On bool `json:"on"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetLoopGuard(req.On); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"wild-work/internal/loopguard"
 )
 
 // parseNestedSSE 逐行解析嵌套 SSE，每个有效 chunk 调 onChunk。
@@ -233,7 +236,29 @@ func sortInts(a []int) {
 func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[string]any, error) {
 	var usage map[string]any
 	truncated := false
+	// 思考链死循环守卫：仅在全局启用时创建。命中即中断、不罚账号。
+	var guard *loopguard.Guard
+	if loopguard.Enabled() {
+		guard = loopguard.NewDefault()
+	}
 	err := parseNestedSSE(r, func(chunk map[string]any) error {
+		// 思考链死循环守卫：只在 reasoning_content 非空时喂入（无思维链的模型/配置
+		// 不经过守卫，零开销零误伤）。命中即中断。
+		if guard != nil {
+			if rc := loopguard.ReasoningDeltaOf(chunk); rc != "" {
+				if hit := guard.Push(rc); hit != nil {
+					gerr := &loopguard.Error{Hit: *hit}
+					if _, werr := io.WriteString(w, "data: "+loopguard.ErrorFrameJSON(hit)+"\n\n"); werr != nil {
+						log.Printf("qodercom reasoning loop error frame write failed: %v", werr)
+						return gerr
+					}
+					if flush != nil {
+						flush()
+					}
+					return gerr
+				}
+			}
+		}
 		// usage 捕获：末帧覆盖前面（OpenAI 语义末帧才是全量），并照常透传
 		if u, ok := chunk["usage"].(map[string]any); ok && len(u) > 0 {
 			usage = u

@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"wild-work/internal/loopguard"
 )
 
 // errEmptyStream 上游返回 200 但没有有效 SSE 数据帧（空流/只有注释/[DONE]）。
@@ -508,6 +511,15 @@ func streamCore(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 	h.Set("X-Accel-Buffering", "no")
 	fl, _ := w.(http.Flusher)
 
+	// 思考链死循环守卫（发癫检测）：仅在全局启用时创建（每个流一个实例，用完即弃）。
+	// 命中时发一帧 OpenAI 规范 error（code=upstream_reasoning_loop）并中断，不补 [DONE]，
+	// 错误返回给 handler —— handler 不对它做账号惩罚（未实现 StreamErrorClassifier），
+	// 由下游 agent 自行重试（R16/R38 同族：模型级问题不罚账号）。
+	var guard *loopguard.Guard
+	if loopguard.Enabled() {
+		guard = loopguard.NewDefault()
+	}
+
 	// toolCallSeen 跨帧记录 delta.tool_calls 里已发过首片的 index，
 	// 供逐 chunk 透传时收敛 name 为「每 index 一次」（对齐 OpenAI 官方流）。
 	toolCallSeen := map[int]bool{}
@@ -541,6 +553,17 @@ func streamCore(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 		var obj map[string]any
 		valid := 0
 		if json.Unmarshal([]byte(payload), &obj) == nil {
+			// 思考链死循环守卫：喂入 reasoning_content 增量，命中即中断。
+			// 位置刻意放在「上游 error 帧透传」之前：error 帧没有 reasoning，
+			// 顺序无实际影响，但守卫只关心 delta.reasoning_content，放这里语义最清晰。
+			if guard != nil {
+				if rc := loopguard.ReasoningDeltaOf(obj); rc != "" {
+					if hit := guard.Push(rc); hit != nil {
+						werr := writeLoopError(w, fl, hit)
+						return 0, werr
+					}
+				}
+			}
 			// usage 捕获：非空 usage 对象回调给记账方（末帧覆盖前面，OpenAI 语义末帧才是全量）
 			if onUsage != nil {
 				if u, ok := obj["usage"].(map[string]any); ok && len(u) > 0 {
@@ -680,6 +703,23 @@ func jsonString(s string) string {
 		return `"upstream error"`
 	}
 	return string(b)
+}
+
+// writeLoopError 写一帧 OpenAI 规范 error（code=upstream_reasoning_loop）并 flush，
+// 然后返回 *loopguard.Error 供调用方直接上抛（handler 据其未实现 StreamErrorClassifier
+// 而跳过账号惩罚）。
+// ⚠️ 刻意不补 [DONE]：守卫命中是失败中断，不是正常收尾（R36）。
+// 写失败（客户端已断开）时仍返回守卫错误——调用方需要它区分「守卫命中」与「写失败」。
+func writeLoopError(w http.ResponseWriter, fl http.Flusher, hit *loopguard.Hit) error {
+	gerr := &loopguard.Error{Hit: *hit}
+	if _, werr := io.WriteString(w, "data: "+loopguard.ErrorFrameJSON(hit)+"\n\n"); werr != nil {
+		log.Printf("reasoning loop error frame write failed: %v", werr)
+		return gerr
+	}
+	if fl != nil {
+		fl.Flush()
+	}
+	return gerr
 }
 
 // frameGatewayHint 取 error 帧的 gateway_hint（hintFn 缺失/异常返回空串 → 不附加）。
