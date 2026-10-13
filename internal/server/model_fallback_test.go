@@ -6,6 +6,8 @@
 package server
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +22,7 @@ import (
 )
 
 // newFbHandler 装配两个渠道（oczen=主、workbuddy=备）的 handler，各一个账号。
-func newFbHandler(t *testing.T, upA, upB *codeUpstream, rules []config.ModelFallbackRule) (*Handler, *pool.Pool, *pool.Pool) {
+func newFbHandler(t *testing.T, upA, upB provider.Upstream, rules []config.ModelFallbackRule) (*Handler, *pool.Pool, *pool.Pool) {
 	t.Helper()
 	pa := pool.New(t.TempDir() + "/state-a.json")
 	pa.Add(oczen.AnonymousAuth())
@@ -72,6 +74,54 @@ func TestModelFallbackTriggersWhenAllCooling(t *testing.T) {
 	}
 	if upA.calls != 0 {
 		t.Errorf("主渠道上游不应收到请求（挑号阶段已全冷），实际 %d 次", upA.calls)
+	}
+}
+
+// fbUpstream 假上游：Aggregate 按官方语义回填客户端模型名（resp["model"]=入参），
+// 用于验证降级时响应 model 字段暴露实际备胎（agent 感知通道）。
+type fbUpstream struct {
+	calls int
+}
+
+func (u *fbUpstream) RefreshToken(*auth.Auth) error                         { return nil }
+func (u *fbUpstream) FetchModels(*auth.Auth) ([]provider.ModelInfo, error)  { return nil, nil }
+func (u *fbUpstream) FetchModelPricing(*auth.Auth) ([]provider.ModelPricing, error) { return nil, nil }
+func (u *fbUpstream) UserResource(*auth.Auth) (int64, error)                { return 0, nil }
+func (u *fbUpstream) UserResourceDetail(*auth.Auth) (int64, []provider.ResourceItem, error) { return 0, nil, nil }
+func (u *fbUpstream) DailyCheckin(*auth.Auth) error                         { return nil }
+func (u *fbUpstream) Classify(int, string) provider.ErrKind                 { return provider.ErrServer }
+func (u *fbUpstream) ChatStream(*auth.Auth, []byte) (io.ReadCloser, int, []byte, error) {
+	u.calls++
+	return io.NopCloser(strings.NewReader("data: [DONE]\n\n")), 200, nil, nil
+}
+func (u *fbUpstream) Stream(http.ResponseWriter, io.Reader, string) (map[string]any, error) {
+	return nil, nil
+}
+func (u *fbUpstream) Aggregate(_ io.Reader, model string) (map[string]any, error) {
+	return map[string]any{"model": model, "choices": []any{}}, nil
+}
+
+// TestModelFallbackExposesActualModelInBody 降级后响应体 model 字段 = 实际备胎全路径
+// （agent 的感知通道：OpenAI 协议 model 字段=「实际执行的模型」；X-Model-Fallback 头
+// 很多客户端不读，body.model 是更可靠的信号）。无降级时保持官方「回填请求名」不变。
+func TestModelFallbackExposesActualModelInBody(t *testing.T) {
+	upA, upB := &fbUpstream{}, &fbUpstream{}
+	h, pa, _ := newFbHandler(t, upA, upB, []config.ModelFallbackRule{
+		{From: "oczen/big-pickle", To: []string{"workbuddy/glm-free"}},
+	})
+	// 无降级：model 字段保持客户端请求名（官方语义）
+	rec := callModel(h, "oczen/big-pickle")
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["model"] != "oczen/big-pickle" {
+		t.Errorf("无降级时 model=%v，want 客户端请求名 oczen/big-pickle", resp["model"])
+	}
+	// 降级：model 字段 = 备胎全路径
+	pa.CooldownModel(oczen.AnonymousUID, "big-pickle", 10*time.Minute, "test")
+	rec2 := callModel(h, "oczen/big-pickle")
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp)
+	if resp["model"] != "workbuddy/glm-free" {
+		t.Errorf("降级后 model=%v，want 备胎 workbuddy/glm-free（agent 感知）", resp["model"])
 	}
 }
 

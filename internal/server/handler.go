@@ -482,13 +482,22 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account 的「模型全冷」
 	// 形态，pickWithSticky 必败）时，按用户配置的链找第一个仍有可用账号的备胎模型顶上。
 	// 仅此场景触发，正常路由零开销；不粘滞——每个请求都按原模型重新判定，上游解冻即自动切回。
+	// fbApplied=实际备胎全路径（用于把响应 model 字段/X-Model-Fallback 头告知 agent）；
+	// dispModel=写进响应的模型名（无降级=客户端请求名，保持官方「回填请求名」语义；降级=备胎全路径，
+	// agent 读 chunk.model / resp.model 即可感知实际执行模型）。
+	var fbApplied string
 	if fbID := h.pickModelFallback(rt, model); fbID != "" {
 		if rt2, m2, err := h.runtimeForModel(fbID); err == nil {
 			log.Printf("model fallback platform=%s from=%s to=%s", rt.Kind, clientModel, fbID)
 			// 响应头标注实际备胎（必须在任何 WriteHeader 之前；sw 透传 Header）
 			w.Header().Set("X-Model-Fallback", clientModel+" -> "+fbID)
 			rt, model = rt2, m2
+			fbApplied = fbID
 		}
+	}
+	dispModel := clientModel
+	if fbApplied != "" {
+		dispModel = fbApplied
 	}
 	body, err = rewriteModel(body, model)
 	if err != nil {
@@ -650,7 +659,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
 		if peek.Stream {
-			usage, serr := rt.Upstream.Stream(w, rc, clientModel)
+			usage, serr := rt.Upstream.Stream(w, rc, dispModel)
 			cu := cacheUsageOf(usage) // 缓存命中（上游未上报时 reported=false，面板显示「—」）
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
 			// 记账失败不干扰主流程——锦上添花功能。
@@ -728,7 +737,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		resp, err := rt.Upstream.Aggregate(rc, clientModel)
+		resp, err := rt.Upstream.Aggregate(rc, dispModel)
 		if err != nil {
 			statRow.Status = http.StatusBadGateway
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
