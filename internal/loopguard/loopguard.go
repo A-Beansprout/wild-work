@@ -98,9 +98,14 @@ func ErrorFrameJSON(hit *Hit) string {
 	return string(b)
 }
 
-// ReasoningDeltaOf 从 OpenAI 形状的 chunk 里提取 reasoning 增量
-// （choices[0].delta.reasoning_content）。无则返回空串。
+// ReasoningDeltaOf 从 OpenAI 形状的 chunk 里提取 reasoning 增量。
 // 各渠道 Stream 实现解出的 chunk 均为此形状，统一走这里取值。
+//
+// 字段名兼容三种（2026-10-13 实抓）：`reasoning_content`（DeepSeek/WorkBuddy 系）、
+// `reasoning`（OpenRouter 归一化字段，Cline 免费池实测下发）、
+// `reasoning_details`（OpenRouter 结构化块：`reasoning.text` 为原始全文、
+// `reasoning.summary` 为摘要，取 text 优先；encrypted 是密文无可读文本）。
+// 优先级与 upstream.reasoningDeltaOf 保持一致，否则同一帧两个包取值不同步。
 func ReasoningDeltaOf(obj map[string]any) string {
 	choices, _ := obj["choices"].([]any)
 	if len(choices) == 0 {
@@ -114,8 +119,37 @@ func ReasoningDeltaOf(obj map[string]any) string {
 	if delta == nil {
 		return ""
 	}
-	rc, _ := delta["reasoning_content"].(string)
-	return rc
+	if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+		return rc
+	}
+	if rc, ok := delta["reasoning"].(string); ok && rc != "" {
+		return rc
+	}
+	items, ok := delta["reasoning_details"].([]any)
+	if !ok {
+		return ""
+	}
+	var full, summary strings.Builder
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		switch m["type"] {
+		case "reasoning.text":
+			if s, ok := m["text"].(string); ok {
+				full.WriteString(s)
+			}
+		case "reasoning.summary":
+			if s, ok := m["summary"].(string); ok {
+				summary.WriteString(s)
+			}
+		}
+	}
+	if full.Len() > 0 {
+		return full.String()
+	}
+	return summary.String()
 }
 
 // Config 守卫阈值。零值字段不可用，必须从 DefaultConfig 起步再覆盖。
