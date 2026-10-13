@@ -288,9 +288,16 @@ check('第三个 tab 按钮存在（data-mtab="stats"）', /data-mtab="stats"/.t
 check("#mtabStats body 存在且默认隐藏", /class="mtab-body hidden" id="mtabStats"/.test(html));
 check("运行统计区块骨架存在（stSum/stPlat/stApplog）", /id="stSum"/.test(html) && /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
 check("更新角标存在（id=stUpdated，拉取失败可感知）", /id="stUpdated"/.test(html));
+// ---- 第四个 tab：模型列表和费率（原独立 section 移入主 tab 组）----
+check('第四个 tab 按钮存在（data-mtab="fees"）', /data-mtab="fees"/.test(html));
+check("#mtabFees body 存在且默认隐藏", /class="mtab-body hidden" id="mtabFees"/.test(html));
+check("模型费率区块骨架存在（feesBox/btnRefreshFees）", /id="feesBox"/.test(html) && /id="btnRefreshFees"/.test(html));
+check("模型费率区块在 section 内（不再是独立 section）", /<div class="mtab-body hidden" id="mtabFees">[\s\S]*?<\/section>/.test(html) && !/<!-- 模型列表和费率 -->\s*<section class="panel">/.test(html));
 const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
 check("style.css 含运行统计样式段（#mtabStats .st-sum 等）", /#mtabStats \.st-sum/.test(css) && /#mtabStats \.st-plat-row/.test(css));
 check("更新角标失败警示样式存在（#stUpdated.st-stale）", /#stUpdated\.st-stale/.test(css));
+// ---- 用量 tab 五卡同行（5 列 grid，不换行）----
+check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[^}]*grid-template-columns: repeat\(5, 1fr\)/.test(css));
 
 // ---- 场景 3.5：缓存利用率的**三态降级**（本列的核心就是不能把「不知道」显示成 0%） ----
 // 语义务必与 internal/server/cacheusage.go + internal/ledger 的 CR/CRC 保持一致：
@@ -323,8 +330,9 @@ check("更新角标失败警示样式存在（#stUpdated.st-stale）", /#stUpdat
   const rowsHtml = document.getElementById("tblModelstbody").innerHTML;
   check("模型表渲染缓存列（命中行 75.0%）", /75\.0%/.test(rowsHtml), rowsHtml.slice(0, 200));
   check("模型表对不上报渠道显示「—」", rowsHtml.includes("—"));
+  check("模型表渲染平均速度列（无速度样本显示「—」）", (rowsHtml.match(/—/g) || []).length >= 2, rowsHtml.slice(0, 300));
   T2.renderModelTable([], 1);
-  check("模型表空态占位行跨 6 列", document.getElementById("tblModelstbody").innerHTML.includes('colspan="6"'));
+  check("模型表空态占位行跨 7 列", document.getElementById("tblModelstbody").innerHTML.includes('colspan="7"'));
 }
 
 // ---- 输出 ----
