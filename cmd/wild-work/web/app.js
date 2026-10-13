@@ -135,7 +135,10 @@ function collectAllModels() {
     for (const m of ch.models || []) {
       const raw = m.model;
       const short = raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw;
-      const full = raw.includes("/") ? raw : (ch.channel ? `${ch.channel}/${raw}` : raw);
+      // 完整 ID 一律补渠道前缀（与 modelCellHtml / 服务端 buildModelEntry 口径一致）：
+      // 上游 ID 自带命名空间（如 cline 免费档 `cline-free/*`）时必须得 `cline/cline-free/*`
+      // 双层路径才能被 runtimeForModel 正确路由；仅当裸名已以渠道前缀开头时原样保留（防重复）。
+      const full = ch.channel && !raw.startsWith(`${ch.channel}/`) ? `${ch.channel}/${raw}` : raw;
       out.push({ ch: ch.channel, m, short, full });
     }
   }

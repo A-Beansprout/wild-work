@@ -1586,18 +1586,22 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 > 发布主题：**思考链死循环（发癫）检测**——deepseek v4.1 flash 等模型偶发思维链复读/空转，
 > 单块思考几十万字符、烧光额度。本版在抽象层**实时逐帧检测**推理增量，命中即中断 SSE、
 > 向客户端返回错误，由下游 AI 客户端（Claude Code / Codex 等）自行重试恢复。
-> 同时合入两个社区 PR：**OpenRouter 系思考字段归一化**（修 Cline 免费池思考被静默丢弃，
-> 兼修同渠道防癫守卫失效）与**面板四项易用性改进**（费率独立 tab / 用量平均速度列 /
-> 区间记忆 / 五卡同行），来自 [@jianzhangg](https://github.com/jianzhangg)。
+> 同时合入四个社区 PR：**OpenRouter 系思考字段归一化**（修 Cline 免费池思考被静默丢弃，
+> 兼修同渠道防癫守卫失效）、**面板四项易用性改进**（费率独立 tab / 用量平均速度列 /
+> 区间记忆 / 五卡同行）、**费率完整 ID 双层路径修复**（修 Cline 免费档复制出的 ID 不可用）、
+> 以及 **TDZ 回归修复**（修 PR #101 引入的面板空白），分别来自
+> [@jianzhangg](https://github.com/jianzhangg) 与 [@bertchiangchiang](https://github.com/bertchiangchiang)。
 
 ---
 
-## 🔧 已入库的社区 PR（来自 [@jianzhangg](https://github.com/jianzhangg)）
+## 🔧 已入库的社区 PR（来自 [@jianzhangg](https://github.com/jianzhangg) 与 [@bertchiangchiang](https://github.com/bertchiangchiang)）
 
 | PR | 内容 |
 | --- | --- |
 | #100 | **OpenRouter 系思考字段归一化**：Cline 免费池（`cline/*`，上游 Cline→OpenRouter→Meta）实测思考增量的字段名是 `delta.reasoning` / `delta.reasoning_details`，**不是**本仓库历史唯一形态 `delta.reasoning_content`。旧白名单只认后者 ⇒ 思考文本被**静默丢弃**（客户端看不到思考、`usage.reasoning_tokens` 却非零），且**同渠道防癫守卫永远喂不进**（判据只读 `reasoning_content`）——同一根因的两面。新增 `upstream.reasoningDeltaOf` 归一化到 `reasoning_content` 单字段（优先级 `reasoning_content` > `reasoning` > `reasoning_details`，`encrypted` 密文不取），接线流式逐帧 + 非流式聚合两路；`loopguard.ReasoningDeltaOf` 同步兼容三字段 |
 | #101 | **面板四项易用性改进**：① 模型列表和费率升为**第四个主 tab**（原独立区块移入）；② Token 用量表新增**平均速度**列（tok/s · TTFB，取自运行统计引擎同源数据）；③ 用量区间（今日/7日）**localStorage 记忆**，刷新不再重置；④ 用量汇总五卡片**同一行**显示 |
+| #102 | **费率完整模型 ID 一律补渠道前缀**：上游 ID 自带命名空间（如 Cline 免费档的 `cline-free/*`）时，旧逻辑把「ID 含 `/`」误当「已带渠道前缀」，复制出来的是 `cline-free/mimo-v2.6-flash`——服务端按第一个 `/` 拆渠道 ⇒ `provider "cline-free" is not configured`。改为**一律补前缀**（仅当已以渠道前缀开头时原样保留，防重复），与 `/v1/models` 口径对齐，得到可用双层路径 `cline/cline-free/*` |
+| #103 | **修 PR #101 引入的 TDZ 回归**：`usageDays` 用 `let` 声明在 `init()` 之后，而 `bindUsage()` 在 init 顶部引用它 ⇒ 暂时性死区抛 `ReferenceError`、整个 init 中断、账号/费率面板**全空白**。修法：变量声明块移到 `init()` 之前（IIFE 立即执行改普通赋值 + try/catch）；顺带把「今日/7日」高亮收敛到单一入口 `syncUsageRangeActive()`，消除初始化/点击/异步返回三处 toggle 竞态 |
 
 ---
 
@@ -1633,16 +1637,20 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 | — | 模型思维链死循环烧光额度，无拦截手段 | ✅ 本版新增（思考链防癫检测） |
 | PR #100 | Cline 免费池（OpenRouter 系）思考文本被静默丢弃，防癫守卫在该渠道完全失效 | ✅ 本版修复（思考字段归一化） |
 | PR #101 | 费率区块埋没在页面底部 / 用量表无速度列 / 区间刷新重置 / 五卡片换行 | ✅ 本版改进（独立 tab + 速度列 + 区间记忆 + 五卡同行） |
+| PR #102 | Cline 免费档复制出的完整模型 ID 缺渠道前缀，请求报 `provider "cline-free" is not configured` | ✅ 本版修复（完整 ID 一律补前缀） |
+| PR #103 | PR #101 引入 TDZ 致 init 中断，账号/费率面板全空白 | ✅ 本版修复（声明前移 + 高亮单一入口） |
+| — | PR #102 只修了费率表、漏了**模型查找面板**（同一 `raw.includes("/")` 误判，从搜索框复制的 cline ID 仍不可用） | ✅ 本版一并修复（两处口径统一 + 静态回归） |
 
 ---
 
 ## 🙏 致谢
 
-本版含 2 个社区贡献（均已合入 master 并保留作者署名）：
+本版含 4 个社区贡献（均已合入 master 并保留作者署名）：
 
 | 贡献者 | 内容 |
 |--------|------|
-| [@jianzhangg](https://github.com/jianzhangg) | #100 OpenRouter 系思考字段归一化（修 Cline 免费池思考丢失 + 防癫守卫失效）、#101 面板四项易用性改进 |
+| [@jianzhangg](https://github.com/jianzhangg) | #100 OpenRouter 系思考字段归一化（修 Cline 免费池思考丢失 + 防癫守卫失效）、#101 面板四项易用性改进、#103 TDZ 回归修复 |
+| [@bertchiangchiang](https://github.com/bertchiangchiang) | #102 费率完整模型 ID 补渠道前缀（修 Cline 免费档路径） |
 
 以及算法来源：[dsh-attention-health](https://github.com/donghangxunlang-cmd/dsh-attention-health)
 （思考链死循环检测 `lib/guard.js`）。

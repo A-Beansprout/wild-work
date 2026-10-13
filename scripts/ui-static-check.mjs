@@ -99,6 +99,11 @@ const patched =
     // 溢出场景：另 12 个 qwen* 模型，与 qodercn/qwen3.8-flash 合并共 13 条命中 > 上限 12
     { channel: "loomy", models: Array.from({ length: 12 }, (_, i) =>
       ({ model: `qwen-bulk-${i}`, priced: true, rate: 0.1, free: false, has_context: false })) },
+    // 上游 ID 自带命名空间的渠道（cline 免费档）：完整 ID 必须得双层路径
+    // `cline/cline-free/*`（服务端 runtimeForModel 按第一个 "/" 拆渠道）
+    { channel: "cline", models: [
+      { model: "cline-free/mimo-v2.6-flash", priced: true, rate: 0, free: true, has_context: true, context_window: 1000000 },
+    ] },
   ] }) + ";"
   + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
 
@@ -139,9 +144,14 @@ check("汇总临期 = 100", sum.includes("临期100"));
 check("汇总含合计", sum.includes("合计"));
 
 // ---- 场景 2.5：模型查找面板（纯前端过滤，固定高度/限量/超出提示） ----
-// 假缓存共 16 个模型：qodercn 2 + workbuddy 2 + loomy 12（含 13 个 qwen* 用于溢出断言）
-check("collectAllModels 展平全渠道 16 个模型", T.collectAllModels().length === 16, `实际 ${T.collectAllModels().length}`);
+// 假缓存共 17 个模型：qodercn 2 + workbuddy 2 + loomy 12 + cline 1（含 13 个 qwen* 用于溢出断言）
+check("collectAllModels 展平全渠道 17 个模型", T.collectAllModels().length === 17, `实际 ${T.collectAllModels().length}`);
 check("collectAllModels 完整 ID = 渠道/裸名", T.collectAllModels()[0].full === "qodercn/qwen3.8-flash");
+// 上游 ID 自带命名空间（cline-free/*）时完整 ID 必须补渠道前缀得双层路径，
+// 否则复制出来的 `cline-free/*` 会被服务端当成渠道名 → provider "cline-free" is not configured
+check("上游命名空间 ID 也补渠道前缀（cline/cline-free/*）",
+  T.collectAllModels().some((x) => x.full === "cline/cline-free/mimo-v2.6-flash"),
+  JSON.stringify(T.collectAllModels().filter((x) => x.ch === "cline")));
 T.renderModelSearch("glm");
 let msHtml = document.getElementById("modelSearchList").innerHTML;
 check("搜索 glm 命中 1 条", (msHtml.match(/class="ms-row"/g) || []).length === 1, msHtml.slice(0, 120));
@@ -171,11 +181,18 @@ T.renderFees({ channels: [
       supports_reasoning: true, reasoning_efforts: ["low", "high", "max"], default_reasoning_effort: "high" },
     { model: "qwen3.8-flash", priced: true, rate: 0.3, free: false, has_context: true, context_window: 180000, supports_reasoning: false },
   ] },
+  // 上游 ID 自带命名空间（cline 免费档）：费率表的「完整 ID」行必须补渠道前缀
+  { channel: "cline", models: [
+    { model: "cline-free/mimo-v2.6-flash", priced: true, rate: 0, free: true, has_context: true, context_window: 1000000 },
+  ] },
 ] });
 const feesHtml = document.getElementById("feesBox").innerHTML;
 check("费率表档位小字标出现（[low·high·max]）", feesHtml.includes("effort-tag") && feesHtml.includes("[low·high·max]"), feesHtml.slice(0, 200));
 check("档位 title 含默认档与调档提示", feesHtml.includes("默认 high") && feesHtml.includes("reasoning_effort"));
 check("无档位声明的模型不显示档位标", (feesHtml.match(/effort-tag/g) || []).length === 1);
+// 完整 ID 双层路径（PR #102）：上游命名空间 ID 必须补渠道前缀，否则复制出去不可用
+check("费率表上游命名空间 ID 补渠道前缀（cline/cline-free/*）",
+  feesHtml.includes('data-mid="cline/cline-free/mimo-v2.6-flash"'), feesHtml.slice(0, 300));
 
 // ---- 场景 2.75：模型查找面板无档位声明时不显示档位 ----
 T.renderModelSearch("deepseek");
