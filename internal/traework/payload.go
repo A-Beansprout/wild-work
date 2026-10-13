@@ -11,7 +11,7 @@ import (
 // 代码版（solo_agent）——两者是同一上游下的不同 function，模型与计费口径均不同。
 // function 决定上游从哪个模型池选模型：模型目录（FetchModels 双池合并）会登记
 // 每个模型实际所在的池，此处据此覆盖 function——用错池的请求上游不报
-//「模型不存在」，而是 4001 param is invalid。
+// 「模型不存在」，而是 4001 param is invalid。
 func PrepareBody(src []byte, function string) []byte {
 	if len(src) == 0 {
 		return src
@@ -82,6 +82,11 @@ func PrepareBody(src []byte, function string) []byte {
 	}
 	obj["function"] = function
 	normalizeToolChoice(obj)
+	// Kimi/Moonshot 系后端拒绝含递归 $ref 的 tool schema（4027 无限递归），
+	// 须在 normalizeTools 把 parameters 字符串化之前打断引用环。
+	if isMoonshotBacked(model) {
+		breakToolSchemaCycles(obj)
+	}
 	normalizeTools(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
