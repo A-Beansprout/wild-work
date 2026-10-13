@@ -18,7 +18,13 @@
 //   - 行内周期单元必须含 unicode 字母/汉字：纯符号（─ 长分隔线）、纯数字
 //     （命令参数/序号/版本号）是正常结构重复，不算空转；
 //   - 十六进制字节周期（0x00,0x01,…）豁免；
-//   - 代码围栏（``` 与 ~~~）内的行内复读不做中止判定（围栏内是代码/字符串字面量）。
+//   - 代码围栏（``` 与 ~~~）内的行不进 ②③ 窗口、也不做 ④ 行内判定（2026-10-14
+//   - 结构标点行（trim 后无字母/数字，如 `}` `{` `});`）不进短行高频与唯一率窗口——
+//     模型在思维链里写代码时闭合块高频产生 `}` 是正常形态，不是空转（2026-10-14
+//     误伤现场：agent 正常生成 Go 代码被 short-line-repeat 掐断，60 行里 30 行 `}`）。
+//     与行内护栏（纯数字/纯符号豁免）同一哲学：正常结构重复不算发癫；
+//     修订：原实现围栏只豁免 ④，围栏内代码的 `}` 短行照样进 ② 窗口被误杀，
+//     故 ②③ 同步排除围栏内行；标点豁免兼兜无围栏裸代码（fence 状态机管不到）。
 package loopguard
 
 import (
@@ -208,12 +214,12 @@ func Enabled() bool { return enabled.Load() }
 
 // Stats 守卫观测数据（用于日志回溯误报）。
 type Stats struct {
-	TotalChars     int // 喂入的推理字符总数（rune）
-	LineCount      int // 已结算行数
-	LastStreak     int // 当前同行连续重复计数
-	WindowLines    int // 滑动窗口内行数
-	WindowUnique   int // 滑动窗口内不同行数
-	SkippedInline  int // 被代码围栏豁免的行内检查次数
+	TotalChars    int // 喂入的推理字符总数（rune）
+	LineCount     int // 已结算行数
+	LastStreak    int // 当前同行连续重复计数
+	WindowLines   int // 滑动窗口内行数
+	WindowUnique  int // 滑动窗口内不同行数
+	SkippedInline int // 被代码围栏豁免的行内检查次数
 }
 
 // Guard 每个流式请求一个实例（用完即弃）。
@@ -227,12 +233,12 @@ type Guard struct {
 	fenceChar rune
 	fenceLen  int
 
-	totalChars   int
-	lineCount    int
-	lastLine     string
-	streak       int
-	window       []string // 最近 windowLines 个非空行（全行参与，含短行）
-	shortWindow  []string // 最近 shortLineWindow 个 ≤11 字符的行
+	totalChars    int
+	lineCount     int
+	lastLine      string
+	streak        int
+	window        []string // 最近 windowLines 个非空行（全行参与，含短行）
+	shortWindow   []string // 最近 shortLineWindow 个 ≤11 字符的行
 	skippedInline int
 }
 
@@ -275,8 +281,9 @@ func (g *Guard) Push(text string) *Hit {
 		if len(g.pending) < g.cfg.InlineMinPendingChars {
 			continue
 		}
-		// 围栏内不做行内中止（代码/字符串字面量有明确用途）。只作用于行内判据，
-		// 同行连续与窗口唯一率仍按原规则中止（对齐 DSH AZ.2/BA.3）。
+		// 围栏内不做行内中止（代码/字符串字面量有明确用途）。① 同行连续仍按原规则
+		// 中止（对齐 DSH AZ.2/BA.3：连续 8 行相同长行即使围栏内也几乎必是发癫，
+		// 且 MinLineChars 已排除短行）；②③ 的围栏豁免在 addLine 侧生效。
 		exempt := g.fenceChar != 0
 		if exempt {
 			g.skippedInline++
@@ -332,8 +339,12 @@ func (g *Guard) addLine(raw string) *Hit {
 	}
 
 	// ② 短行高频交替（抓「做。」/「**（Go.）**」这类 A/B 交替空转，
-	// 它躲开 ①（短行被 minLineChars 挡掉）与 ③（短行不进旧窗口））
-	if runeLen(line) <= g.cfg.ShortLineMaxChars {
+	// 它躲开 ①（短行被 minLineChars 挡掉）与 ③（短行不进旧窗口））。
+	// 豁免两类行：围栏内行（代码/字面量，行级重复是正常形态）与结构标点行
+	// （`}` 等闭合块高频形态，且兜住无围栏裸代码——DeepSeek 系思维链常不挂围栏）。
+	punct := isStructuralLine(line)
+	inFence := g.fenceChar != 0
+	if !punct && !inFence && runeLen(line) <= g.cfg.ShortLineMaxChars {
 		g.shortWindow = append(g.shortWindow, line)
 		if len(g.shortWindow) > g.cfg.ShortLineWindow {
 			g.shortWindow = g.shortWindow[1:]
@@ -359,21 +370,25 @@ func (g *Guard) addLine(raw string) *Hit {
 		}
 	}
 
-	// ③ 滑动窗口空转（全部非空行参与，含短行——原来只收 ≥12 字符的行，
-	// 于是「短行占绝大多数」的空转窗口反而唯一率很高、永远测不出来）
-	g.window = append(g.window, line)
-	if len(g.window) > g.cfg.WindowLines {
-		g.window = g.window[1:]
-	}
-	if len(g.window) >= g.cfg.WindowMinLines {
-		uniq := uniqueCount(g.window)
-		ratio := float64(uniq) / float64(len(g.window))
-		if ratio <= g.cfg.UniqueRatioMin {
-			return trip(Spinning, fmt.Sprintf("最近 %d 行只有 %d 种内容", len(g.window), uniq), map[string]any{
-				"windowLines": len(g.window),
-				"unique":      uniq,
-				"ratio":       float64(int(ratio*1000)) / 1000,
-			})
+	// ③ 滑动窗口空转（全部含内容的行参与，含短行——原来只收 ≥12 字符的行，
+	// 于是「短行占绝大多数」的空转窗口反而唯一率很高、永远测不出来）。
+	// 围栏内行与标点行同样排除：否则 40 行里 30+ 个 `}` 会把唯一率稀释到 ≤0.25，
+	// 修完 ② 后 spinning 会接力误伤同一段正常代码。
+	if !punct && !inFence {
+		g.window = append(g.window, line)
+		if len(g.window) > g.cfg.WindowLines {
+			g.window = g.window[1:]
+		}
+		if len(g.window) >= g.cfg.WindowMinLines {
+			uniq := uniqueCount(g.window)
+			ratio := float64(uniq) / float64(len(g.window))
+			if ratio <= g.cfg.UniqueRatioMin {
+				return trip(Spinning, fmt.Sprintf("最近 %d 行只有 %d 种内容", len(g.window), uniq), map[string]any{
+					"windowLines": len(g.window),
+					"unique":      uniq,
+					"ratio":       float64(int(ratio*1000)) / 1000,
+				})
+			}
 		}
 	}
 	return nil
@@ -475,6 +490,24 @@ func hasNonSpace(unit []rune) bool {
 		}
 	}
 	return false
+}
+
+// isStructuralLine 结构行豁免：① trim 后无字母/数字（`}`、`{`、`});`、`"""`）；
+// ② 连续词行（无空白/标点，如 break、return、continue）——控制流关键字在重复
+// 样板代码里高频出现是正常形态。发癫短句（「做。」/ "ok then."）必含标点或空白，
+// 照常进窗口。已知残留风险：`else {` 这类带结构符号的关键字组合仍计入窗口
+// （密度低、需 30 个同构分支才触发，遇实锤再收）。
+// 与围栏豁免互补：围栏状态机覆盖不到无围栏裸代码，结构行豁免兜底。
+func isStructuralLine(s string) bool {
+	var hasWord, hasOther bool // hasWord: 字母/数字（含汉字）；hasOther: 空白/标点
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			hasWord = true
+		} else {
+			hasOther = true
+		}
+	}
+	return !hasWord || !hasOther
 }
 
 func runeLen(s string) int { return len([]rune(s)) }

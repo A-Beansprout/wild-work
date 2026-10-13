@@ -123,8 +123,8 @@ func TestFenceExemptsInline(t *testing.T) {
 
 // 长周期单元在流式分片下不能漏检：整段喂命中、逐小片喂也必须命中。
 func TestInlineLongPeriodNotLostByChunking(t *testing.T) {
-	unit := "这是一段二十一个字的思考内容啊" // 21 字单元
-	text := strings.Repeat(unit, 18)          // 18 次 = 378 字 ≥160
+	unit := "这是一段二十一个字的思考内容啊"        // 21 字单元
+	text := strings.Repeat(unit, 18) // 18 次 = 378 字 ≥160
 	for _, chunk := range []int{3, 5, 7, 21} {
 		g := NewDefault()
 		if hit := feed(t, g, text, chunk); hit == nil || hit.Kind != RepeatInline {
@@ -162,5 +162,106 @@ func TestShortLineNotCountedAsRepeatLine(t *testing.T) {
 	hit := feed(t, g, text, 1)
 	if hit != nil && hit.Kind == RepeatLine {
 		t.Fatalf("短行误触发 repeat-line: %s", hit.Reason)
+	}
+}
+
+// 回归（2026-10-14 误伤现场）：模型在思维链里正常写 Go 代码，闭合块高频产生
+// 「}」短行（60 行里 30+ 行），旧判据 ② 误判 short-line-repeat 把流揧断。
+// 结构标点行不得进 ②③ 窗口。
+func TestCodePunctShortLinesDoNotTrip(t *testing.T) {
+	g := NewDefault()
+	var b strings.Builder
+	for i := 0; i < 30; i++ {
+		b.WriteString(fmt.Sprintf("第 %d 步：把候选字段按优先级写入 details 归一化输出。\n", i))
+		b.WriteString("\t\tif v, ok := usageNum(u, k); ok {\n")
+		b.WriteString("\t\t\tputDetail(u, \"cached_tokens\", v)\n")
+		b.WriteString("\t\t\tbreak\n")
+		b.WriteString("\t\t}\n") // trim 后是 } —— 现场短行
+		b.WriteString("\t}\n")   // trim 后是 }
+	}
+	if hit := feed(t, g, b.String(), 3); hit != nil {
+		t.Fatalf("正常代码输出误触发 %s: %s", hit.Kind, hit.Reason)
+	}
+}
+
+// 40 行窗口里 30+ 个 } 会把唯一率稀释到 ≤0.25，旧判据 ③ 会接力误伤同一段代码。
+// 标点行排除后窗口不充盈，不判定。
+func TestSpinningIgnoresPunctLines(t *testing.T) {
+	g := NewDefault()
+	var b strings.Builder
+	for i := 0; i < 35; i++ {
+		b.WriteString("}\n")
+	}
+	for i := 0; i < 5; i++ {
+		b.WriteString(fmt.Sprintf("独一的内容行 %d。\n", i))
+	}
+	if hit := feed(t, g, b.String(), 3); hit != nil {
+		t.Fatalf("标点行稀释窗口误触发 spinning: %s", hit.Reason)
+	}
+}
+
+// 豁免只针对标点行：含内容短行（「做。」）夹在大量 } 中间仍必须触发——
+// 防止把标点行计入窗口分母挤掉真发癫（修过头的反向回归）。
+func TestPunctDoesNotDiluteShortLineRepeat(t *testing.T) {
+	g := NewDefault()
+	var b strings.Builder
+	for i := 0; i < 30; i++ {
+		b.WriteString("做。\n")
+		b.WriteString(fmt.Sprintf("这是第 %d 条正常长度的思考内容，各不相同。\n", i))
+		b.WriteString("}\n")
+	}
+	hit := feed(t, g, b.String(), 2)
+	if hit == nil || hit.Kind != ShortLineRepeat {
+		t.Fatalf("期望 short-line-repeat，得 %+v", hit)
+	}
+}
+
+// 含字母的短行高频仍触发（只有纯标点/纯数字豁免）。
+func TestWordShortLinesStillTrip(t *testing.T) {
+	g := NewDefault()
+	var b strings.Builder
+	for i := 0; i < 35; i++ {
+		b.WriteString("do.\n") // 含字母 → 非标点行
+	}
+	hit := feed(t, g, b.String(), 2)
+	if hit == nil || hit.Kind != ShortLineRepeat {
+		t.Fatalf("期望 short-line-repeat，得 %+v", hit)
+	}
+}
+
+// 回归（2026-10-14）：围栏豁免必须覆盖窗口判据 ②③，不能只豁免 ④。
+// 同一段重复样板代码（20 连发 if err != nil { return nil, err }），在围栏内不触发、
+// 围栏外触发 spinning——对照锁死豁免是围栏驱动的，不是把判据整个废掉。
+func TestFenceExemptsWindowCriteria(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("```go\n")
+	for i := 0; i < 20; i++ {
+		b.WriteString("if err != nil {\n\treturn nil, err\n}\n")
+	}
+	b.WriteString("```\n")
+	if hit := feed(t, NewDefault(), b.String(), 3); hit != nil {
+		t.Fatalf("围栏内重复样板误触发 %s: %s", hit.Kind, hit.Reason)
+	}
+
+	// 围栏外同文本：两个内容行反复交替 → spinning 必触发（`}` 已被标点豁免）
+	var c strings.Builder
+	for i := 0; i < 20; i++ {
+		c.WriteString("if err != nil {\n\treturn nil, err\n}\n")
+	}
+	hit := feed(t, NewDefault(), c.String(), 3)
+	if hit == nil || hit.Kind != Spinning {
+		t.Fatalf("围栏外对照应触发 spinning，得 %+v", hit)
+	}
+}
+
+// 无围栏裸代码：`}` 短行高频靠标点豁免兜底（fence 状态机管不到）。
+func TestBareCodePunctLinesDoNotTrip(t *testing.T) {
+	g := NewDefault()
+	var b strings.Builder
+	for i := 0; i < 35; i++ {
+		b.WriteString("}\n")
+	}
+	if hit := feed(t, g, b.String(), 2); hit != nil {
+		t.Fatalf("无围栏标点行误触发 %s: %s", hit.Kind, hit.Reason)
 	}
 }
