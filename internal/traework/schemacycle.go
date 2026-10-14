@@ -23,6 +23,7 @@ import (
 //     接受任意值）；非本地/不可解析/超出预算的 $ref 同样截断。结果
 //     schema 中一个 $ref 都不剩。语义损失仅限递归分支处，对容忍递归的
 //     OpenAI/Anthropic 后端，展开后的有限 schema 依旧合法。
+//
 // 不按模型名门控：客户端可能用自定义模型别名（不含 kimi 字样）。
 // 支持 parameters 预序列化为字符串的形态——原样透传会让消毒被绕过
 // （2026-10-13 23:36 traecode 4027 复现）。
@@ -56,11 +57,18 @@ func breakToolSchemaCycles(obj map[string]any) {
 		case string:
 			var m map[string]any
 			if err := json.Unmarshal([]byte(params), &m); err != nil || m == nil {
-				log.Printf("traework schema scan: model=%s tool=%q form=str-unparsed bytes=%d",
-					model, name, len(params))
+				if strings.TrimSpace(params) != "" { // 空串是「无参数」的常见形态，不记日志
+					log.Printf("traework schema scan: model=%s tool=%q form=str-unparsed bytes=%d",
+						model, name, len(params))
+				}
 				continue
 			}
+			// 与 map 分支同口径：无 $ref 就不动原文（回写 Marshal 结果会重排键序、
+			// 改写数字字面量，白白污染上游 prompt 缓存前缀，还会每请求刷一行日志）。
 			before := countRefs(m)
+			if before == 0 {
+				continue
+			}
 			cleaned := coerceObject(inlineSchemaRefs(m, m, map[string]bool{}, newInlineBudget()))
 			log.Printf("traework schema scan: model=%s tool=%q form=str ref_before=%d ref_after=%d",
 				model, name, before, countRefs(cleaned))

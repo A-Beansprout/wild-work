@@ -296,3 +296,32 @@ func TestPrepareBodySanitizesAllModelsStringParams(t *testing.T) {
 		t.Fatalf("消毒后不应残留 $ref，剩 %d 个", n)
 	}
 }
+
+// 无 $ref 的 parameters 必须原样保留（两种形态都是）：重序列化会重排键序、改写数字
+// 字面量（1e9 → 1e+09），白污染上游 prompt 缓存前缀；字符串形态旧实现还按工具数刷日志。
+func TestBreakToolSchemaCycles_LeavesRefFreeParamsUntouched(t *testing.T) {
+	raw := `{"type":"object","properties":{"n":{"type":"integer","default":1e9},"a":{"type":"string"}}}`
+	mk := func(params any) map[string]any {
+		return map[string]any{"model": "kimi-k3", "tools": []any{
+			map[string]any{"type": "function", "function": map[string]any{"name": "t", "parameters": params}},
+		}}
+	}
+	// 字符串形态
+	obj := mk(raw)
+	breakToolSchemaCycles(obj)
+	if got := obj["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["parameters"]; got != raw {
+		t.Fatalf("无 $ref 的字符串形态应原样保留，得到 %T %v", got, got)
+	}
+	// map 形态
+	obj2 := mk(map[string]any{"type": "string"})
+	breakToolSchemaCycles(obj2)
+	if got := obj2["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["parameters"]; got == nil {
+		t.Fatal("map 形态参数被丢弃")
+	}
+	// 空串 parameters 不记「str-unparsed」（无断言，仅确保不 panic 且原样留着）
+	obj3 := mk("")
+	breakToolSchemaCycles(obj3)
+	if got := obj3["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["parameters"]; got != "" {
+		t.Fatalf("空串 parameters 应保持空串，得到 %v", got)
+	}
+}
