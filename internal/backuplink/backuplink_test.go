@@ -130,6 +130,30 @@ func TestClientCachesByBase(t *testing.T) {
 	}
 }
 
+// 锁定实盘发现的坑：渠道出厂 Transport 常是「无 DialContext + 无 TLSClientConfig + 无 TLSNextProto」
+// 形态（cline.newTransport 即如此），Clone 后不补禁 h2 就会让备用链路拿到 h2 帧而永远拨不通。
+func TestClientDisablesHTTP2EvenWhenBaseLooksPlain(t *testing.T) {
+	t.Cleanup(func() { _ = Set("") })
+	if err := Set("http://127.0.0.1:7890"); err != nil {
+		t.Fatal(err)
+	}
+	clineLike := &http.Transport{ // 与 cline.newTransport 同形：没设 DialContext / TLSNextProto
+		DisableKeepAlives: false, ForceAttemptHTTP2: false, MaxIdleConns: 64, MaxIdleConnsPerHost: 32,
+		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second, ResponseHeaderTimeout: 90 * time.Second,
+	}
+	c := Client(clineLike)
+	tr := c.Transport.(*http.Transport)
+	if tr.TLSNextProto == nil || tr.ForceAttemptHTTP2 || tr.DialContext == nil {
+		t.Errorf("备用链路必须显式禁 h2 并自带拨号器：TLSNextProto==nil:%v forceH2:%v dialer:%v",
+			tr.TLSNextProto == nil, tr.ForceAttemptHTTP2, tr.DialContext == nil)
+	}
+	// 不得就地污染渠道自己的直连 Transport
+	if clineLike.Proxy != nil {
+		t.Error("克隆时不得改 base 的 Proxy（会污染渠道直连链路）")
+	}
+}
+
 // base 为 nil（渠道 client 没设 Transport）时退回内置保守底座，仍要绑上代理。
 func TestClientNilBaseFallback(t *testing.T) {
 	t.Cleanup(func() { _ = Set("") })

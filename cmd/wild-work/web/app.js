@@ -135,10 +135,10 @@ function collectAllModels() {
     for (const m of ch.models || []) {
       const raw = m.model;
       const short = raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw;
-      // 完整 ID 一律补渠道前缀（与 modelCellHtml / 服务端 buildModelEntry 口径一致）：
-      // 上游 ID 自带命名空间（如 cline 免费档 `cline-free/*`）时必须得 `cline/cline-free/*`
-      // 双层路径才能被 runtimeForModel 正确路由；仅当裸名已以渠道前缀开头时原样保留（防重复）。
-      const full = ch.channel && !raw.startsWith(`${ch.channel}/`) ? `${ch.channel}/${raw}` : raw;
+      // 完整 ID 一律取服务端给的 m.id（与 /v1/models、provider.PublicModelID 同源）；
+      // 缺字段时退回旧拼接规则（兼容旧后端缓存）：上游 ID 自带命名空间（cline-free/*）
+      // 的渠道由服务端直接透传上游 ID，不再补 `<渠道>/` 前缀（R59）。
+      const full = m.id || (ch.channel && !raw.startsWith(`${ch.channel}/`) ? `${ch.channel}/${raw}` : raw);
       out.push({ ch: ch.channel, m, short, full });
     }
   }
@@ -828,11 +828,10 @@ function renderFees(fees) {
     const raw = m.model;
     // 短名：去掉渠道前缀（`xxx/name` -> `name`），展示在上行的模型名位置
     const short = raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw;
-    // 完整 ID 一律补渠道前缀：服务端 runtimeForModel 按第一个 "/" 拆渠道，
-    // 客户端必须给 `<渠道>/<上游ID>` 形态。上游 ID 自带命名空间（如 cline 免费档的
-    // `cline-free/*`）时得到 `cline/cline-free/*` 双层路径——这才是可用形态；
-    // 仅当裸名已以渠道前缀开头时原样保留（防重复）。
-    const full = chPrefix && !raw.startsWith(`${chPrefix}/`) ? `${chPrefix}/${raw}` : raw;
+    // 完整 ID 取服务端给的 m.id（同 /v1/models 口径）：普通渠道是 `<渠道>/<模型>`；
+    // 上游 ID 自带命名空间的渠道（cline-free/*）直接透传上游 ID（R59）。
+    // 缺字段时退回旧拼接（兼容旧后端）：仅当裸名已以渠道前缀开头时原样保留（防重复）。
+    const full = m.id || (chPrefix && !raw.startsWith(`${chPrefix}/`) ? `${chPrefix}/${raw}` : raw);
     const copyTip = `点击复制：${full}`;
     const line = `<div class="mline"><code class="fee-model-copy" data-mid="${esc(full)}" role="button" tabindex="0" title="${esc(modelTip(m))}\n${copyTip}">${esc(short)}</code>${ctxTag(m)}${effortTag(m)}${capIcons(m)}${noteCell(m)}</div>`;
     // 仅当完整ID != 短名时才显示可复制的完整 ID 行，避免裸名模型重复

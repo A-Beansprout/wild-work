@@ -211,12 +211,14 @@ API Key:  WildWorkAPI
 ```bash
 curl http://127.0.0.1:7863/v1/chat/completions \
   -H "Authorization: Bearer WildWorkAPI" -H "Content-Type: application/json" \
-  -d '{"model":"cline/cline-free/step-5-preview","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"cline-free/step-5-preview","messages":[{"role":"user","content":"你好"}]}'
 ```
 
 - 可用模型：完全跟随 Cline 官方免费池动态下发（`recommended-models` 的 free 组，
-  原样透传，不做任何本地筛选），典型如 `cline/cline-free/step-5-preview`、
-  `cline/cline-free/mimo-v2.6-flash` 等；完整清单见 `/v1/models` 中 `cline/` 开头的条目。
+  原样透传，不做任何本地筛选）。**模型 ID 就是上游 ID**（自带 `cline-free/` 命名空间），
+  典型如 `cline-free/step-5-preview`、`cline-free/mimo-v2.6-flash`；
+  完整清单见 `/v1/models` 中 `cline-free/` 开头的条目。
+  旧版双层写法 `cline/cline-free/*` 仍可路由（兼容老配置），但对外只广告前者。
 - **必须使用多个独立 Cline 账号各自的 Key**：官方免费额度按**账号**计
   （其权益字段名为 `…UsageCostUSDPerUser`），**同一账号建多把 Key 共享一份额度，不会翻倍**。
   面板在检测到新 Key 与已有账号同属一个 Cline 账号时会给出提示。
@@ -247,7 +249,7 @@ curl http://127.0.0.1:7863/v1/chat/completions \
 - 部分免费模型有**地域限制**（如 `muse-spark-*-contributor-free` 在国内直连返回 403 RegionError）：
   列表仍会列出。本工具的**备用上游通道**就是为这类场景准备的（见下文设置章节），
   但该渠道上游对抗策略变更、当前暂不可用，待恢复后再接入自动改道。
-- Cline 的 `cline/cline-free/muse-spark-1.3-contributor` 已接入自动改道：国内直连回 403
+- Cline 的 `cline-free/muse-spark-1.3-contributor` 已接入自动改道：国内直连回 403
   `not available in your region` 时，会在同一次请求内经备用通道重发（未配则原样透传）。
 - 免费额度/限流由上游 OpenCode Zen 控制，本工具不做额外限制；上游未见请求数配额，
   但高并发时延会上升。

@@ -353,7 +353,9 @@ func (h *Handler) modelList() []map[string]any {
 // 思考档位（issue #96）：按 Buddy2api v2.1.11 口径透传 reasoning 对象，
 // 上游未声明档位时整个对象不出现（不编造；supports_reasoning 同理不输出）。
 func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
-	id := k.String() + "/" + mi.ID
+	// 对外 ID 与 provider.PublicModelID 同源：上游 ID 自带命名空间的渠道（cline 的 cline-free/*）
+	// 直接透传上游 ID，不再拼 `<渠道>/`（决议 R59；旧的 cline/cline-free/* 仍可路由）。
+	id := provider.PublicModelID(k, mi.ID)
 	entry := map[string]any{"id": id, "object": "model", "created": 1753600000, "owned_by": k.String()}
 	if mi.ContextWindow > 0 {
 		entry["context_length"] = mi.ContextWindow
@@ -479,6 +481,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
+	// 统计/流水的归一 ID：新旧写法（cline-free/x 与 cline/cline-free/x）归一到同一串，
+	// 否则同一模型会在用量榜/请求日志里裂成两行（R59）；其余渠道为恒等变换。
+	canonModel := provider.CanonicalModelID(clientModel)
 	// 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account 的「模型全冷」
 	// 形态，pickWithSticky 必败）时，按用户配置的链找第一个仍有可用账号的备胎模型顶上。
 	// 仅此场景触发，正常路由零开销；不粘滞——每个请求都按原模型重新判定，上游解冻即自动切回。
@@ -525,7 +530,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// TTFB 由 statWriter 记首字节，耗时/吞吐在出口由 defer 收口；
 	// Status 未显式赋值 = 成功写回（200）。
 	var statRow statsEngine.ReqRow
-	statRow.Model = clientModel
+	statRow.Model = canonModel
 	if peek.Stream {
 		statRow.Mode = "流"
 	} else {
@@ -682,7 +687,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if h.ledger != nil {
 				pt, ct, src := usageTokens(usage)
 				h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-					Model: stripChannel(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+					Model: ledgerModelOf(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 			}
 			// 运行统计：模型维度记账（有 usage 才计，对齐 sidecar 的 u.found 语义）。
 			// 吞吐仅在流式下有意义：genSec = 总耗时 − TTFB；引擎内对 ≤50ms 的样本只计 TTFB。
@@ -690,7 +695,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				pt, ct, _ := usageTokens(usage)
 				if pt > 0 || ct > 0 {
 					gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
-					h.stats.AddUsage(clientModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
+					h.stats.AddUsage(canonModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 					statRow.Tok = ct
 					if gen > 0 {
 						statRow.TokPerSec = float64(ct) / gen
@@ -764,7 +769,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			pt, ct, src := usageTokens(u)
 			cu := cacheUsageOf(u)
 			h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-				Model: stripChannel(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+				Model: ledgerModelOf(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 		}
 		writeJSON(w, http.StatusOK, resp)
 		// 运行统计：必须在写回之后——此刻 statWriter 才记到首字节，TTFB 为真值；
@@ -776,7 +781,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if pt > 0 || ct > 0 {
 				gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
 				cu := cacheUsageOf(u)
-				h.stats.AddUsage(clientModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
+				h.stats.AddUsage(canonModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 				statRow.Tok = ct
 			}
 			statRow.Credit = usageCredit(u)
@@ -889,11 +894,12 @@ func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen }
 func keyPasteChannel(k provider.Kind) bool { return k == provider.Cline }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / cline/<model> / oczen/<model>")
+	// 解析与 provider.PublicModelID 同源：既接受 `<渠道>/<上游ID>`，也接受上游 ID 自带命名空间的
+	// 直通形态（`cline-free/*`）——后者首段不是渠道名，必须整串当上游模型名（决议 R59）。
+	kind, upstream, ok := provider.SplitModelID(model)
+	if !ok {
+		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
 	}
-	kind := provider.Kind(parts[0])
 	rt := h.cfg.Runtimes[kind]
 	if rt == nil || rt.Pool == nil || rt.Upstream == nil {
 		return nil, "", fmt.Errorf("provider %q is not configured", kind)
@@ -901,7 +907,7 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	if len(rt.Pool.List()) == 0 {
 		return nil, "", fmt.Errorf("provider %q has no account", kind)
 	}
-	return rt, parts[1], nil
+	return rt, upstream, nil
 }
 
 // usageTokens 从 OpenAI usage 对象提 prompt/completion tokens；
@@ -931,14 +937,10 @@ func numField(u map[string]any, keys ...string) int64 {
 	return 0
 }
 
-// stripChannel 去掉模型名的 channel/ 前缀（"workbuddy/glm-5.2" → "glm-5.2"），
-// 供流水按渠道内裸模型名聚合；无前缀时原样返回。
-func stripChannel(model string) string {
-	if i := strings.IndexByte(model, '/'); i >= 0 {
-		return model[i+1:]
-	}
-	return model
-}
+// ledgerModelOf 把客户端模型 ID 归一为流水里的模型名（= 上游模型名）。
+// 与 provider.UpstreamModelOf 同源：新旧写法（cline-free/x 与 cline/cline-free/x）
+// 必须落同一行，否则同一模型会在用量榜上裂成两行；裸名原样返回。
+func ledgerModelOf(clientModel string) string { return provider.UpstreamModelOf(clientModel) }
 
 // runtimeCapacity 一次 Pool.List() 同时得出两个降级判据：
 //   - hasHealthy：渠道内是否还有非禁用/非整号冷却的账号；
@@ -992,8 +994,10 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
 		return "", false // 整渠道无健康账号：交原报错分支给针对性提示
 	}
 	for _, rule := range rules {
-		ch, inner, ok := strings.Cut(strings.TrimSpace(rule.From), "/")
-		if !ok || ch != rt.Kind.String() || inner != model {
+		// 规则里的 from 与请求模型都要按同一套 ID 解析（R59：cline 的 `cline-free/x`
+		// 与旧写法 `cline/cline-free/x` 必须都能命中同一条规则）。
+		rk, rUp, rok := provider.SplitModelID(rule.From)
+		if !rok || rk != rt.Kind || rUp != model {
 			continue
 		}
 		for _, to := range rule.To {

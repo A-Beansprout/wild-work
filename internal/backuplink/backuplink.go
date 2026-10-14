@@ -117,9 +117,8 @@ func Generation() uint64 { return gen.Load() }
 
 // Client 返回「经备用通道出站」的 http.Client；未配置通道时返回 nil（调用方据此走直连）。
 //
-// base 传该渠道自己的 Transport：克隆一份**只改出口**，其余参数（禁 h2、各类超时、
-// 连接池上限）与出厂完全一致 ⇒ 备用链路与直链路除出口 IP 外行为相同，不会因换链路
-// 引入新的超时/协议差异（R37 的「不得让第二次尝试改变可比性」同族要求）。
+// base 传该渠道自己的 Transport：逐字段复刻其对外旋钮（超时/连接池/TLS 校验）只为换出口，
+// 使备用链路除出口 IP 外不引入新的超时差异；**一律禁用 HTTP/2**（原因见 copyTransport 注释）。
 // base 为 nil 时退回内置保守参数（禁 h2 + 120s 响应头超时）。
 //
 // 返回的 client **不设 Client.Timeout**：Go 的 Timeout 覆盖整个请求生命周期（含读 body），
@@ -136,7 +135,7 @@ func Client(base *http.Transport) *http.Client {
 	}
 	var tr *http.Transport
 	if base != nil {
-		tr = base.Clone()
+		tr = copyTransport(base)
 	} else {
 		tr = fallbackTransport()
 	}
@@ -144,6 +143,64 @@ func Client(base *http.Transport) *http.Client {
 	c := &http.Client{Transport: tr}
 	l.cli[base] = c
 	return c
+}
+
+// copyTransport 逐字段复刻 base 的对外旋钮，**不用 base.Clone()**。
+//
+// 2026-10-14 实盘教训（R57 回归）：Clone() 会把源 Transport 的**内部 h2 启用态**一起带走，
+// 之后再设 TLSNextProto 空 map / ForceAttemptHTTP2=false 都**无效**（Go 1.24+ 的 h2 已内建，
+// 不再看 TLSNextProto）⇒ 经 HTTP 代理时 ALPN 仍会协商 h2，而代理隧道的 h2 握手失败，
+// 回 h2 SETTINGS/GOAWAY 帧，调用方报 `net/http: HTTP/1.x transport connection broken:
+// malformed HTTP response "\x00\x00\x12\x04…http2_handshake_failed"`，表现为「备用通道永远拨不通」。
+//
+// 四组对照（同一代理、同一发 muse）：
+//
+//	base.Clone()+Proxy（任意 h2 字段）  → ✗ malformed HTTP response
+//	逐字段新建+Proxy+禁h2             → ✓ GET 200 / POST 200
+//	逐字段新建+Proxy（不塞 TLSNextProto）→ ✓（差异只在 h2 是否被真禁）
+//	直连（不走备用）                   → ✓ POST 403（地区限制，符合预期）
+//
+// 逐字段新建的另一个好处：与旧实现（SetTransportProxy 的 baseTransport）同构，
+// 那条路已在线验证过可通代理，不需重新积累信心。
+func copyTransport(base *http.Transport) *http.Transport {
+	tr := &http.Transport{
+		Proxy:                  nil, // 出口由调用方设置
+		Dial:                   base.Dial,
+		DialContext:            base.DialContext,
+		DialTLSContext:         base.DialTLSContext,
+		TLSClientConfig:        stripALPN(base.TLSClientConfig),
+		TLSHandshakeTimeout:    base.TLSHandshakeTimeout,
+		DisableKeepAlives:      base.DisableKeepAlives,
+		DisableCompression:     base.DisableCompression,
+		MaxIdleConns:           base.MaxIdleConns,
+		MaxIdleConnsPerHost:    base.MaxIdleConnsPerHost,
+		MaxConnsPerHost:        base.MaxConnsPerHost,
+		IdleConnTimeout:        base.IdleConnTimeout,
+		ExpectContinueTimeout:  base.ExpectContinueTimeout,
+		ResponseHeaderTimeout:  base.ResponseHeaderTimeout,
+		ProxyConnectHeader:     base.ProxyConnectHeader,
+		MaxResponseHeaderBytes: base.MaxResponseHeaderBytes,
+		WriteBufferSize:        base.WriteBufferSize,
+		ReadBufferSize:         base.ReadBufferSize,
+		// 显式禁 h2：**必须建在字面量上**（见函数注释），Clone 后再设无效。
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+	}
+	if tr.Dial == nil && tr.DialContext == nil {
+		tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}).DialContext
+	}
+	return tr
+}
+
+// stripALPN 复制 TLS 配置但不带 NextProtos：保留自定义校验旋钮（如 InsecureSkipVerify），
+// 同时不让 ALPN 广告 h2（备用链路一律 HTTP/1.1）。config 为 nil 时返回 nil。
+func stripALPN(cfg *tls.Config) *tls.Config {
+	if cfg == nil {
+		return nil
+	}
+	cp := cfg.Clone()
+	cp.NextProtos = nil
+	return cp
 }
 
 // closeIdle 关闭本快照所有缓存 client 的空闲连接。

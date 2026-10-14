@@ -568,6 +568,7 @@ var channelKind = map[string]bool{
 	string(provider.QwenWork): true, string(provider.MonkeyCode): true,
 	string(provider.Raccoon): true, string(provider.Loomy): true,
 	string(provider.Oczen): true, string(provider.GLM): true,
+	string(provider.Cline): true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
 }
 
 // traeKinds 为 Trae 系渠道集合（TraeWork + TraeCode 共用账号与积分池——上游只为

@@ -44,6 +44,87 @@ const (
 
 func (k Kind) String() string { return string(k) }
 
+// ModelNamespaces 声明「上游 ID 自带命名空间」的渠道：命名空间前缀 → 渠道 kind。
+//
+// 这类渠道对客户端**直接透传上游 ID**，不再拼 `<kind>/` 前缀（决议 R59，首例为 cline 免费档：
+// 上游 free[] 的 ID 就是 `cline-free/*`）。路由时该前缀映射回渠道，且**整串**即上游模型名。
+// 同时旧的 `<kind>/<上游ID>` 双层写法（如 `cline/cline-free/*`）继续有效 —— 老配置/老客户端
+// 里的映射表与降级链都是那种写法，不能失效。
+var ModelNamespaces = map[string]Kind{
+	"cline-free": Cline,
+}
+
+// PublicModelID 返回客户端应填写的模型 ID（面板复制 / `/v1/models` / 报错提示同源）。
+// 上游 ID 自带命名空间时直接透传上游 ID；其余渠道拼 `<kind>/<上游ID>`。
+func PublicModelID(k Kind, upstreamID string) string {
+	up := strings.TrimSpace(upstreamID)
+	if i := strings.IndexByte(up, '/'); i > 0 {
+		if kk, ok := ModelNamespaces[up[:i]]; ok && kk == k {
+			return up
+		}
+	}
+	return k.String() + "/" + up
+}
+
+// SplitModelID 把客户端模型 ID 解析为 (渠道, 上游模型名)。
+// 两种形态均接受，第二个返回值恒为「应该发给上游的模型名」：
+//
+//	① `cline-free/mimo-v2.6-flash`      → (cline, 整串)            ← 上游命名空间直通（R59）
+//	② `cline/cline-free/mimo-v2.6-flash` → (cline, 去掉 cline/ 后的串) ← 旧写法兼容
+//	③ `workbuddy/glm-5.2`               → (workbuddy, glm-5.2)
+//
+// 无 `/`、或首段空、或尾段空的串一律返回 ok=false（由调用方报错）。
+func SplitModelID(model string) (Kind, string, bool) {
+	m := strings.TrimSpace(model)
+	i := strings.IndexByte(m, '/')
+	if i <= 0 || i == len(m)-1 {
+		return "", "", false
+	}
+	if k, ok := ModelNamespaces[m[:i]]; ok {
+		return k, m, true // 上游命名空间：整串就是上游模型名
+	}
+	return Kind(m[:i]), m[i+1:], true
+}
+
+// UpstreamModelOf 把客户端模型 ID 归一为**发给上游的模型名**（账务/统计用：新旧写法必须落同一行）。
+// 无前缀的裸名原样返回（compat 层按 default_channel/model_map 映射，此处不做猜测）。
+func UpstreamModelOf(model string) string {
+	if _, up, ok := SplitModelID(model); ok {
+		return up
+	}
+	return strings.TrimSpace(model)
+}
+
+// CanonicalModelID 把客户端模型 ID 归一为**规范对外 ID**：同一模型的新旧两种写法归一到同一串。
+// 例：`cline-free/x` 与 `cline/cline-free/x` 均 → `cline-free/x`；`workbuddy/glm-5.2` 不变。
+// 用于运行统计/日志归行（同一个模型不能因客户端写法不同而在榜单上裂成两行）；裸名原样返回。
+func CanonicalModelID(model string) string {
+	if k, up, ok := SplitModelID(model); ok {
+		return PublicModelID(k, up)
+	}
+	return strings.TrimSpace(model)
+}
+
+// ModelIDPrefix 返回该渠道对外模型 ID 的**首选前缀**（compat 层的 default_channel 兜底拼接用）：
+// 上游命名空间渠道（cline）返回命名空间（`cline-free`），其余返回 kind 本身。
+func ModelIDPrefix(k Kind) string {
+	if ns, ok := kindNamespace[k]; ok {
+		return ns
+	}
+	return k.String()
+}
+
+// kindNamespace 是 ModelNamespaces 的反查表（包初始化时构建，避免地图遍历序不确定）。
+var kindNamespace = func() map[Kind]string {
+	m := make(map[Kind]string, len(ModelNamespaces))
+	for ns, k := range ModelNamespaces {
+		if _, dup := m[k]; !dup {
+			m[k] = ns
+		}
+	}
+	return m
+}()
+
 // ErrKind 错误分类，驱动 pool 冷却状态机。
 type ErrKind int
 

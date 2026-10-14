@@ -2781,6 +2781,11 @@ type feesChannel struct {
 // feesModelRow 一行模型：来自渠道 models 列表，尽可能配上费率。
 type feesModelRow struct {
 	Model string `json:"model"`
+	// ID 是客户端实际要填的完整模型 ID（与 /v1/models 的 id、provider.PublicModelID 同源）：
+	// 普通渠道为 `<渠道>/<模型>`，上游 ID 自带命名空间的渠道（cline 的 cline-free/*）
+	// 直接就是上游 ID（R59）。面板一律拿它做复制，不在前端再拼前缀（R52 的教训：
+	// 拼接规则散在多处必漏）。
+	ID string `json:"id"`
 	// Priced 表示上游费率接口对该模型返回了可用的倍率值。
 	// 注意：credits 字段缺失（如 CN 的 auto 调度器）也算未定价，
 	// 不能把「缺字段解析出的 0」当成免费。
@@ -2840,6 +2845,7 @@ func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
 		for _, mi := range infos {
 			row := feesModelRow{
 				Model:         mi.ID,
+				ID:            provider.PublicModelID(k, mi.ID),
 				ContextWindow: mi.ContextWindow,
 				MaxTokens:     mi.MaxTokens,
 				// 仅上游接口返回的上下文可信；硬编码估算值不展示数字。

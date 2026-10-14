@@ -4,8 +4,9 @@ package stats
 
 import (
 	"sort"
-	"strings"
 	"time"
+
+	"wild-work/internal/provider"
 )
 
 // minGenSecForTput 计入 per-model 吞吐聚合的最小生成耗时：
@@ -165,15 +166,15 @@ func (s *Stats) Logs(limit int) []ReqRow {
 	return out
 }
 
-// channelOfModel 取模型名的渠道前缀（形如 "workbuddy/deepseek-v4.1-flash"；
-// 返回值未归一，归一由调用方 normalizePlatform 处理）。
+// channelOfModel 取模型名的渠道前缀，返回 (渠道 kind, 是否在白名单内)。
+// 解析与 provider.SplitModelID 同源：上游命名空间写法（cline-free/x）归到其渠道（cline），
+// 否则统计会把 cline 的 token 漏掉（R59）。
 func channelOfModel(model string) (string, bool) {
-	i := strings.IndexByte(model, '/')
-	if i <= 0 {
-		return "", false
+	if k, _, ok := provider.SplitModelID(model); ok {
+		g := k.String()
+		return g, channelKind[g]
 	}
-	g := model[:i]
-	return g, channelKind[g]
+	return "", false
 }
 
 // modelStatsLocked 生成今日按模型消耗行（调用方须持锁；积分降序）。
