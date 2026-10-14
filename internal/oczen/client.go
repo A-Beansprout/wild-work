@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -97,9 +98,19 @@ func StaticModels() []provider.ModelInfo { return staticFree() }
 // 请求构造
 // ---------------------------------------------------------------------------
 
+// 时间戳段不是任意 12 位 hex：免费档会按官方客户端 Identifier.descending()
+// 的编码解析它——~(unix_ms<<12|counter) 取低 48 位，故小写 hex 段的末三位是
+// 0xFFF-counter。实盘探测（2026-10-13）：免费档接受 counter 1–63（末三位
+// 0xFC0–0xFFF），超出即判为非 OpenCode 客户端 → 403 FreeTierError，即便 ses_
+// 外形正确；摘要段（旧实现）同属该拒收窗口。故仅当时间戳段落在该编码窗口内
+// 才原样保留，否则确定性重编码——同时保住「同一会话稳定映射到同一 session」
+// 的 prompt cache 亲和。
+var descendingTimePartPattern = regexp.MustCompile(`^[0-9a-f]{9}f[c-f][0-9a-f]$`)
+
 // canonicalSessionID 把任意会话种子映射成 OpenCode 官方格式
-// ses_<12位小写hex><14位Base62>。已是该格式则原样返回（保住 prompt cache 亲和）。
-// 上游自 2026-09-16 起对非该形状的会话头一律回 403 FreeTierError。
+// ses_<12位小写hex><14位Base62>。已是官方客户端签发的 descending 编码则原样
+// 返回（保住 prompt cache 亲和）；其余（含旧实现的摘要段与升序 ID）重编码成
+// 该精确布局。上游自 2026-09-16 起对非该形状/编码的会话头一律回 403 FreeTierError。
 func canonicalSessionID(signal string) string {
 	// 官方形状：ses_ + 12 位小写 hex（时间戳）+ 14 位 Base62
 	if len(signal) == 4+12+14 && strings.HasPrefix(signal, "ses_") {
@@ -118,15 +129,30 @@ func canonicalSessionID(signal string) string {
 					break
 				}
 			}
-			if ok {
-				return signal
-			}
 		}
+		if ok && descendingTimePartPattern.MatchString(signal[4:16]) {
+			return signal
+		}
+		// 形状对但编码外来（旧摘要段 / 升序 ID）：落到下面确定性重编码。
 	}
 	sum := sha256.Sum256([]byte("ses\x00" + signal))
-	timePart := hex.EncodeToString(sum[:6]) // 12 位小写 hex
+	timePart := descendingTimePart(sum[:6])
 	n := new(big.Int).SetBytes(sum[6:16])
 	return "ses_" + timePart + base62Fixed(n, 14)
+}
+
+// descendingTimePart 把哈希前 6 字节渲染成官方客户端 Identifier.descending()
+// 的布局：36 位时间戳移位进 48 位字的高位，OR 上 counter=1，再按位取反，
+// 故末三位恒为 ffe。
+func descendingTimePart(hash []byte) string {
+	current := (uint64(hash[0])<<28 | uint64(hash[1])<<20 | uint64(hash[2])<<12 |
+		uint64(hash[3])<<4 | uint64(hash[4])>>4) << 12
+	current |= 1
+	inverted := ^current & 0xFFFFFFFFFFFF
+	return hex.EncodeToString([]byte{
+		byte(inverted >> 40), byte(inverted >> 32), byte(inverted >> 24),
+		byte(inverted >> 16), byte(inverted >> 8), byte(inverted),
+	})
 }
 
 func isBase62(c byte) bool {
