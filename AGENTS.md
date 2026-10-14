@@ -82,6 +82,10 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 
 | R53 | **usage 缓存计量只归一化「形状」不得改语义；取数逻辑收敛为唯一真源**（2026-10-13，issue #104） | **背景**：trae 系（traework/traecode）上游下发的是 **Anthropic 命名**的缓存字段（`cache_read_input_tokens` / `cache_creation_input_tokens`），而内层原样透传 ⇒ 下游按 OpenAI 规范解析（DSH 实测读法 `prompt_tokens_details?.cached_tokens ?? prompt_cache_hit_tokens ?? 0`）两条都命中不了 ⇒ **命中率恒 0%、prompt 全按未缓存计价**（以其价表 input 0.165 vs cacheRead 0.0033 计，费用高估约 50 倍）。**注意 issue 的定位不准**：它指向 `internal/upstream/sse.go`，但 trae 系根本不走那里（走 `internal/traework/solosse.go`），照抄会修不到。**决策一：归一化方向是「内层补齐 OpenAI 形状」，不是「让下游兼容 Anthropic」**——后者要改所有客户端，且与 OpenAI SDK / AI SDK / DSH 的实际读法相悖。新增 `provider.NormalizeUsageShape`（优先级 `prompt_cache_hit_tokens` > 顶层 `cached_tokens` > `cache_read_input_tokens`；**只在目标子字段缺失时写入**、**原始字段一律保留**、**认「字段存在」而非「值 > 0」**——0 是有效值）。接线：traework 流式在 **token_usage 捕获点**归一化（覆盖 onUsage 回调 / 返回值 / 不含 done 的异常收尾三条路径）+ 非流式 Aggregate 出口。**决策二：缓存取数收敛为唯一真源 `provider.ExtractUsageCache`**——此前面板 `server.cacheUsageOf`、`/v1/responses`、`/v1/messages` **各写一套优先级且已开始漂移**（两个转换器先读顶层裸 `cached_tokens`，而它在 workbuddy 系实测恒 0 是噪声，会把真值掩盖；且用 `> 0` 判定会把「明确未命中」丢成「未提供」，违反不变量 24）。收敛后三处必然同源。**决策三：`/v1/messages` 的 `input_tokens` 必须扣减缓存**——Anthropic 的 `input_tokens` 是「未命中且未写入」的那部分，客户端自行相加还原总输入；而内层 `prompt_tokens` **已是总输入**（命中是其子集）。**不下发 cache 字段**（费用高估）与**下发了却不减**（客户端求和近两倍）都是错的，故 `input_tokens = prompt_tokens − cached − write`，三段相加恒等于原 `prompt_tokens`（钳 0 防坏数据）。回归：`internal/provider/usage_test.go`（含 trae 真帧 / 显式 0 / 幂等 / 坏数据）、`internal/traework/usage_cache_shape_test.go`（双出口）、`internal/gateway/usage_cache_test.go`（responses：噪声字段优先级 + 显式 0）、`internal/gateway/anthropic_usage_test.go`（messages：三段守恒 + 非负 + 流式），四文件回退到修复前**新测试全部失败**（已反向验证） |
 
+| R54 | **模型降级链只在「模型全冷」触发：不粘滞自动切回，降级必须可感知**（2026-10-14，PR #106 + 收尾） | **需求**：主模型被时段性平台频控全池冷却（6004/14003）时 fail-fast 503 打断 agent 任务；用户可预配有序备胎链（`config.model_fallback[]`，`{from,to[]}` 全局唯一、不自环、`channel/model` 全路径，面板可视化编辑 + `POST /api/config/model_fallback` 热生效）。**触发判据**：`runtimeCapacity` 一次 `Pool.List()` 同时得 hasHealthy 与 modelAvail（口径同 no_healthy_account「模型全冷」分支），仅 hasHealthy && !modelAvail 才查链；未配置规则时零探测（「正常路由零开销」承诺）。**不粘滞**：每请求按原模型重判，解冻自动切回（与 R29 分层：粘性是账号级、降级是模型级且用户显式配置）。**感知通道双保险**：① 响应头 `X-Model-Fallback: 请求模型 -> 备胎`（内层 WriteHeader 前设置；**兼容层必须在 `callChat` 统一转写**——/v1/responses、/v1/messages 响应体由网关重建且 model 回填请求名，不转写 = 对 Codex/Claude Code 静默换模型，PR 原版漏了这层）；② chat 面响应体 `model` 字段写备胎全路径（agent 读 chunk.model 即可感知）。**恢复探针只认 primaryAvail**：「未降级」≠「已恢复」——原模型仍全冷但备胎也没容量、或整渠道无健康账号时不得关事件（PR 原版 else 分支无条件调 NoteFallbackRecovery ⇒ 面板先显示恢复再重开一条、持续时长失真，已修）。**记账口径**：token 流水仍按客户端请求名（面向「这一发花多少」），实际执行模型走日志行 + 面板「降级记录」区块（内存环形 200 条、重启清零）。**已知限制**：无规则时不做容量探测 ⇒ 删规则后残留进行中事件不自动关（环形淘汰）；To 不做模型存在性校验（错名吃上游权威错误或本地 400）；备胎配额/余额不预判（容量仅看冷却态）。回归：`model_fallback_test.go`（触发/链序/热更新/切回/跨渠道隔离 + 恢复不谎报）、`stats/fallbacks_test.go`、`gateway/fallback_relay_test.go`（四端点转写 + 无降级不造头）、`scripts/ui-static-check.mjs` 面板接线 9 条 |
+| R55 | **traework/traecode 模型元数据取上游下发；展示用字段必须容错承接，不得拖垮整张目录**（2026-10-14，PR #108 + 收尾） | **背景**：`poolEntry` 只解析 config_name + display_name ⇒ 两渠道 118 个模型全无 context_length/max_output_tokens、图片能力恒 false（客户端误判不能发图、或因上下文未知过度压缩）。**上游证据**（实测 `get_detail_param` HTTP 200/1.35MB/71 条）：`context_window_tokens.{dev,max}`、`display_config.multimodal`、`model_detail_list[].max_tokens`。**折算口径**（对齐不编造原则）：ctx 取 max 档、缺省回 dev、双缺省不填；max_tokens 为 0 不填；`ContextFromAPI` 仅在解析到容量时置 true；multimodal 直取上游布尔。**关键教训——爆炸半径**：强类型结构会因上游形状突变（对象→标量）让整批 unmarshal 失败 ⇒ `fetchModelsForPool` 报错 ⇒ 本渠道池整体拉不到；而这两个字段只是展示用增量信息，故用 `json.RawMessage` 承接、解析失败只丢该字段（同 qodercn.parseContextConfig 既有手法，不变量 5 同族哲学）。回归：`modelmeta_test.go`（容量折算四形态 + 三种形状突变，去掉 RawMessage 即失败）。`display_config.model_capability`（reasoning_model/chat_model）已解析未消费，仅记录上游形态 |
+| R56 | **tool schema `$ref` 全量内联消毒：moonshot 系对任何保留的 `$ref` 都不认账**（2026-10-14，PR #109 + 收尾） | **背景**：Kimi/Moonshot 系（trae solo 后端）对 `tools.function.parameters` 含 `$ref` 即按「moonshot flavored json schema」展开校验，不收敛整体 400 `code=4027 detected infinite recursion`；官方客户端不发 `$ref`，代理客户端（经 MCP 接入）会发。**两版演进**：v1 只打断成环、保留非环 `$ref` —— 生产实测被否（3 个 `ref_before=1` 的 tool 放行后仍 4027）；v2 全量内联：所有本地 `$ref` 就地替换为目标消毒副本，展开链成环处（含 `#`）截断为空 schema（JSON Schema 语义 = 接受任意值），非本地/不可达/超预算（4096）同样截断，结果零残留；语义损失仅限递归分支处。**要点**：不按模型名门控（客户端可用不含 kimi 的自定义别名）；支持 parameters 预序列化字符串形态（原样透传会绕过消毒）；时序在 `normalizeTools` 字符串化之前；`$ref` 兄弟键按 draft-07 丢弃。**零改动原则（收尾补上）**：无 `$ref` 的请求一个字节不动——回写 Marshal 结果会重排键序、改写数字字面量（1e9→1e+09）污染上游 prompt 缓存前缀，string 形态旧版还按工具数刷日志（agent 一发 20 工具 = 20 行 app.log）；同样口径下空串 parameters 不记「str-unparsed」。**PrepareBody 改写数由三变四**（不变量 1）。回归：`schemacycle_test.go`（自引用/互递归/菱形/根引用/非本地/预算/字符串形态/端到端 14 用例）+ `TestBreakToolSchemaCycles_LeavesRefFreeParamsUntouched`（无 `$ref` 逐字节不动）；生产实测同形态请求消毒后 0 次 4027 |
+
 ## 2. 架构选型（依据）
 
 | 主题 | 选型 | 理由 |
@@ -119,7 +123,7 @@ wild-work
 | 自动签到 | 签到时间（HH:MM 多组）+ 开机自启开关（左右布局） |
 | 用量与流水 | token 与积分流水（ledger 口径，R17）；token / 积分两个子 tab；token 表的模型榜带**缓存利用率**列（不变量 24）与**平均速度**列（stats 口径同源，R43）；区间选择（今日/7日）localStorage 记忆 |
 | 费率 | **第四个主 tab**：各渠道模型定价表（按渠道分组），渠道标签带余额角标、模型名点击复制（PR #69） |
-| 运行统计 | 实时统计（stats 口径，R43）：今日情况 / 平台概览 / 使用中接棒 / 最近临期 / 模型消耗 / 请求日志 / 异常账号 / 运行日志，30s 轮询 |
+| 运行统计 | 实时统计（stats 口径，R43）：今日情况 / 平台概览 / 使用中接棒 / 最近临期 / 模型消耗 / 请求日志 / 异常账号 / 降级记录（R54，空态常显）/ 运行日志，30s 轮询 |
 
 管理 API（REST，均挂 `/api/*`；除 `/api/auth/*` 外均需有效面板会话——密码为空时不校验）：
 
@@ -149,6 +153,7 @@ POST /api/config/admin_password    # {password}（空 = 关闭面板鉴权，仅
 POST /api/config/api_key           # {key}
 POST /api/config/autostart         # {on:bool}
 POST /api/config/compat            # 模型路由（默认渠道 / 封顶 tokens / 映射表）
+POST /api/config/model_fallback    # {rules:[{from,to:[]…}]} 模型降级链（R54，保存即热生效）
 POST /api/config/expiring_days     # {days} 临期阈值
 POST /api/config/proxies           # {proxies:{channel:url}} 单渠道上游代理
 POST /api/config/oczen_test        # {api_key} OpenCodeZen 凭证连通性测试
@@ -253,7 +258,7 @@ POST /api/quit                     # 退出程序
    `dist/` 在 `.gitignore` 中，CI 只产出带平台后缀的 `wild-work-<os>-<arch>`，
    **不会**生成 `dist/wild-work.exe`——该文件只能手动构建。
    不重建会导致：本地运行的二进制与源码不一致（例如改了版本号但仍显示旧版本）。
-1. `PrepareBody` 三改写勿动：强制 `stream=true`、`tool_choice` 归一化、`developer→system`
+1. `PrepareBody` 四改写勿动：强制 `stream=true`、`tool_choice` 归一化、`developer→system`、tool schema `$ref` 消毒（R56，无 `$ref` 时零改动）
 2. 日志/面板/消息框**零 token**：不得输出 access/refresh token（调试用假 token）
 3. auth 文件嵌套格式 `{auth:{...},account:{...}}`，`internal/auth.Parse` 与 login.SaveAuth 必须一致
 4. `config.listen` 兼容新对象格式 + 旧字符串格式 `":7863"`
@@ -419,7 +424,7 @@ bash scripts/probe-dump.sh summarize                # 汇总各渠道 usage 字�
 
 - [README.md](README.md) — 用户文档
 - [DEVELOPMENT.md](DEVELOPMENT.md) — 开发者文档（面向 AI Agent）
-- [AGENTS.md](AGENTS.md) — 本文件：决议项（R1–R52）、架构选型、不变量
+- [AGENTS.md](AGENTS.md) — 本文件：决议项（R1–R56）、架构选型、不变量
 - [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) — 三接口（Chat/Responses/Anthropic）兼容层架构决策、实施记录、验证清单、已知限制
 - [docs/用量积分流水记账备忘.md](docs/用量积分流水记账备忘.md) — 双流水统计（token/积分）架构、差分算法、实测验证、已知限制（R17）
 
