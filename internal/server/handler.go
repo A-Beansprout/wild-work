@@ -1276,15 +1276,24 @@ func (h *Handler) softRateCooldown(body string) time.Duration {
 	return d
 }
 
-// softRateResetTs 提取「将在 <ts> 重置」中的时间戳（UTC+8 墙钟）；未命中返回 false。
+// softRateResetTs 提取限流响应体中的重置时间戳（UTC+8 墙钟）；未命中返回 false。
+// 命中形态：国内版「...将在 2026-09-23 14:47:19 UTC+8 重置...」；国际版
+// workbuddyai 6004「...usage will reset at 2026-10-14 12:00:00 UTC+8, ...」。
 func softRateResetTs(body string) (time.Time, bool) {
-	const marker = "将在 "
+	if ts, ok := softRateResetAt(body, "将在 ", " 重置"); ok {
+		return ts, true
+	}
+	return softRateResetAt(body, "will reset at ", ",")
+}
+
+// softRateResetAt 定位 marker 之后、endMarker 之前的时间戳并按 UTC+8 墙钟解析。
+func softRateResetAt(body, marker, endMarker string) (time.Time, bool) {
 	i := strings.Index(body, marker)
 	if i < 0 {
 		return time.Time{}, false
 	}
 	rest := body[i+len(marker):]
-	end := strings.Index(rest, " 重置")
+	end := strings.Index(rest, endMarker)
 	if end < 0 {
 		return time.Time{}, false
 	}

@@ -38,11 +38,11 @@ type catalogModel struct {
 
 // catalogReasoning 目录 reasoning 对象（仅取可透传的权威字段；与 upstream 包同形状）。
 type catalogReasoning struct {
-	SupportedEfforts   []string `json:"supportedEfforts"`
-	DefaultEffort      string   `json:"defaultEffort"`
+	SupportedEfforts []string `json:"supportedEfforts"`
+	DefaultEffort    string   `json:"defaultEffort"`
 	// Effort 老式默认档字段（deepseek 系实测只有它没有列表），DefaultEffort 空时回退。
-	Effort             string   `json:"effort"`
-	CanDisableThinking bool     `json:"canDisableThinking"`
+	Effort             string `json:"effort"`
+	CanDisableThinking bool   `json:"canDisableThinking"`
 }
 
 // hasReasoningMeta 报告 reasoning 对象是否带任何档位信息（全空 = 视为未声明）。
@@ -93,8 +93,8 @@ type catalogCache struct {
 	colors  map[string]string
 	fetched time.Time
 
-	v3      []catalogModel // /v3/config 全量模型面（不过滤）
-	v3OK    bool           // v3 探测是否成功过（失败不写缓存，避免负缓存住坏结果）
+	v3        []catalogModel // /v3/config 全量模型面（不过滤）
+	v3OK      bool           // v3 探测是否成功过（失败不写缓存，避免负缓存住坏结果）
 	v3Fetched time.Time
 }
 
@@ -471,13 +471,12 @@ func Classify(status int, body string) provider.ErrKind {
 	}
 	// 429 优先于 hardRule：限流 body 高频带 "quota exceeded"。
 	if status == http.StatusTooManyRequests {
-		// 上游按**模型**限流（6004 / "switch to the other models"）：属请求级拒绝，
-		// **不得**按账号级冷却——否则该账号上其它还能用的模型一起被拖下水
-		// （issue #53：A 的 deepseek-v4.1-flash 撞每日上限后，A 的 gpt-5.6-luna 也不能用）。
-		// 透传原文让客户端按 Retry-After 自行退避或换模型，与 R16 单账号渠道同款哲学。
-		if strings.Contains(lower, "switch to the other models") || strings.Contains(lower, "usage exceeds frequency limit") {
-			return provider.ErrPassthrough
-		}
+		// 429（含按**模型**限额的 6004「usage exceeds frequency limit / switch to the
+		// other models」）一律软限流：handler 对 ErrSoftRate 走 CooldownModel，只冷却
+		// 「账号×该模型」到响应体重置点，同号其他模型不受牵连（issue #53 的担忧已由
+		// 模型级冷却化解），模型全冷时降级链自动顶替。历史上曾把 6004 归为
+		// ErrPassthrough 纯透传（当时只有账号级冷却这一种手段），但透传什么都不冷却，
+		// 降级链永不触发，客户端只能对着重置时间干等。
 		return provider.ErrSoftRate
 	}
 	for _, m := range hardMarkers {
@@ -485,13 +484,10 @@ func Classify(status int, body string) provider.ErrKind {
 			return provider.ErrHardCredit
 		}
 	}
-	// 非 429 但 body 含限流文案 → 软限流
+	// 非 429 但 body 含限流文案 → 软限流（含「switch to the other models」的模型级
+	// 限额同此：handler 走 CooldownModel 冷却到重置点，不罚账号）。
 	if strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") ||
 		strings.Contains(lower, "usage limit") || strings.Contains(lower, "请求过于频繁") {
-		// 同上：模型级限流不算账号问题。
-		if strings.Contains(lower, "switch to the other models") {
-			return provider.ErrPassthrough
-		}
 		return provider.ErrSoftRate
 	}
 	if status == http.StatusNotFound {
