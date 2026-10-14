@@ -314,24 +314,24 @@ func (c *Client) fetchModelsForPool(a *auth.Auth, function string) ([]poolEntry,
 //   - display_config.multimodal         —— 图像输入能力
 //   - model_detail_list[].max_tokens    —— 输出上限
 //   - display_config.model_capability   —— reasoning_model / chat_model
+//
 // 此前只取 config_name + display_name，导致 traework/traecode 全部 118 个模型在
 // /v1/models 上既无 context_length 也无 max_output_tokens、图片能力恒为 false。
 // 与官方池「模型面绑死上游」的口径一致：这里只补元数据，不增删模型。
+//
+// 两个容量字段用 json.RawMessage 承接（同 qodercn.parseContextConfig 的手法）：它们
+// 只是展示用元数据，若上游把形状从对象改成标量/数组，强类型结构会让**整张目录**
+// 解析失败（fetchModelsForPool 报错 → 本渠道池整体拉不到）。形状突变时只丢元数据。
 type poolEntry struct {
-	ConfigName    string `json:"config_name"`
-	ContextWindow struct {
-		Dev int64 `json:"dev"` // 开发档（通常 200000）
-		Max int64 `json:"max"` // 最大档（可能缺省为 0）
-	} `json:"context_window_tokens"`
+	ConfigName    string          `json:"config_name"`
+	ContextWindow json.RawMessage `json:"context_window_tokens"` // 形状 {"dev":n,"max":n}
 	DisplayConfig struct {
 		DisplayName   string `json:"display_name"`
-		IsCustomModel bool   `json:"is_custom_model"` // 自定义模型（第三方代理）需额外授权
-		Multimodal    bool   `json:"multimodal"`     // 图像输入能力（上游声明）
-		Capability    string `json:"model_capability"` // reasoning_model / chat_model
+		IsCustomModel bool   `json:"is_custom_model"`  // 自定义模型（第三方代理）需额外授权
+		Multimodal    bool   `json:"multimodal"`       // 图像输入能力（上游声明）
+		Capability    string `json:"model_capability"` // reasoning_model / chat_model（暂未消费，只记录上游形态）
 	} `json:"display_config"`
-	ModelDetailList []struct {
-		MaxTokens int64 `json:"max_tokens"`
-	} `json:"model_detail_list"`
+	ModelDetailList json.RawMessage `json:"model_detail_list"` // 形状 [{"max_tokens":n},...]
 }
 
 // metaOf 把上游池条目的元数据折算为 ModelInfo 的容量/能力字段。
@@ -344,13 +344,24 @@ type poolEntry struct {
 //  3. SupportsImages 直接取 display_config.multimodal —— 上游明确声明的布尔值，
 //     与 workbuddyai 的 imageOK() 同源语义（已确认 true 才置 true）。
 //  4. ContextFromAPI 仅在确实解析到上游容量字段时置 true。
+//
+// 两处 Unmarshal 失败（含字段缺失/为 null/形状突变）一律静默跳过：元数据是增量信息。
 func (e *poolEntry) metaOf() (ctx, maxTok int64, images, fromAPI bool) {
-	ctx = e.ContextWindow.Max
-	if ctx == 0 {
-		ctx = e.ContextWindow.Dev
+	var cw struct {
+		Dev int64 `json:"dev"` // 开发档（通常 200000）
+		Max int64 `json:"max"` // 最大档（可能缺省为 0）
 	}
-	if len(e.ModelDetailList) > 0 && e.ModelDetailList[0].MaxTokens > 0 {
-		maxTok = e.ModelDetailList[0].MaxTokens
+	if json.Unmarshal(e.ContextWindow, &cw) == nil {
+		ctx = cw.Max
+		if ctx == 0 {
+			ctx = cw.Dev
+		}
+	}
+	var dl []struct {
+		MaxTokens int64 `json:"max_tokens"`
+	}
+	if json.Unmarshal(e.ModelDetailList, &dl) == nil && len(dl) > 0 && dl[0].MaxTokens > 0 {
+		maxTok = dl[0].MaxTokens
 	}
 	images = e.DisplayConfig.Multimodal
 	fromAPI = ctx > 0 || maxTok > 0
