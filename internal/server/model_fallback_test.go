@@ -84,13 +84,15 @@ type fbUpstream struct {
 	calls int
 }
 
-func (u *fbUpstream) RefreshToken(*auth.Auth) error                         { return nil }
-func (u *fbUpstream) FetchModels(*auth.Auth) ([]provider.ModelInfo, error)  { return nil, nil }
+func (u *fbUpstream) RefreshToken(*auth.Auth) error                                 { return nil }
+func (u *fbUpstream) FetchModels(*auth.Auth) ([]provider.ModelInfo, error)          { return nil, nil }
 func (u *fbUpstream) FetchModelPricing(*auth.Auth) ([]provider.ModelPricing, error) { return nil, nil }
-func (u *fbUpstream) UserResource(*auth.Auth) (int64, error)                { return 0, nil }
-func (u *fbUpstream) UserResourceDetail(*auth.Auth) (int64, []provider.ResourceItem, error) { return 0, nil, nil }
-func (u *fbUpstream) DailyCheckin(*auth.Auth) error                         { return nil }
-func (u *fbUpstream) Classify(int, string) provider.ErrKind                 { return provider.ErrServer }
+func (u *fbUpstream) UserResource(*auth.Auth) (int64, error)                        { return 0, nil }
+func (u *fbUpstream) UserResourceDetail(*auth.Auth) (int64, []provider.ResourceItem, error) {
+	return 0, nil, nil
+}
+func (u *fbUpstream) DailyCheckin(*auth.Auth) error         { return nil }
+func (u *fbUpstream) Classify(int, string) provider.ErrKind { return provider.ErrServer }
 func (u *fbUpstream) ChatStream(*auth.Auth, []byte) (io.ReadCloser, int, []byte, error) {
 	u.calls++
 	return io.NopCloser(strings.NewReader("data: [DONE]\n\n")), 200, nil, nil
@@ -218,7 +220,7 @@ func TestModelFallbackNoRuleKeeps503(t *testing.T) {
 }
 
 // TestModelFallbackUnfreezeAutoSwitchBack 不粘滞：冷却过期后自动切回原模型
-//（下一个请求按原模型重新判定，不再碰备胎）。
+// （下一个请求按原模型重新判定，不再碰备胎）。
 func TestModelFallbackUnfreezeAutoSwitchBack(t *testing.T) {
 	upA := &codeUpstream{status: 200}
 	upB := &codeUpstream{status: 200}
@@ -242,7 +244,7 @@ func TestModelFallbackUnfreezeAutoSwitchBack(t *testing.T) {
 }
 
 // TestModelFallbackFromOtherChannelIgnores 规则 From 渠道不匹配时忽略
-//（oczen 的全冷不吃 workbuddy 规则，反之亦然）。
+// （oczen 的全冷不吃 workbuddy 规则，反之亦然）。
 func TestModelFallbackFromOtherChannelIgnores(t *testing.T) {
 	upA := &codeUpstream{status: 200}
 	upB := &codeUpstream{status: 200}
@@ -257,7 +259,7 @@ func TestModelFallbackFromOtherChannelIgnores(t *testing.T) {
 }
 
 // TestSetModelFallbacksHotReload 热更新：SetModelFallbacks 后立即按新链路由
-//（无重启；面板保存即生效的契约）。
+// （无重启；面板保存即生效的契约）。
 func TestSetModelFallbacksHotReload(t *testing.T) {
 	upA := &codeUpstream{status: 200}
 	upB := &codeUpstream{status: 200}
@@ -272,5 +274,36 @@ func TestSetModelFallbacksHotReload(t *testing.T) {
 	rec := callModel(h, "oczen/big-pickle")
 	if rec.Code != http.StatusOK || rec.Header().Get("X-Model-Fallback") == "" {
 		t.Fatalf("热更新后应立即降级生效，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestModelFallbackRecoveryNotFakedWhenBackupAlsoCold 原模型仍全冷、只是备胎也没容量时，
+// 不得把进行中事件谎报成「已恢复」；去掉 pickModelFallback 的 primaryAvail 判据即失败
+// （旧实现「未降级」分支无条件调 NoteFallbackRecovery，面板会先显示恢复再重开一条事件）。
+func TestModelFallbackRecoveryNotFakedWhenBackupAlsoCold(t *testing.T) {
+	st, err := stats.New(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upA, upB := &fbUpstream{}, &fbUpstream{}
+	h, pa, pb := newFbHandler(t, upA, upB, []config.ModelFallbackRule{
+		{From: "oczen/big-pickle", To: []string{"workbuddy/glm-free"}},
+	})
+	h.stats = st
+
+	pa.CooldownModel(oczen.AnonymousUID, "big-pickle", 300*time.Millisecond, "test")
+	callModel(h, "oczen/big-pickle") // 降级命中 → 事件 Active
+	pb.CooldownModel("backup-uid", "glm-free", time.Hour, "test")
+	if rec := callModel(h, "oczen/big-pickle"); rec.Code == http.StatusOK {
+		t.Fatal("备胎也全冷时应回到原 503 路径")
+	}
+	if evs := st.Snapshot(time.Now()).Fallbacks; len(evs) != 1 || !evs[0].Active {
+		t.Fatalf("原模型仍全冷，事件必须保持进行中：%+v", evs)
+	}
+	// 原模型解冻 → 下一请求才真正算恢复
+	time.Sleep(320 * time.Millisecond)
+	callModel(h, "oczen/big-pickle")
+	if evs := st.Snapshot(time.Now()).Fallbacks; len(evs) != 1 || evs[0].Active || evs[0].Recovered == "" {
+		t.Fatalf("解冻后事件应关闭且只有一条：%+v", evs)
 	}
 }

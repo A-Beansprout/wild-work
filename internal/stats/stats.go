@@ -168,24 +168,24 @@ type Snapshot struct {
 	// CreditExpired/CreditUsed：差值花费里混着「积分包到期作废」，拆出后 CreditUsed
 	// 才是真消耗。ledger 作废额缺失（轮询失败）时 CreditExpired=0 → CreditUsed 退化
 	// 为 CreditOut，与拆分前显示一致（降级不报错）。
-	CreditExpired   int64          `json:"credit_expired"`
-	CreditUsed      int64          `json:"credit_used"`
-	Tokens          int64          `json:"tokens"`
-	Reqs            int64          `json:"reqs"`
-	TokenUsage      TokenUsage     `json:"token_usage"`
-	Expiring7d      int64          `json:"expiring_7d"`       // 未来 7 天（含今日）内到期额度合计
-	Expiring7dAccts int            `json:"expiring_7d_accts"` // 涉临期额度的账号数
-	ExpireToday     int64          `json:"expire_today"`      // 全池今日到期额度合计
-	ExpireTomorrow  int64          `json:"expire_tomorrow"`   // 全池明日到期额度合计
-	Platforms       []PlatformRow  `json:"platforms"`         // 各平台今日情况（余额降序）
-	Models          []ModelStat    `json:"models"`            // 今日按模型消耗（积分降序）
-	Expiry          []ExpiryRow    `json:"expiry"`            // 最近临期（到期日升序）
-	Rotation        []RotationView `json:"rotation"`          // 使用中 / 接棒顺序
-	Abnormal        []AbnormalRow  `json:"abnormal"`          // 异常账号（无异常为空，前端隐藏区块）
-	Fallbacks       []FallbackEvent `json:"fallbacks"`        // 降级记录（最新在前；空 = 无事件，前端隐藏区块）
-	MilestoneTotal  int64          `json:"milestone_total"`
-	MilestoneCount  int            `json:"milestone_count"`
-	ToastQueue      []Toast        `json:"toasts"`
+	CreditExpired   int64           `json:"credit_expired"`
+	CreditUsed      int64           `json:"credit_used"`
+	Tokens          int64           `json:"tokens"`
+	Reqs            int64           `json:"reqs"`
+	TokenUsage      TokenUsage      `json:"token_usage"`
+	Expiring7d      int64           `json:"expiring_7d"`       // 未来 7 天（含今日）内到期额度合计
+	Expiring7dAccts int             `json:"expiring_7d_accts"` // 涉临期额度的账号数
+	ExpireToday     int64           `json:"expire_today"`      // 全池今日到期额度合计
+	ExpireTomorrow  int64           `json:"expire_tomorrow"`   // 全池明日到期额度合计
+	Platforms       []PlatformRow   `json:"platforms"`         // 各平台今日情况（余额降序）
+	Models          []ModelStat     `json:"models"`            // 今日按模型消耗（积分降序）
+	Expiry          []ExpiryRow     `json:"expiry"`            // 最近临期（到期日升序）
+	Rotation        []RotationView  `json:"rotation"`          // 使用中 / 接棒顺序
+	Abnormal        []AbnormalRow   `json:"abnormal"`          // 异常账号（无异常为空，前端隐藏区块）
+	Fallbacks       []FallbackEvent `json:"fallbacks"`         // 降级记录（最新在前；空 = 无事件，前端隐藏区块）
+	MilestoneTotal  int64           `json:"milestone_total"`
+	MilestoneCount  int             `json:"milestone_count"`
+	ToastQueue      []Toast         `json:"toasts"`
 }
 
 // acct 引擎内单账号记账态（credit_out 与 burn_since 同窗持久化，见 acctPersist）。

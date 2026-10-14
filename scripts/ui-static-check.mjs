@@ -105,7 +105,7 @@ const patched =
       { model: "cline-free/mimo-v2.6-flash", priced: true, rate: 0, free: true, has_context: true, context_window: 1000000 },
     ] },
   ] }) + ";"
-  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
+  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderFallbacks, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
   document,
@@ -456,6 +456,33 @@ for (const [label, re] of uniq) {
     ["费率表窄屏隐藏第 3/4 列（4 列布局手机必溢出）", /\.fees table th:nth-child\(n\+3\)[\s\S]*?display: none/.test(css)],
     ["运行统计宽表给横向滚动容器", /#mtabStats \.st-plat,\s*\n\s*#mtabStats \.st-ex-scroll,\s*\n\s*#mtabStats \.st-ab-scroll,\s*\n\s*#mtabStats \.st-scroll \{ max-width: 100%; overflow-x: auto; \}/.test(css)],
     ["触控目标仅在粗指针设备放大（桌面鼠标不吃）", /@media \(hover: none\) and \(pointer: coarse\)/.test(css)],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 模型降级链（PR #106）：面板接线 + 降级记录渲染 ----
+// 与 R34/R41 同族：「后端有端点、面板没接线」不报错不崩溃，只表现为
+// 配不了降级链 / 配了不生效，故把接线与渲染一并锁死。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  T.renderFallbacks([
+    { from: "workbuddyai/deepseek-v4.1-flash", to: "workbuddy/glm-5.2", at: "09:12:03", at_unix: 1760000000, active: true },
+    { from: "oczen/big-pickle", to: "workbuddy/glm-free", at: "08:01:00", at_unix: 1759990000, recovered: "08:05:12", dur_sec: 252, active: false },
+  ]);
+  const fbHtml = nodes["stFbs"].innerHTML;
+  const need = [
+    ["设置弹层有降级链编辑区", html.includes('id="fbList"') && html.includes('id="fbFromInput"') && html.includes('id="fbToInput"')],
+    ["app.js 接线添加/保存按钮", raw.includes('$("btnFbAdd").onclick') && raw.includes('$("btnFbSave").onclick')],
+    ["app.js 调 POST /api/config/model_fallback", raw.includes('"/api/config/model_fallback"')],
+    ["openSettings 从 state.model_fallback 初始化编辑态", /fbRules = JSON\.parse\(JSON\.stringify\(state\.model_fallback \|\| \[\]\)\)/.test(raw)],
+    ["运行统计有降级记录区块且 loadStats 渲染它", html.includes('id="stFbBlock"') && raw.includes("renderFallbacks(s.fallbacks")],
+    ["进行中事件渲染「降级中」+ 实时计时锚点 data-fb-epoch", fbHtml.includes("降级中") && fbHtml.includes('data-fb-epoch="1760000000"')],
+    ["已恢复事件渲染恢复时刻与持续时长", fbHtml.includes("08:05:12") && fbHtml.includes("4 分 12 秒")],
+    ["原/备胎模型与箭头均在行内", fbHtml.includes("workbuddyai/deepseek-v4.1-flash") && fbHtml.includes("→")],
+    ["空事件常显占位说明（不整块隐藏）", (T.renderFallbacks([]), nodes["stFbs"].innerHTML.includes("暂无降级记录"))],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

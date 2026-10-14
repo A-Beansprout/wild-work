@@ -486,7 +486,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// dispModel=写进响应的模型名（无降级=客户端请求名，保持官方「回填请求名」语义；降级=备胎全路径，
 	// agent 读 chunk.model / resp.model 即可感知实际执行模型）。
 	var fbApplied string
-	if fbID := h.pickModelFallback(rt, model); fbID != "" {
+	fbID, primaryAvail := h.pickModelFallback(rt, model)
+	// 口径说明：降级期间 ledger/stats 的 token 流水仍按**客户端请求名**记账（statRow.Model、
+	// AddUsage(clientModel)），因为该面向的口径是「客户端这一发花了多少」；实际执行模型
+	// 由上面的日志行 + 面板「降级记录」区块承担。不改成 dispModel 的另一个理由：
+	// 同渠道备胎（如 glm-5.2 顶 deepseek）会把消耗搬到另一行，历史趋势会失真。
+	if fbID != "" {
 		if rt2, m2, err := h.runtimeForModel(fbID); err == nil {
 			log.Printf("model fallback platform=%s from=%s to=%s", rt.Kind, clientModel, fbID)
 			// 响应头标注实际备胎（必须在任何 WriteHeader 之前；sw 透传 Header）
@@ -499,13 +504,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if fbApplied != "" {
 		dispModel = fbApplied
 	}
-	// 降级事件喂入运行统计（面板「降级记录」区块）：降级命中记一条；未降级的请求
-	// 顺带当恢复探针——原模型容量回归即关闭其进行中事件（本请求后续成败不影响，
+	// 降级事件喂入运行统计（面板「降级记录」区块）：降级命中记一条；未降级且
+	// 原模型容量在位时拿本请求当恢复探针（本请求后续成败不影响，
 	// 恢复语义=「重新有可用账号」而非「重新请求成功」）。
 	if h.stats != nil {
-		if fbApplied != "" {
+		switch {
+		case fbApplied != "":
 			h.stats.NoteFallback(clientModel, fbApplied, time.Now())
-		} else {
+		case primaryAvail:
 			h.stats.NoteFallbackRecovery(clientModel, time.Now())
 		}
 	}
@@ -934,44 +940,56 @@ func stripChannel(model string) string {
 	return model
 }
 
-// modelHasCapacity 报告 rt 渠道此刻是否有账号能承载 model（非禁用/非整号冷却/
-// 该模型不在模型级冷却中；冷却按到期时间精确比较，过期条目视为已解冻）。
-func modelHasCapacity(rt *Runtime, model string) bool {
+// runtimeCapacity 一次 Pool.List() 同时得出两个降级判据：
+//   - hasHealthy：渠道内是否还有非禁用/非整号冷却的账号；
+//   - modelAvail：是否有账号能承载 model（该模型不在模型级冷却中；
+//     pool.statusOf 已剔掉过期条目，此处再比一次到期时间属防御）。
+// 两者共同构成「模型全冷」判据，口径与 no_healthy_account 的同名分支一致。
+func runtimeCapacity(rt *Runtime, model string) (hasHealthy, modelAvail bool) {
 	now := time.Now()
 	for _, s := range rt.Pool.List() {
 		if s.Disabled || s.Cooling {
 			continue
 		}
+		hasHealthy = true
 		if t, ok := s.ModelCooling[model]; ok && t.After(now) {
 			continue
 		}
-		return true
+		modelAvail = true
 	}
-	return false
+	return
+}
+
+// modelHasCapacity 报告 rt 渠道此刻是否有账号能承载 model。
+func modelHasCapacity(rt *Runtime, model string) bool {
+	_, avail := runtimeCapacity(rt, model)
+	return avail
 }
 
 // pickModelFallback 模型降级链解析：仅当请求模型在自身渠道全部账号上限流冷却
 // （存在健康账号但 modelHasCapacity 全否，同 no_healthy_account「模型全冷」分支口径）
 // 时，按规则顺序（规则间按配置顺序、链内按 To 顺序）找第一个有容量的备胎模型
-// 全路径 ID；未全冷/无规则/无可用备胎返回 ""（走原路由或原报错）。
-// 备胎允许跨渠道（To 为 "channel/model" 全路径，经 runtimeForModel 解析）。
-func (h *Handler) pickModelFallback(rt *Runtime, model string) string {
+// 全路径 ID；无规则/无可用备胎返回空串。备胎允许跨渠道（To 为 "channel/model"
+// 全路径，经 runtimeForModel 解析）。
+//
+// 第二返回值 primaryAvail = 「原模型此刻有可用账号」，与降级与否无关，只给恢复探针用：
+// 旧实现「未降级就算恢复」会把两种情形谎报成已恢复——① 原模型仍全冷但备胎也没容量，
+// ② 整渠道无健康账号。仅面板事件记账受影响，但谎报会令「持续时长」失真。
+// 未配置规则时不做探测（守住「正常路由零开销」）：此时不会新增事件，
+// 代价是删规则后残留的进行中事件不会自动关闭（环形 200 条自然淘汰，重启即清）。
+func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
 	h.fbMu.RLock()
 	rules := h.fallbacks
 	h.fbMu.RUnlock()
 	if len(rules) == 0 {
-		return ""
+		return "", false
 	}
-	// 全冷判定：至少一个健康账号（否则交原报错分支给针对性提示），且没有任何账号能承载该模型。
-	hasHealthy := false
-	for _, s := range rt.Pool.List() {
-		if !s.Disabled && !s.Cooling {
-			hasHealthy = true
-			break
-		}
+	hasHealthy, avail := runtimeCapacity(rt, model)
+	if avail {
+		return "", true // 未全冷：走原路由，并告知探针「容量已在」
 	}
-	if !hasHealthy || modelHasCapacity(rt, model) {
-		return ""
+	if !hasHealthy {
+		return "", false // 整渠道无健康账号：交原报错分支给针对性提示
 	}
 	for _, rule := range rules {
 		ch, inner, ok := strings.Cut(strings.TrimSpace(rule.From), "/")
@@ -988,11 +1006,11 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string) string {
 				continue
 			}
 			if modelHasCapacity(rt2, m2) {
-				return to
+				return to, false
 			}
 		}
 	}
-	return ""
+	return "", false
 }
 
 // usageCredit 从 usage 对象取上游下发的单次积分（WorkBuddy 系会回；
