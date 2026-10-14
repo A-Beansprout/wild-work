@@ -480,16 +480,17 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	inner := server.NewHandler(server.Config{
-		Runtimes:     runtimes,
-		APIKey:       cfg.APIKey,
-		Ledger:       appInst.Ledger(),
-		Stats:        appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
-		HardCooldown: cfg.HardCreditDur,
-		SoftCooldown: cfg.SoftRateDur,
-		ErrThreshold: cfg.Cooldown.ErrThresh,
-		ErrCooldown:  cfg.ErrCooldownDur,
-		WebUI:        sub,
-		AttachAPI:    appInst.HandleAPI,
+		Runtimes:       runtimes,
+		APIKey:         cfg.APIKey,
+		Ledger:         appInst.Ledger(),
+		Stats:          appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
+		HardCooldown:   cfg.HardCreditDur,
+		SoftCooldown:   cfg.SoftRateDur,
+		ErrThreshold:   cfg.Cooldown.ErrThresh,
+		ErrCooldown:    cfg.ErrCooldownDur,
+		ModelFallbacks: cfg.ModelFallback, // 启动时载入降级链（此前仅面板保存后热更新，重启即丢）
+		WebUI:          sub,
+		AttachAPI:      appInst.HandleAPI,
 	})
 
 	// 两层结构：外层兼容层只接管三个新端点，其余（含 /v1/chat/completions、Web UI、
