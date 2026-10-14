@@ -18,7 +18,19 @@ import (
 	"time"
 
 	"wild-work/internal/loopguard"
+	"wild-work/internal/provider"
 )
+
+// sseError 流内业务错误（envelope 内嵌 HTTP 状态码）。实现 provider.StreamErrorClassifier，
+// 使 handler 的流内/聚合错误分类分支能够识别（如 402 权益不足 → 模型级冷却 → 降级链顶替），
+// 而不是当作裸错误放行。文案保持「upstream <status>: <msg>」原样（客户端可见错误与日志沿用）。
+type sseError struct {
+	status int
+	msg    string
+}
+
+func (e *sseError) Error() string          { return fmt.Sprintf("upstream %d: %s", e.status, e.msg) }
+func (e *sseError) Kind() provider.ErrKind { return Classify(e.status, e.msg) }
 
 // envelope SSE 外层信封。
 type envelope struct {
@@ -105,7 +117,7 @@ func parseNestedSSE(r io.Reader, onChunk func(map[string]any) error, truncated *
 			outerOK := json.Unmarshal([]byte(payload), &env) == nil
 			if outerOK && env.StatusCodeValue != 0 {
 				if msg := env.errText(); msg != "" {
-					return fmt.Errorf("upstream %d: %s", env.StatusCodeValue, msg)
+					return &sseError{status: env.StatusCodeValue, msg: msg}
 				}
 			}
 			if outerOK {

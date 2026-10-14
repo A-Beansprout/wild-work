@@ -106,8 +106,8 @@ type Handler struct {
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
 
-	fbMu       sync.RWMutex                  // 保护 fallbacks（面板可运行时修改）
-	fallbacks  []config.ModelFallbackRule    // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
+	fbMu      sync.RWMutex               // 保护 fallbacks（面板可运行时修改）
+	fallbacks []config.ModelFallbackRule // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
 }
 
 // SetModelFallbacks 热更新模型降级链（面板保存后由 app 层回调；nil/空 = 清空禁用）。
@@ -614,6 +614,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 尤其在 429（唯一需要的背压）上：冷却后后续请求会在挑号阶段被挡成
 			// no_healthy_account，反而不如透传 429 让客户端按 Retry-After 自行重试。
 			if rt.SingleAccount {
+				// 402（权益不足）例外：账号本身健康，同号其他模型照常可用，只冷却「账号×该模型」
+				// ——下一次请求挑号阶段即「模型全冷」，自动触发降级链顶替；本次仍原文透传。
+				if kind == provider.ErrHardCredit {
+					rt.Pool.CooldownModel(acct.UID, model, h.cfg.HardCooldown, "402 权益不足")
+					log.Printf("model cooldown (single-account 402) platform=%s uid=%s model=%s cooldown=%s",
+						rt.Kind, acct.UID, model, h.cfg.HardCooldown)
+				}
 				log.Printf("upstream error platform=%s uid=%s status=%d kind=%s（单账号渠道不罚账号，原文透传）",
 					rt.Kind, acct.UID, status, kind)
 				transparentError(w, status, respBody)
@@ -623,18 +630,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
 			case provider.ErrSoftRate:
-			// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
-			// 只冷却该账号的该模型，同号其他模型继续参与选号；
-			// 短时间内第二个模型也撞墙时 CooldownModel 会升级整号冷却（防上游按账号计时）。
-			// 冷却时长按 6004 响应体的真实重置点解析（#82）：固定 60s 与上游「按重置点解封」
-			// 不符，解析失败/非正回退 SoftCooldown；升级时整号冷却到最晚重置点。
-			escalated := rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "429 rate limit")
-			if escalated {
-				log.Printf("model cooldown escalated to account platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
-			} else {
-				log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
-			}
-		case provider.ErrSessionDead:
+				// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
+				// 只冷却该账号的该模型，同号其他模型继续参与选号；
+				// 短时间内第二个模型也撞墙时 CooldownModel 会升级整号冷却（防上游按账号计时）。
+				// 冷却时长按 6004 响应体的真实重置点解析（#82）：固定 60s 与上游「按重置点解封」
+				// 不符，解析失败/非正回退 SoftCooldown；升级时整号冷却到最晚重置点。
+				escalated := rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "429 rate limit")
+				if escalated {
+					log.Printf("model cooldown escalated to account platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
+				} else {
+					log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
+				}
+			case provider.ErrSessionDead:
 				rt.Pool.Disable(acct.UID, "session dead")
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
@@ -736,11 +743,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
 							rt.Kind, acct.UID, kind, h.cfg.SoftCooldown)
 					case provider.ErrHardCredit:
-						if len(rt.Pool.List()) <= 1 && !rt.SingleAccount {
+						if len(rt.Pool.List()) <= 1 {
 							// 单号渠道：余额/权益不足透传原文，客户端/用户直接看到真实原因（如充值），
-							// 而不是被 503 掩盖成「渠道不可用」。
-							log.Printf("stream error passthrough platform=%s uid=%s kind=%s（单号渠道不罚账号）",
-								rt.Kind, acct.UID, kind)
+							// 而不是被 503 掩盖成「渠道不可用」。账号本身不动，仅冷却「账号×该模型」，
+							// 下一次请求挑号即「模型全冷」，自动走降级链顶替。
+							rt.Pool.CooldownModel(acct.UID, model, h.cfg.HardCooldown, "stream 402 权益不足")
+							log.Printf("stream error model-cooldown platform=%s uid=%s model=%s kind=%s（单号渠道仅冷却该模型，原文透传）",
+								rt.Kind, acct.UID, model, kind)
 							break
 						}
 						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "stream business error: "+serr.Error())
@@ -760,6 +769,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err := rt.Upstream.Aggregate(rc, dispModel)
 		if err != nil {
+			// 流内嵌错误（如 qwenwork 402 权益不足）此时已带分类：模型级冷却，
+			// 下一次请求挑号即「模型全冷」，自动走降级链顶替；本次仍返回错误。
+			var asec provider.StreamErrorClassifier
+			if errors.As(err, &asec) && asec.Kind() == provider.ErrHardCredit {
+				rt.Pool.CooldownModel(acct.UID, model, h.cfg.HardCooldown, "402 权益不足")
+				log.Printf("model cooldown (aggregate 402) platform=%s uid=%s model=%s cooldown=%s",
+					rt.Kind, acct.UID, model, h.cfg.HardCooldown)
+			}
 			statRow.Status = http.StatusBadGateway
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			return
@@ -946,6 +963,7 @@ func ledgerModelOf(clientModel string) string { return provider.UpstreamModelOf(
 //   - hasHealthy：渠道内是否还有非禁用/非整号冷却的账号；
 //   - modelAvail：是否有账号能承载 model（该模型不在模型级冷却中；
 //     pool.statusOf 已剔掉过期条目，此处再比一次到期时间属防御）。
+//
 // 两者共同构成「模型全冷」判据，口径与 no_healthy_account 的同名分支一致。
 func runtimeCapacity(rt *Runtime, model string) (hasHealthy, modelAvail bool) {
 	now := time.Now()
