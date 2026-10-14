@@ -167,9 +167,10 @@ func TestClassify(t *testing.T) {
 		{200, "Offline user session not found", "session_dead"},
 		{200, "code=12153", "session_dead"},
 		{429, "too many requests", "soft_rate"},
-		// issue #53：按**模型**限流（6004 / "switch to the other models"）→ 请求级透传，
-		// 不按账号级冷却（否则该账号其它可用模型一起被拖下水）。
-		{429, "usage exceeds frequency limit ... switch to the other models to continue", "passthrough"},
+		// 按模型限额的 6004 同样归软限流：handler 走 CooldownModel 只冷却「账号×该模型」
+		// 到重置点（模型级冷却已化解 issue #53 的账号级误伤担忧），模型全冷时降级链
+		// 自动顶替；历史上的 ErrPassthrough 纯透传什么都不冷却，降级链永不触发。
+		{429, "usage exceeds frequency limit ... switch to the other models to continue", "soft_rate"},
 		{429, "our gateway is closed currently", "soft_rate"},
 		{404, "", "not_found"},
 		{500, "", "server"},

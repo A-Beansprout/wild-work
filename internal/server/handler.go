@@ -106,8 +106,8 @@ type Handler struct {
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
 
-	fbMu       sync.RWMutex                  // 保护 fallbacks（面板可运行时修改）
-	fallbacks  []config.ModelFallbackRule    // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
+	fbMu      sync.RWMutex               // 保护 fallbacks（面板可运行时修改）
+	fallbacks []config.ModelFallbackRule // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
 }
 
 // SetModelFallbacks 热更新模型降级链（面板保存后由 app 层回调；nil/空 = 清空禁用）。
@@ -618,18 +618,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
 			case provider.ErrSoftRate:
-			// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
-			// 只冷却该账号的该模型，同号其他模型继续参与选号；
-			// 短时间内第二个模型也撞墙时 CooldownModel 会升级整号冷却（防上游按账号计时）。
-			// 冷却时长按 6004 响应体的真实重置点解析（#82）：固定 60s 与上游「按重置点解封」
-			// 不符，解析失败/非正回退 SoftCooldown；升级时整号冷却到最晚重置点。
-			escalated := rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "429 rate limit")
-			if escalated {
-				log.Printf("model cooldown escalated to account platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
-			} else {
-				log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
-			}
-		case provider.ErrSessionDead:
+				// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
+				// 只冷却该账号的该模型，同号其他模型继续参与选号；
+				// 短时间内第二个模型也撞墙时 CooldownModel 会升级整号冷却（防上游按账号计时）。
+				// 冷却时长按 6004 响应体的真实重置点解析（#82）：固定 60s 与上游「按重置点解封」
+				// 不符，解析失败/非正回退 SoftCooldown；升级时整号冷却到最晚重置点。
+				escalated := rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "429 rate limit")
+				if escalated {
+					log.Printf("model cooldown escalated to account platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
+				} else {
+					log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
+				}
+			case provider.ErrSessionDead:
 				rt.Pool.Disable(acct.UID, "session dead")
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
@@ -944,6 +944,7 @@ func stripChannel(model string) string {
 //   - hasHealthy：渠道内是否还有非禁用/非整号冷却的账号；
 //   - modelAvail：是否有账号能承载 model（该模型不在模型级冷却中；
 //     pool.statusOf 已剔掉过期条目，此处再比一次到期时间属防御）。
+//
 // 两者共同构成「模型全冷」判据，口径与 no_healthy_account 的同名分支一致。
 func runtimeCapacity(rt *Runtime, model string) (hasHealthy, modelAvail bool) {
 	now := time.Now()
@@ -1254,15 +1255,24 @@ func (h *Handler) softRateCooldown(body string) time.Duration {
 	return d
 }
 
-// softRateResetTs 提取「将在 <ts> 重置」中的时间戳（UTC+8 墙钟）；未命中返回 false。
+// softRateResetTs 提取限流响应体中的重置时间戳（UTC+8 墙钟）；未命中返回 false。
+// 命中形态：国内版「...将在 2026-09-23 14:47:19 UTC+8 重置...」；国际版
+// workbuddyai 6004「...usage will reset at 2026-10-14 12:00:00 UTC+8, ...」。
 func softRateResetTs(body string) (time.Time, bool) {
-	const marker = "将在 "
+	if ts, ok := softRateResetAt(body, "将在 ", " 重置"); ok {
+		return ts, true
+	}
+	return softRateResetAt(body, "will reset at ", ",")
+}
+
+// softRateResetAt 定位 marker 之后、endMarker 之前的时间戳并按 UTC+8 墙钟解析。
+func softRateResetAt(body, marker, endMarker string) (time.Time, bool) {
 	i := strings.Index(body, marker)
 	if i < 0 {
 		return time.Time{}, false
 	}
 	rest := body[i+len(marker):]
-	end := strings.Index(rest, " 重置")
+	end := strings.Index(rest, endMarker)
 	if end < 0 {
 		return time.Time{}, false
 	}
