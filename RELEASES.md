@@ -1708,3 +1708,168 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 
 以及算法来源：[dsh-attention-health](https://github.com/donghangxunlang-cmd/dsh-attention-health)
 （思考链死循环检测 `lib/guard.js`）。
+
+---
+
+# wild-work v2.7.2 — 模型降级链 + 备用上游通道 + Cline 模型 ID 简化 + oczen 403 修复
+
+> 发布主题：**模型降级链**（主模型被上游按模型限流全池冷却时，按用户配置的有序备胎链自动顶上）、
+> **代理配置重构为「全局备用上游通道」**（默认不参与任何请求，仅渠道命中地区拒绝时同请求改道重发）、
+> **Cline 模型 ID 直通上游命名空间**（`cline/cline-free/x` → `cline-free/x`）、
+> 以及 **oczen 免费档 403 修复**（issue #111）、**workbuddyai 6004 / 402 权益不足纳入降级触发**、
+> **traework/traecode 模型元数据补齐 + Kimi 系 tool schema `$ref` 消毒**、
+> **流截断原因可辨识**（区分空闲看门狗与上游断连）。
+>
+> 上次 tag v2.7.1 之后累积 30 个提交 + 8 个合并 PR（#106–#110、#112–#114，
+> 来自 [@bertchiangchiang](https://github.com/bertchiangchiang) 与 [@LFDCC](https://github.com/LFDCC)）。
+> 本版为**累积发布**：v2.7.1 之后的所有变更都在这里。
+
+---
+
+## 🔗 模型降级链（R54，PR #106 + #112）
+
+主模型被上游按模型限流、全池冷却时，此前只能 fail-fast 503 打断 agent 任务。本版支持预配有序备胎链。
+
+- **配置**：`config.model_fallback[]`，每条 `{from, to[]}`（`from` 全局唯一、不自环、`channel/model` 全路径）。
+  设置弹层可视化编辑（备胎以 chip 展示，可逐个删、回车追加、整条删除），保存即热生效
+  （`POST /api/config/model_fallback`），无需重启。
+- **触发判据**：**仅**「主模型在该渠道全部账号上处于模型级限流冷却」时查链
+  （`runtimeCapacity` 一次 `Pool.List()` 同时得出 hasHealthy 与 modelAvail，口径与
+  `no_healthy_account` 的「模型全冷」分支一致）。**未配置规则时零探测** —— 正常路由零开销。
+- **不粘滞**：每个请求都按原模型重新判定，上游解冻即自动切回（粘性是账号级 R29，降级是模型级且用户显式配置）。
+- **agent 可感知**（双保险）：① 响应头 `X-Model-Fallback: 请求模型 -> 备胎`；② chat 面响应体
+  `model` 字段写实际备胎全路径。兼容层（`/v1/responses`、`/v1/messages`）**统一转写**该头——
+  这两个端点响应体由网关重建且 `model` 回填请求名，不转写就等于对 Codex/Claude Code 静默换模型。
+- **运行统计**新增「降级记录」区块：降级/恢复事件流（内存环形 200 条、重启清零），空态常显。
+- **记账口径**：token 流水仍按客户端请求名（面向「这一发花多少」）；实际执行模型由日志行 +
+  面板「降级记录」承担。
+- **修复（PR #112）**：`server.Config.ModelFallbacks` 此前**从未被赋值**，降级链唯一生效通道是
+  面板保存的热更新 ⇒ **进程重启后已配置的降级链静默失效**，直到用户重新保存一次。已补启动装配。
+
+## 🔀 402 权益不足纳入降级触发（R60，PR #113）
+
+- **流内嵌 402 无法分类**：qwenwork 等渠道的 402 以 HTTP 200 + 流内 envelope 返回，
+  剥壳后以裸 `fmt.Errorf` 抛出 ⇒ handler 的 `errors.As` 全部错过。改为抛 `*sseError`
+  并实现 `provider.StreamErrorClassifier`（错误文案保持不变）。
+- **单号渠道 402 只透传不冷却**：账号本身健康，死的只是「账号×该模型」组合 ⇒ 不冷却则
+  每次请求继续撞 402、降级链永不触发。现改为**模型级冷却**（`CooldownModel`）：账号不动、
+  同号其他模型照常可用，下一次请求挑号即「模型全冷」自动走降级链。
+- 三处接线：预流式单账号分支、流内单号分支（去掉 `&& !SingleAccount` 限定）、`Aggregate` 出口。
+
+## 🌍 代理配置重构：全局备用上游通道（R57）
+
+旧「每渠道单独配代理」有三处实证缺陷：面板 12 行输入但热更新只覆盖 9 行（`monkeycode`/`raccoon`/`loomy`
+改代理不生效、需重启）、`trCodeUp`（TraeCode）**两张表都没进** ⇒ 该渠道代理从未生效；
+每次保存都新建 Transport（杀光 idle 连接）；对用户是 12 个概念，实际只需要一个。
+
+- **新语义**：`config.backup_proxy` **单一地址**（http/https/socks5）= **备用链路**，由
+  `internal/backuplink` 原子持有。**不影响本工具的任何常规请求**（所有渠道一律直连）；
+  仅由渠道自行判定后按需取用（克隆该渠道自己的 Transport、只改出口 ⇒ 除 IP 外与出厂行为同构）。
+- **当前唯一取用方 Cline**：直连命中地区拒绝（403/451 + 保守文案表）⇒ **同一次请求内**重放同一 body。
+  未配置 / 重放失败 ⇒ **透传直连那份原始错误**（不拿第二次尝试的错误掩盖首因）；重放拿到不同答复则以它为准。
+- **学习**：命中一次后 6 小时内该模型直接走备用（免每发白撞一发 403）；改/清代理地址即作废。
+- **清理**：删 `config.proxies`、`applyProxies`/`SetTransportProxy`/`proxySyncer`、`POST /api/config/proxies`、
+  面板 12 行输入。旧 `proxies` 段在 normalize 一次性迁移（优先 cline 的值，其余渠道地址丢弃并日志点名）。
+- 新端点 `POST /api/config/proxy`（同时承载 OpenCodeZen key）。
+- **已知限制**：登录编排（`login_*`）、CDP、面板内凭证测试仍不吃备用通道（保持「只服务上游通信」的边界）。
+
+## 🧩 Cline 模型 ID 直通上游命名空间（R59）
+
+Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对外 ID 是双层路径 `cline/cline-free/*`。
+本版**直通上游**：`/v1/models` 与面板复制出的都是 `cline-free/step-5-preview` 这类形态。
+
+- **旧写法保留路由兼容**：`cline/cline-free/*` 仍可用（老配置的 `model_map`、降级链规则、
+  老客户端都是那种写法），两条路径经同一解析器（`provider.PublicModelID` / `SplitModelID`）。
+- **六处接线同源**：`/v1/models`、`runtimeForModel`（也是降级链的解析器）、网关 `Router.Resolve`
+  （含 `default_channel` 兜底拼接）、`app.buildFeesChannels` 新增 `id` 字段、`stats.channelOfModel`、
+  handler 统计归行（新旧写法必须落同一行）。
+- **顺带修既有 bug**：`stats.channelKind` 白名单漏 `cline` ⇒ 该渠道 token 从不进平台统计表。
+
+## 🔐 oczen 免费档 403 修复（issue #111）
+
+**现象**：OpenCodeZen 全部对话恒 403 `FreeTierError`（"free tier can only be used from within OpenCode"），
+填不填 key 都一样。
+
+- **根因**：免费档不仅校验会话头**外形** `ses_<12位小写hex><14位Base62>`，还会把 12 位 hex
+  时间戳段**解码**成官方客户端 `Identifier.descending()` 的值——`~(unix_ms<<12|counter)` 取低 48 位，
+  故末三位是 `0xFFF-counter`；实测只接受 **counter 1–63**（末三位 `0xFC0–0xFFF`），
+  超出即判非官方客户端 403。旧实现的时间戳段是 `sha256` 摘要前 6 字节（随机 hex），
+  落进被拒窗口 ⇒ **恒 403**。
+- **修法**：官方 descending 编码的 ID 原样保留，其余（摘要段 / 升序 ID）**确定性重编码**——
+  哈希前 6 字节按 descending 布局渲染、counter 取 1。确定性保证同一会话仍稳定映射同一 session
+  （prompt cache / key 亲和不断）。
+- 附新增 `-tags live` 实盘测试（`internal/oczen/live_test.go`）。
+
+## 🧠 workbuddyai 6004 归入软限流管线（PR #114）
+
+- 国际版 6004（`usage exceeds frequency limit ... switch to the other models`）此前归 `ErrPassthrough`
+  （纯透传）。该设计诞生时只有账号级冷却这一种手段，但 #82 的**模型级冷却**与 #106 的**降级链**
+  就位后，纯透传反而成了死角：**什么都不冷却 ⇒「模型全冷」判据永不成立 ⇒ 降级链永不触发**，
+  客户端只能对着重置时间干等。
+- 现改判 `ErrSoftRate`：handler 走 `CooldownModel`，**只冷却「账号×该模型」到响应体重置点**，
+  同号其他模型不受牵连；模型全冷时降级链自动顶替，重置后自动切回。本次请求仍原文透传。
+- 同时补 `softRateResetTs` 识别国际版英文形态「will reset at `<ts>` UTC+8,」——
+  冷却精确到真实重置点，而非回退固定 60s。
+
+## 🗂 traework / traecode 模型元数据 + tool schema 消毒（R55/R56，PR #108/#109）
+
+- **模型元数据补齐**（R55）：此前只解析 `config_name` + `display_name` ⇒ 两渠道 118 个模型
+  在 `/v1/models` 上**全无** `context_length` / `max_output_tokens`、图片能力恒 false。
+  现解析上游 `context_window_tokens.{dev,max}`、`display_config.multimodal`、
+  `model_detail_list[].max_tokens`（上下文取 max 档、缺省回 dev；0 不填）。
+  **容错承接**：容量字段用 `json.RawMessage`，上游形状突变（对象→标量）时只丢该字段，
+  不让整张目录解析失败（否则本渠道池整体拉不到）。
+- **tool schema `$ref` 全量内联消毒**（R56）：Kimi/Moonshot 系对 `tools.function.parameters`
+  里任何保留的 `$ref` 都报 400 `code=4027 detected infinite recursion`（官方客户端不发 `$ref`，
+  经 MCP 接入的代理客户端会发）。改为**全量内联**：所有本地 `$ref` 就地替换为目标消毒副本，
+  成环处截断为空 schema；支持 `parameters` 预序列化字符串形态。
+  **零改动原则**：无 `$ref` 的请求一个字节不动（回写 Marshal 结果会重排键序、改写数字字面量，
+  污染上游 prompt 缓存前缀）。
+
+## 🩺 流截断原因可辨识（R58）
+
+**现场**：`Qwen3.8-Flash (QoderCOM)` 输出一部分后客户端报 `upstream stream truncated`。
+
+- **诊断缺口**：qoder/qodercn/qodercom/qwenwork 四个渠道把「截断」布尔当唯一信息，
+  收尾写**固定串**并丢弃原始错误 ⇒ 三种完全不同的故障（空闲看门狗掐的 / 上游主动断连 /
+  读到半个帧）在日志与客户端**完全同形**。
+- **判据不可达**：`internal/idle` 看门狗唯一的动作是 cancel 请求 context，在途 Read 返回
+  `context canceled`（真实链路实测），而 `IsIdleTimeout` 只认 `ErrIdleTimeout` ⇒
+  看门狗掐断在语义上根本认不出来。
+- **修法**：`provider.IsIdleTimeout` 扩展识别看门狗族；新增 `TruncationCause/TruncationError/
+  TruncationCode/TruncationFrame/WriteTruncationFrame` 一族——错误文本保留原因、空闲超时统一
+  归一成 `upstream stream idle timeout`（不直写 `context canceled`，否则日志检索漏一半）、
+  出口帧 `code` 分流为 **`upstream_timeout`** / `upstream_truncated`。
+- **日志补强**：`stream relay end` 补 `model` / `elapsed` / `ttfb` ——
+  **耗时 ≈ 空闲阈值且 TTFB 远小于它 ⇒ 看门狗掐的；耗时远小于阈值 ⇒ 上游自己断的**。
+- **清理空头支票注释**：`config.Upstream` 只有 `timeout_seconds`、`main.go` 零处给 `IdleTimeout`
+  赋值 ⇒ cline/loomy/raccoon/monkeycode 注释里承诺的 `stream_idle_seconds` 配置项**从未存在**，
+  阈值恒为硬编码。已改成如实说明（不新增用户概念）。
+- **已知限制**：`elapsed` 含上游首字节等待时间；qoder 三渠道 Transport 未设 `ResponseHeaderTimeout`，
+  「排队」若发生在响应头之前则该阶段无上限，判据需结合 TTFB 一起看。空闲阈值仍不可配。
+
+## 🐛 修复清单
+
+| Issue/PR | 问题 | 状态 |
+|---|---|---|
+| — | 主模型被上游按模型限流全池冷却时只能 fail-fast 503，无自动顶替 | ✅ 本版新增（模型降级链） |
+| PR #112 | 进程重启后降级链静默失效（配置从未在启动时载入） | ✅ 本版修复（启动装配补 `ModelFallbacks`） |
+| PR #113 | 402 权益不足不进任何冷却/降级触发（流内 402 无法分类 + 单号渠道只透传） | ✅ 本版修复（分类化 + 模型级冷却） |
+| PR #114 | workbuddyai 6004 纯透传 ⇒「模型全冷」判据永不成立 ⇒ 降级链永不触发 | ✅ 本版修复（改判软限流 + 英文重置点解析） |
+| #111 | OpenCodeZen 全部对话恒 403 `FreeTierError`（会话头时间戳段非官方 descending 编码） | ✅ 本版修复（确定性重编码） |
+| — | 旧「每渠道代理」热更新覆盖不全（3 渠道改代理不生效、TraeCode 从未生效） | ✅ 本版重构（全局备用上游通道） |
+| — | Cline 对外模型 ID 是双层路径 `cline/cline-free/*`，反直觉 | ✅ 本版改为直通上游 ID（旧写法兼容） |
+| — | Cline 的 token 从不进运行统计平台表（`channelKind` 白名单漏 cline） | ✅ 本版修复 |
+| PR #108 | traework/traecode 118 个模型无上下文/输出上限、图片能力恒 false | ✅ 本版修复（解析上游元数据 + RawMessage 容错） |
+| PR #109 | Kimi/Moonshot 系 tool schema 含 `$ref` 即 400 `4027 infinite recursion` | ✅ 本版修复（`$ref` 全量内联消毒） |
+| — | 流被截断时三种原因在日志与客户端完全同形，无法定位 | ✅ 本版修复（原因自证 + 出口错误码分流 + 日志补 elapsed/ttfb） |
+| PR #107 | qoder 系「max_output 推导」与 monkeycode 容量来源两处注释失实 | ✅ 本版修正 |
+
+## 🙏 致谢
+
+本版含 8 个社区 PR（均已合入 master 并保留作者署名）：
+
+| 贡献者 | 内容 |
+|--------|------|
+| [@bertchiangchiang](https://github.com/bertchiangchiang) | #106 模型降级链、#107 模型元数据注释修正、#108 traework 元数据解析、#109 Kimi 系 `$ref` 消毒、#112 降级链启动载入、#113 402 纳入降级触发、#114 workbuddyai 6004 软限流 |
+| [@LFDCC](https://github.com/LFDCC) | #110 OpenCodeZen 免费档会话头 descending 编码（修 issue #111 的 403） |
