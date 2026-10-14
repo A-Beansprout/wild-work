@@ -267,7 +267,15 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			}
 			seen[name] = true
 			recordModelFunc(name, fn)
-			out = append(out, provider.ModelInfo{ID: name, Name: cfg.DisplayConfig.DisplayName})
+			ctx, maxTok, images, fromAPI := cfg.metaOf()
+			out = append(out, provider.ModelInfo{
+				ID:             name,
+				Name:           cfg.DisplayConfig.DisplayName,
+				ContextWindow:  ctx,
+				MaxTokens:      maxTok,
+				SupportsImages: images,
+				ContextFromAPI: fromAPI,
+			})
 		}
 	}
 	if len(out) == 0 {
@@ -300,12 +308,53 @@ func (c *Client) fetchModelsForPool(a *auth.Auth, function string) ([]poolEntry,
 }
 
 // poolEntry 单池目录条目（get_detail_param）。
+//
+// 上游实测（2026-10-13，HTTP 200/1.35MB/71 条）下发的元数据远多于本工具此前的解析：
+//   - context_window_tokens.dev / .max —— 上下文档位（两档；部分模型 max 缺省甚至 dev 缺省）
+//   - display_config.multimodal         —— 图像输入能力
+//   - model_detail_list[].max_tokens    —— 输出上限
+//   - display_config.model_capability   —— reasoning_model / chat_model
+// 此前只取 config_name + display_name，导致 traework/traecode 全部 118 个模型在
+// /v1/models 上既无 context_length 也无 max_output_tokens、图片能力恒为 false。
+// 与官方池「模型面绑死上游」的口径一致：这里只补元数据，不增删模型。
 type poolEntry struct {
 	ConfigName    string `json:"config_name"`
+	ContextWindow struct {
+		Dev int64 `json:"dev"` // 开发档（通常 200000）
+		Max int64 `json:"max"` // 最大档（可能缺省为 0）
+	} `json:"context_window_tokens"`
 	DisplayConfig struct {
 		DisplayName   string `json:"display_name"`
 		IsCustomModel bool   `json:"is_custom_model"` // 自定义模型（第三方代理）需额外授权
+		Multimodal    bool   `json:"multimodal"`     // 图像输入能力（上游声明）
+		Capability    string `json:"model_capability"` // reasoning_model / chat_model
 	} `json:"display_config"`
+	ModelDetailList []struct {
+		MaxTokens int64 `json:"max_tokens"`
+	} `json:"model_detail_list"`
+}
+
+// metaOf 把上游池条目的元数据折算为 ModelInfo 的容量/能力字段。
+//
+// 口径（对齐 provider.ModelInfo 的「不编造」原则）：
+//  1. ContextWindow 取 max 档；max 为 0 时回落 dev；两者皆 0 则**不填**（保持未知，
+//     消费方据 ContextFromAPI 判断来源，面板不把未知当确定值展示）。
+//  2. MaxTokens 取 model_detail_list[0].max_tokens（上游每条模型组只有一组参数）；
+//     为 0 则**不填**。
+//  3. SupportsImages 直接取 display_config.multimodal —— 上游明确声明的布尔值，
+//     与 workbuddyai 的 imageOK() 同源语义（已确认 true 才置 true）。
+//  4. ContextFromAPI 仅在确实解析到上游容量字段时置 true。
+func (e *poolEntry) metaOf() (ctx, maxTok int64, images, fromAPI bool) {
+	ctx = e.ContextWindow.Max
+	if ctx == 0 {
+		ctx = e.ContextWindow.Dev
+	}
+	if len(e.ModelDetailList) > 0 && e.ModelDetailList[0].MaxTokens > 0 {
+		maxTok = e.ModelDetailList[0].MaxTokens
+	}
+	images = e.DisplayConfig.Multimodal
+	fromAPI = ctx > 0 || maxTok > 0
+	return
 }
 
 // FetchModelPricing 从 /api/remote/v1/models 拉取模型积分倍率。
