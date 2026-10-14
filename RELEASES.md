@@ -1711,16 +1711,16 @@ bash scripts/probe-dump.sh run && bash scripts/probe-dump.sh summarize
 
 ---
 
-# wild-work v2.7.2 — 模型降级链 + 备用上游通道 + Cline 模型 ID 简化 + oczen 403 修复
+# wild-work v2.7.2 — 模型降级链 + 备用上游通道 + Cline 模型 ID 简化 + oczen 403 修复与地域改道
 
 > 发布主题：**模型降级链**（主模型被上游按模型限流全池冷却时，按用户配置的有序备胎链自动顶上）、
 > **代理配置重构为「全局备用上游通道」**（默认不参与任何请求，仅渠道命中地区拒绝时同请求改道重发）、
 > **Cline 模型 ID 直通上游命名空间**（`cline/cline-free/x` → `cline-free/x`）、
-> 以及 **oczen 免费档 403 修复**（issue #111）、**workbuddyai 6004 / 402 权益不足纳入降级触发**、
+> 以及 **oczen 免费档 403 修复**（issue #111）与**其地域受限模型的自动改道**、**workbuddyai 6004 / 402 权益不足纳入降级触发**、
 > **traework/traecode 模型元数据补齐 + Kimi 系 tool schema `$ref` 消毒**、
 > **流截断原因可辨识**（区分空闲看门狗与上游断连）。
 >
-> 上次 tag v2.7.1 之后累积 30 个提交 + 8 个合并 PR（#106–#110、#112–#114，
+> 上次 tag v2.7.1 之后累积 32 个提交 + 8 个合并 PR（#106–#110、#112–#114，
 > 来自 [@bertchiangchiang](https://github.com/bertchiangchiang) 与 [@LFDCC](https://github.com/LFDCC)）。
 > 本版为**累积发布**：v2.7.1 之后的所有变更都在这里。
 
@@ -1799,6 +1799,28 @@ Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对�
   哈希前 6 字节按 descending 布局渲染、counter 取 1。确定性保证同一会话仍稳定映射同一 session
   （prompt cache / key 亲和不断）。
 - 附新增 `-tags live` 实盘测试（`internal/oczen/live_test.go`）。
+
+## 🔁 oczen 地域受限模型自动改走备用通道（R62）
+
+**现象**：2.7.2 修复 oczen 免费档后，部分免费模型（`muse-spark-*-contributor-free` 实测）直连仍回
+403 `RegionError`（"This model is not available in your country"）。
+
+- **改道**：与 Cline 同款机制——直连命中地区限制时，在**同一次请求内**经「备用上游通道」换出口重放一次；
+  未配置备用代理则原样透传 403（不改成 503，不罚账号）。
+- **公共编排**：这条规则语义细（首因不被第二次尝试掩盖 / 备用自身不可用则本轮回落直连 /
+  只有拿到可用答复才记学习结果 / 学习结果随代理配置变更作废），故抽到
+  `internal/backuplink/route.go` 的 `Replay` + `Routes`，**Cline 与 oczen 共用一份实现**
+  （分头实现必然改一处漏一处，这是 R52 的教训）。渠道只提供「怎么发一发」与「什么算地区限制」。
+- **oczen 判据宁窄勿宽**（命中会多发一发经第三方出口的请求）：仅 403/451 +
+  `RegionError`/region 文案才算；`FreeTierError`、429、5xx 一律不重放。
+- **不涉及账号**：备用通道只换出口 IP，`SingleAccount` 豁免语义不变（不变量 22），
+  改道发生在渠道内部，成功时上层完全看不到 403。
+- **如实披露的限制**：`muse-spark-*-contributor-free` 经该出口被上游判 400
+  `ModelProtocolUnsupported`（同一出口下 mimo / big-pickle / nemotron 均 200）。
+  本工具的职责是「换出口、把上游的权威答复原样交出」，**某模型在某个出口下能否用由上游决定**，
+  本工具不承诺。
+
+---
 
 ## 🧠 workbuddyai 6004 归入软限流管线（PR #114）
 
