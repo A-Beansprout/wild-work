@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"wild-work/internal/backuplink"
 )
 
 // Listen 监听地址：Host 为空表示全部接口。
@@ -104,11 +105,11 @@ func ParseListen(s string) (Listen, error) {
 // Config 顶层配置。
 type Config struct {
 	Listen    Listen `json:"listen"`
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
+	APIKey    string `json:"api_key"`        // 空 = 不鉴权
 	AdminPass string `json:"admin_password"` // 空 = 管理面板不鉴权（仅允许监听环回地址时为空）
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
-	Region    string `json:"region"`     // 只收 "cn"
+	AuthDir   string `json:"auth_dir"`       // ./auths
+	StateFile string `json:"state_file"`     // ./data/state.json
+	Region    string `json:"region"`         // 只收 "cn"
 
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"
@@ -142,10 +143,21 @@ type Config struct {
 		MaxTokensCap int `json:"max_tokens_cap"`
 	} `json:"compat"`
 
-	// Proxies 单渠道上游代理：key 为渠道 kind（workbuddy/traework/qoder/qodercn/
-	// qodercom/workbuddyai/qwenwork/oczen），value 为代理 URL（http/https/socks5）。
-	// 空串或未列出的渠道直连。主要用途：给 oczen 等有区域限制的渠道走代理。
-	Proxies map[string]string `json:"proxies,omitempty"`
+	// BackupProxy 应用内**备用上游通道**（单一代理地址，http/https/socks5）。
+	// **不参与任何常规请求**：各渠道一律直连；仅当渠道自己判定「上游按地区拒绝」时，
+	// 才在同一次请求内经它重放一次（留空 = 无备用通道，失败原样透传）。决议 R57。
+	// 当前唯一取用方：cline（muse-spark 系国内直连被地区拒）。oczen 待上游恢复后再接。
+	// 本字段只负责持久化，生效态由 internal/backuplink 持有（零接线：渠道按需自取）。
+	BackupProxy string `json:"backup_proxy,omitempty"`
+
+	// LegacyProxies 是已废弃的「每渠道上游代理」（旧 `proxies` 段）。保留仅为**读取旧配置**
+	// 以便 normalize 一次性迁移进 BackupProxy；迁移后置 nil，下次保存即从文件消失。
+	// 不要再新增任何消费方：除 cline 外的渠道代理能力已整体删除。
+	LegacyProxies map[string]string `json:"proxies,omitempty"`
+
+	// LegacyProxyNote 旧 proxies 段的迁移结论（供 main 在日志接管后提示；不进 JSON）。
+	// 格式：「cline→socks5://…」+ 被丢弃的渠道列表。
+	LegacyProxyNote string `json:"-"`
 
 	// OczenAPIKey OpenCodeZen 渠道自定义 API key（sk-...）；空 = 匿名凭证（public）。
 	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
@@ -201,7 +213,6 @@ func Default() *Config {
 	c.Upstream.TimeoutSeconds = 120
 	c.Compat.DefaultChannel = "workbuddy"
 	c.Compat.MaxTokensCap = 32000
-	c.Proxies = map[string]string{}
 	c.Features.LoopGuard = true // 思考链死循环检测默认开启（面板可关）
 	return c
 }
@@ -347,6 +358,57 @@ func applyEnv(c *Config) {
 	}
 }
 
+// migrateLegacyProxies 把旧「每渠道代理」段（proxies）迁移成全局备用通道（决议 R57）。
+// 取值优先级：cline（当前唯一取用方）> 按渠道名排序后的第一个非空值；其余丢弃。
+// 迁移后把 LegacyProxies 置 nil，下一次 config.Save 就让旧段从文件里消失。
+// 返回迁移说明（无旧段时返回空串，不进日志）。
+func migrateLegacyProxies(c *Config) string {
+	if len(c.LegacyProxies) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(c.LegacyProxies))
+	for k, v := range c.LegacyProxies {
+		if strings.TrimSpace(v) == "" {
+			continue // 空值本来就是「直连」，不算被丢弃
+		}
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	picked := ""
+	if v := strings.TrimSpace(c.LegacyProxies["cline"]); v != "" {
+		picked = "cline"
+	} else if len(names) > 0 {
+		picked = names[0]
+	}
+	var dropped []string
+	for _, n := range names {
+		if n != picked {
+			dropped = append(dropped, n)
+		}
+	}
+	note := ""
+	if picked != "" {
+		raw := strings.TrimSpace(c.LegacyProxies[picked])
+		_, perr := backuplink.Parse(raw)
+		switch {
+		case strings.TrimSpace(c.BackupProxy) != "":
+			// 新字段已配 ⇒ 以 backup_proxy 为准，旧值只丢弃不迁移
+			note = fmt.Sprintf("已同时配置 backup_proxy 与旧 proxies[%s]，以 backup_proxy 为准", picked)
+		case perr != nil:
+			// 旧值本身不合法 ⇒ **不迁移**（否则多年前的脏值会把启动直接 fatal），只记日志
+			note = fmt.Sprintf("旧 proxies[%s]=%q 地址不合法，未迁移为备用上游通道", picked, raw)
+		default:
+			c.BackupProxy = raw
+			note = fmt.Sprintf("旧 proxies 段已迁移为备用上游通道（取自 %s=%s）", picked, raw)
+		}
+	}
+	if len(dropped) > 0 {
+		note += fmt.Sprintf("；%s 的旧代理已丢弃（该渠道不再支持代理，一律直连）", strings.Join(dropped, ","))
+	}
+	c.LegacyProxies = nil
+	return note
+}
+
 func (c *Config) normalize() error {
 	var err error
 	if c.HardCreditDur, err = time.ParseDuration(c.Cooldown.HardCredit); err != nil {
@@ -379,23 +441,19 @@ func (c *Config) normalize() error {
 		c.Listen.Port = 7863
 	}
 	c.AdminPass = strings.TrimSpace(c.AdminPass)
-	// 代理配置清洗：剔除空值，校验 URL 形态（http/https/socks5）。
-	for k, v := range c.Proxies {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			delete(c.Proxies, k)
-			continue
+	// 备用上游通道：先把旧 `proxies` 段一次性迁移（决议 R57），再校验现值。
+	// 迁移取值优先级：cline（当前唯一取用方）> 按渠道名排序后的第一个非空值；
+	// 其余地址一律丢弃并记入提示 —— 渠道侧代理逻辑已删除，留着只会造成「配了就生效」的错觉。
+	if note := migrateLegacyProxies(c); note != "" {
+		c.LegacyProxyNote = note
+	}
+	if raw := strings.TrimSpace(c.BackupProxy); raw != "" {
+		if _, err := backuplink.Parse(raw); err != nil { // 判据与面板保存同源（避免两处漂移）
+			return err
 		}
-		u, err := url.Parse(v)
-		if err != nil || u.Scheme == "" || u.Host == "" {
-			return fmt.Errorf("proxies[%s]: 无效代理地址 %q（应为 http://host:port 或 socks5://host:port）", k, v)
-		}
-		switch u.Scheme {
-		case "http", "https", "socks5":
-		default:
-			return fmt.Errorf("proxies[%s]: 不支持的代理协议 %q（仅 http/https/socks5）", k, u.Scheme)
-		}
-		c.Proxies[k] = v
+		c.BackupProxy = raw
+	} else {
+		c.BackupProxy = ""
 	}
 	if c.Region == "" {
 		c.Region = "cn"

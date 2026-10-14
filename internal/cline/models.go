@@ -66,7 +66,9 @@ type measuredCap struct {
 //  4. tools：四个模型均实测返回标准 tool_calls 并正确消费 tool 结果，故未单列开关
 //     （provider.ModelInfo 的 SupportsTools 保持 false = 「未声明」，不虚报）。
 //  5. 地区限制：muse-spark-1.3-contributor 对国内直连恒回 403
-//     `not available in your region`，需在「设置 → 渠道上游代理」给 cline 配代理才可用（实测）。
+//     `not available in your region`，需在「设置 → 备用上游通道」配一个代理地址才可用（实测）。
+//     与旧「每渠道代理」不同：备用通道不参与常规请求，只在本渠道命中地区拒绝时
+//     由 ChatStream 在同一次请求内自动重发一次（见 client.go 的地区限制改道分支与决议 R57）。
 //  6. 未列入本表的模型（上游新增）仍然照常暴露，但没有上下文/能力声明 ——
 //     这与 R46「模型面绑死上游 free[]」不矛盾：本表只补元数据，不增删模型。
 var measuredCaps = map[string]measuredCap{

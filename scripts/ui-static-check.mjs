@@ -409,7 +409,11 @@ for (const [label, re] of uniq) {
     ["cline 在渠道名/样式表里登记", /cline: "Cline"/.test(raw) && /cline: "cline"/.test(raw)],
     ["cline 归入无签到渠道", /NO_EXPLICIT_CHECKIN[^)]*"cline"/.test(raw)],
     ["cline 无余额概念→积分显示不适用", /NO_CREDITS[^)]*"cline"/.test(raw)],
-    ["cline 可配上游代理", /PROXY_CHANNELS[^)]*"cline"/.test(raw)],
+    ["备用上游通道入口在位（单一输入 + 生效位回显 + 保存走 /api/config/proxy）",
+      html.includes('id="backupProxyInput"') && html.includes('id="backupProxyState"')
+        && raw.includes('"/api/config/proxy"') && raw.includes("backup_proxy_active")],
+    ["旧「每渠道代理」输入表已清除（R57：不再有 PROXY_CHANNELS / proxyList）",
+      !raw.includes("PROXY_CHANNELS") && !html.includes('id="proxyList"') && !raw.includes("/api/config/proxies")],
     ["style.css 有 cline 渠道色", css.includes(".badge.cline") && css.includes(".btn.primary.alt.cline")],
   ];
   for (const [label, pass] of need) {
@@ -450,7 +454,8 @@ for (const [label, re] of uniq) {
     // 由 internal/cline 的单测锁住（TestFetchModelsAppliesMeasuredCaps），此处只管前端文案。
     ["添加窗口含实测参数表且标注仅供参考",
       /免费模型参数（本工具实测验证值，仅供参考）/.test(html) && /仅作参考/.test(html)],
-    ["添加窗口说明 muse 需配渠道代理（地区限制）", /地区限制/.test(html) && /渠道上游代理/.test(html)],
+    ["添加窗口说明 muse 靠备用上游通道解地区限制",
+      /地区限制/.test(html) && /备用上游通道/.test(html)],
     ["顶栏 1fr 下界解除（minmax(0,1fr)）", /\.top-info \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)],
     ["账号卡片允许收缩（minmax(0,1fr)）", /\.acct-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/.test(css)],
     ["费率表窄屏隐藏第 3/4 列（4 列布局手机必溢出）", /\.fees table th:nth-child\(n\+3\)[\s\S]*?display: none/.test(css)],

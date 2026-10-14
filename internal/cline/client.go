@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/backuplink"
 	"wild-work/internal/provider"
 )
 
@@ -37,6 +39,11 @@ type Client struct {
 	knownIDs map[string]string
 	capMu    sync.RWMutex
 	capped   map[string]time.Time
+	regMu    sync.RWMutex
+	// regModels 是「地区限制→改走备用上游通道」的学习路由：模型 ID → 过期时刻。
+	// 命中一次后 TTL 内不再白撞直连；备用地址一变（Generation 变）就整体作废。
+	regModels map[string]time.Time
+	regGen    uint64 // 写入时的 backuplink.Generation()
 }
 
 // New 构造客户端（非流式 120s 总超时；一问一答需要兜底，故保留 Timeout）。
@@ -123,6 +130,10 @@ func keyOf(a *auth.Auth) string {
 //
 // 状态码会经 effectiveStatus **还原被网关压平的内层码**（实测外层恒 500），
 // 让客户端与 handler 看到真正的 429/401/404；响应体保持原文（不变量 8 的偏离已在注释说明）。
+//
+// 地区限制自动改道（决议 R57）：直连命中 IsRegionBlocked ⇒ 同一次请求内经**备用上游通道**
+// 重放一次；未配置备用通道则原样透传失败。重试全部在本方法内完成，handler/账号惩罚/
+// 粘性路由对该机制无感（备用链路只是换出口 IP，不是换账号）。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []byte, error) {
 	m := modelOf(body)
 	if m == "" {
@@ -138,27 +149,181 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 
 	out := clampMaxTokens(body)
 	out = forceStream(out)
-	req, err := http.NewRequest(http.MethodPost, c.base()+EpChat, bytes.NewReader(out))
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	applyHeaders(req, keyOf(a))
+	key := keyOf(a)
 
-	resp, err := c.streamClient().Do(req)
+	// 首选链路：学到「直连被地区拒」的模型直接走备用，省一次注定失败的白撞
+	// （多发 0.3~2s，且在上游留下重复失败特征）。
+	useBackup := c.regionLearned(m)
+	resp, err := c.attempt(out, key, useBackup)
 	if err != nil {
-		return nil, 0, nil, err
+		// 备用通道拨不动 / 与配置变更的竞态 ⇒ 作废学习结果并回落直连一次，
+		// 否则代理一故障就把「本来能直连」的模型钉死不可用。
+		link := "直连"
+		if useBackup {
+			link = "备用"
+		}
+		log.Printf("cline: 首选链路(%s)不可用 uid=%s model=%s err=%v（作废学习结果，回落直连）", link, uidOf(a), m, err)
+		c.forgetRegion(m)
+		if resp, err = c.attempt(out, key, false); err != nil {
+			return nil, 0, nil, err
+		}
+		useBackup = false
 	}
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		if useBackup {
+			c.markRegion(m) // 备用链路确认可用，续期学习结果
+		}
+		return c.openStream(resp), resp.StatusCode, nil, nil
+	}
+	status, raw := drainBody(resp)
+
+	// (A) 走备用仍被地区拒 ⇒ 上游策略或代理出口已变 ⇒ 作废学习结果并回落直连。
+	// 不做这层的话，最长要等 TTL（6h）才回到直连，期间该模型一直报错。
+	if useBackup && IsRegionBlocked(status, string(raw)) {
+		c.forgetRegion(m)
+		r2, e2 := c.attempt(out, key, false)
+		if e2 != nil {
+			log.Printf("cline: 备用被地区拒且直连拨不动 uid=%s model=%s backup=%d err=%v（交出备用那份）", uidOf(a), m, status, e2)
+		} else if r2.StatusCode == http.StatusOK {
+			log.Printf("cline: 直连已恢复可用 uid=%s model=%s（学习结果已作废）", uidOf(a), m)
+			return c.openStream(r2), r2.StatusCode, nil, nil
+		} else {
+			status, raw = drainBody(r2) // 交出直连那份（主链路口径），不再乒乓重试
+		}
 		if IsCapBody(string(raw)) {
 			c.markCapped(m, capCooldown)
-			log.Printf("cline: 模型触上限 uid=%s model=%s（不罚账号，已标记冷却）", uidOf(a), m)
 		}
-		return nil, effectiveStatus(resp.StatusCode, string(raw)), raw, nil
+		return nil, effectiveStatus(status, string(raw)), raw, nil
 	}
-	return provider.NewIdleReader(resp.Body, c.idleTimeout()), resp.StatusCode, nil, nil
+
+	// (B) 直连被上游按地区拒 ⇒ 同请求内经备用通道重放一次（判据保守，见 regionRetryMarkers）。
+	if IsRegionBlocked(status, string(raw)) {
+		r2, e2 := c.attempt(out, key, true)
+		switch {
+		case errors.Is(e2, errNoBackup):
+			// 未配置备用通道：保持旧行为（原文透传，不罚账号，见 Classify 的 regionBlockedMarkers）。
+			log.Printf("cline: 上游按地区拒绝 uid=%s model=%s（未配置备用上游代理，原样透传）：%s",
+				uidOf(a), m, truncate(string(raw), 120))
+		case e2 != nil:
+			// R37 同族：不得用第二次尝试的错误掩盖首因 ⇒ 仍透传直连那份 403 原文，代理故障只进日志。
+			log.Printf("cline: 备用通道重放失败 uid=%s model=%s err=%v（透传直连原始响应）", uidOf(a), m, e2)
+		case r2.StatusCode == http.StatusOK:
+			c.markRegion(m)
+			log.Printf("cline: 地区限制已改走备用通道 uid=%s model=%s（后续同模型直接走备用）", uidOf(a), m)
+			return c.openStream(r2), r2.StatusCode, nil, nil
+		default:
+			s2, raw2 := drainBody(r2)
+			if IsRegionBlocked(s2, string(raw2)) {
+				// 备用出口同样受限 ⇒ **不**记学习结果（钉上去只会长期失败），仍透传直连首因。
+				log.Printf("cline: 备用通道出口同样被地区拒绝 uid=%s model=%s（透传直连原始响应）", uidOf(a), m)
+			} else {
+				// 链路可达、上游给了**不同**的权威答复 ⇒ 以它为准，并记学习结果。
+				c.markRegion(m)
+				if IsCapBody(string(raw2)) {
+					c.markCapped(m, capCooldown)
+				}
+				log.Printf("cline: 经备用通道拿到上游答复 uid=%s model=%s status=%d", uidOf(a), m, s2)
+				return nil, effectiveStatus(s2, string(raw2)), raw2, nil
+			}
+		}
+	}
+
+	if IsCapBody(string(raw)) {
+		c.markCapped(m, capCooldown)
+		log.Printf("cline: 模型触上限 uid=%s model=%s（不罚账号，已标记冷却）", uidOf(a), m)
+	}
+	return nil, effectiveStatus(status, string(raw)), raw, nil
+}
+
+// errNoBackup 「要求走备用但未配置备用通道」，多出现于学习判定与配置变更的竞态。
+var errNoBackup = errors.New("cline: 备用上游通道未配置")
+
+// attempt 发一发出站对话请求：useBackup 决定出口（直连 or 备用上游通道）。
+// 重放时重新构造请求（body 已在内存，无需 GetBody），两个出口共用同一构造器
+// ⇒ 头完全一致：X-CLIENT-TYPE 缺失会恒回 403，重放少了它会把「代理也没用」误判成代理故障。
+func (c *Client) attempt(out []byte, key string, useBackup bool) (*http.Response, error) {
+	cli := c.streamClient()
+	if useBackup {
+		bc := c.backupClient()
+		if bc == nil {
+			return nil, errNoBackup
+		}
+		cli = bc
+	}
+	req, err := http.NewRequest(http.MethodPost, c.base()+EpChat, bytes.NewReader(out))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	applyHeaders(req, key)
+	return cli.Do(req)
+}
+
+// drainBody 读尽并关闭**非 200** 的响应体（限 64KB，与旧行为一致），返回 (状态码, 原文)。
+func drainBody(resp *http.Response) (int, []byte) {
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	return resp.StatusCode, raw
+}
+
+// openStream 把 200 响应包成带空闲兜底的流（R35：不用 Client.Timeout，靠 IdleReader）。
+func (c *Client) openStream(resp *http.Response) io.ReadCloser {
+	return provider.NewIdleReader(resp.Body, c.idleTimeout())
+}
+
+// backupClient 返回绑定备用上游通道的 client（未配置返回 nil = 只能直连）。
+// base 取流式 client 的 Transport：只改出口，其余超时/协议参数与出厂一致。
+func (c *Client) backupClient() *http.Client {
+	tr, _ := c.streamClient().Transport.(*http.Transport)
+	return backuplink.Client(tr)
+}
+
+// regionRouteTTL 学习结果有效期：地区限制是稳定属性，取长一些（6h）以免每发都先白撞
+// 一次直连；到期后自动重新试探直连（上游若解除限制即回归直连）。
+const regionRouteTTL = 6 * time.Hour
+
+// regionLearned 报告该模型是否已学到「直连被地区拒绝、只能走备用」，且备用配置仍生效。
+func (c *Client) regionLearned(m string) bool {
+	if !backuplink.Enabled() {
+		return false
+	}
+	g := backuplink.Generation()
+	now := time.Now()
+	c.regMu.RLock()
+	defer c.regMu.RUnlock()
+	exp, ok := c.regModels[m]
+	return ok && g == c.regGen && now.Before(exp)
+}
+
+// markRegion 记录/续期学习结果；备用配置一变（generation 变）就整体作废重建。
+func (c *Client) markRegion(m string) {
+	g := backuplink.Generation()
+	if g == 0 {
+		return
+	}
+	now := time.Now()
+	c.regMu.Lock()
+	defer c.regMu.Unlock()
+	if c.regModels == nil {
+		c.regModels = map[string]time.Time{}
+	}
+	if c.regGen != g {
+		clear(c.regModels)
+		c.regGen = g
+	}
+	c.regModels[m] = now.Add(regionRouteTTL)
+	for k, t := range c.regModels { // 顺带清过期项，防长期碎片
+		if now.After(t) {
+			delete(c.regModels, k)
+		}
+	}
+}
+
+// forgetRegion 作废单个模型的学习结果（备用链路拨不动时回落直连用）。
+func (c *Client) forgetRegion(m string) {
+	c.regMu.Lock()
+	defer c.regMu.Unlock()
+	delete(c.regModels, m)
 }
 
 // forceStream 强制上游 stream:true（不变量 1）。

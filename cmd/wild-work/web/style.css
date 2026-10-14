@@ -455,7 +455,7 @@ body {
 .cfg-heading { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
 .lbl.wide { width: 90px; flex-shrink: 0; white-space: nowrap; }
 
-/* 渠道代理行 */
+/* 配置行列表（备用上游通道 / 模型降级链共用） */
 .proxy-list { display: flex; flex-direction: column; gap: 6px; }
 .proxy-row { margin-bottom: 0; }
 .proxy-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }

@@ -2,6 +2,7 @@ package cline
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -33,6 +34,32 @@ var passMarkers = []string{"entitlement_error", "not subscribed", "this request 
 // 实测教训（2026-10-12）：未识别时它落 ErrClient（R29 可轮换）⇒ 重试耗尽后把账号判为
 // 「连续错误」冷却 60s，导致同账号下另外 3 个正常模型全部 503 no_healthy_account。
 var regionBlockedMarkers = []string{"not available in your region", "access forbidden"}
+
+// regionRetryMarkers 是「换出口 IP 有可能救回来」的地区拒绝文案，**触发备用通道重放**用。
+// 比 regionBlockedMarkers 严：后者只决定「不罚账号」（误判代价低），而本表命中会多发
+// 一发经第三方代理的重放请求，判据宁窄勿宽 —— "access forbidden" 单独出现不足以断定
+// 是地区问题（可能是别的风控），不纳入重试判据。
+var regionRetryMarkers = []string{
+	"not available in your region", // 实测形态（muse-spark-1.3-contributor 国内直连恒回）
+	"available in your region", "in your region",
+	"in your country", "country not supported",
+	"region-restricted", "geo-block", "geoblock",
+}
+
+// IsRegionBlocked 报告响应是否是「上游按地区拒绝」（可尝试经备用通道重试）。
+// 451 是「因法律/政策原因不可用」的规范状态码，一并认；其余状态一律不认（保守）。
+func IsRegionBlocked(status int, body string) bool {
+	if status != http.StatusForbidden && status != http.StatusUnavailableForLegalReasons {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, m := range regionRetryMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
 
 // badParamMarkers 是本端参数/头造成的失败，不得计入账号健康度。
 var badParamMarkers = []string{

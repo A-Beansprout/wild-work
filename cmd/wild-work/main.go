@@ -287,27 +287,28 @@ func main() {
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
 	// 长回答会在超时点被掐断且无终止帧（实测 2026-09-27 触发 5 次）。
-	// 两者共用同一 Transport，故代理只需套 HTTP 即可（见下方 applyProxies）。
 	glmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 
 	// 开发期调试开关：把各渠道出站对话请求的**上游原始响应**落盘（仅 -tags devdump
 	// 构建有效，见 internal/devdump）。这里只做一次启动期读取与提示；真正的接线在
-	// applyProxies → applyProxyToKind（唯一统一改 Transport 处）。
+	// 下方 wrapDumps（R57 起这是唯一统一改 Transport 的地方，且只在启动时做一次）。
 	devdump.Refresh()
 	if devdump.Enabled() {
 		log.Printf("devdump enabled: 上游原始响应落盘至 %s（仅开发构建；含 token，勿外传）", os.Getenv("WILDWORK_DUMP_DIR"))
 	}
 
-	// 单渠道上游代理：config.proxies 按 kind 套到各渠道 HTTP client 上（未配置 = 直连）。
-	// traework / glm 的 StreamHTTP 与主 client 共用出厂 Transport，先切独立再套代理，
-	// 否则热更新代理时会把非流式 client 的 Transport 一起替换
-	// （且 SetTransportProxy 会新建 Transport，只套一个会导致另一个漏掉代理）。
-	trUp.StreamHTTP.Transport = trUp.HTTP.Transport
-	glmUp.StreamHTTP.Transport = glmUp.HTTP.Transport
-	applyProxies(cfg, map[string][]*http.Client{
+	// 备用上游通道（全局单代理，**不参与常规请求**，仅渠道命中地区拒绝时自取）：
+	// 只存地址，不碰任何渠道 client，故面板保存后无需热更新接线（见 transport.go 头注释）。
+	applyBackupLink(cfg)
+
+	// devdump 落盘接线表：必须覆盖**每一个**注册进 runtimes 的渠道 client。
+	// 旧代理接线表就漏过 trCodeUp（两张表都漏）⇒ 同一个上游客户端变量多实例的渠道
+	// （TraeCode 与 TraeWork 各一份 Client）最容易漏，由 transport_test.go 静态锁死。
+	wrapDumps(map[string][]*http.Client{
 		provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP, wbUp.StreamHTTP},
 		provider.WorkBuddyAI.String(): {wbaUp.HTTP, wbaUp.StreamHTTP},
 		provider.TraeWork.String():    {trUp.HTTP, trUp.StreamHTTP},
+		provider.TraeCode.String():    {trCodeUp.HTTP, trCodeUp.StreamHTTP},
 		provider.Qoder.String():       {qdUp.HTTP, qdUp.StreamHTTP},
 		provider.QoderCN.String():     {qcnUp.HTTP, qcnUp.StreamHTTP},
 		provider.QoderCOM.String():    {qcmUp.HTTP, qcmUp.StreamHTTP},
@@ -317,9 +318,7 @@ func main() {
 		provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
 		provider.Cline.String():       {clUp.HTTP, clUp.StreamHTTP},
 		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
-		// glm 两个 client 都要传（SetTransportProxy 会**新建** Transport，
-		// 只套 HTTP 会让 StreamHTTP 仍走直连（代理对流式不生效）。
-		provider.GLM.String(): {glmUp.HTTP, glmUp.StreamHTTP},
+		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
 	if err != nil {
@@ -517,24 +516,8 @@ func main() {
 	appInst.SetModelFallbackSyncer(func(rules []config.ModelFallbackRule) {
 		inner.SetModelFallbacks(rules)
 	})
-	// 面板保存代理配置时热更新各渠道 HTTP client（重建 Transport，无需重启）
-	appInst.SetProxySyncer(func(proxies map[string]string) {
-		next := *cfg
-		next.Proxies = proxies
-		applyProxies(&next, map[string][]*http.Client{
-			provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP, wbUp.StreamHTTP},
-			provider.WorkBuddyAI.String(): {wbaUp.HTTP, wbaUp.StreamHTTP},
-			provider.TraeWork.String():    {trUp.HTTP, trUp.StreamHTTP},
-			provider.Qoder.String():       {qdUp.HTTP, qdUp.StreamHTTP},
-			provider.QoderCN.String():     {qcnUp.HTTP, qcnUp.StreamHTTP},
-			provider.QoderCOM.String():    {qcmUp.HTTP, qcmUp.StreamHTTP},
-			provider.QwenWork.String():    {qwUp.HTTP, qwUp.StreamHTTP},
-			provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
-			// glm 两个 client 都要传（同启动路径的理由：SetTransportProxy 新建 Transport）
-			provider.GLM.String():   {glmUp.HTTP, glmUp.StreamHTTP},
-			provider.Cline.String(): {clUp.HTTP, clUp.StreamHTTP},
-		})
-	})
+	// 备用上游通道无需热更新接线：面板保存走 app.SetBackupProxy → backuplink.Set（只换指针），
+	// 渠道在命中地区拒绝时按需自取（R57），因此不存在旧的「两张接线表不一致」失效形态。
 	// 面板保存 oczen key 后热更新渠道凭证；启动时也应用一次配置中的初始 key
 	appInst.SetOczenSyncer(ocUp.SetAPIKey)
 	ocUp.SetAPIKey(cfg.OczenAPIKey)

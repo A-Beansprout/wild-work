@@ -635,7 +635,7 @@ function renderAccounts() {
     // 问号图标：hover 展示 oczen 通道说明（免费反代范围/私有 Key/代理三项）。
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
-    const oczenHelp = `<span class="icon-op help" title="关于 OpenCodeZen 通道：&#10;1. 本工具仅反代其免费模型（绕过官方客户端限制）；付费账号可直接使用官方端点，无需经此通道&#10;2. 在 OpenCodeZen 获取的 API-Key 可在设置中配置，避免匿名账号共享限额超限&#10;3. 配置代理后可使用有地域限制的模型，可用性取决于上游通道">?</span>`;
+    const oczenHelp = `<span class="icon-op help" title="关于 OpenCodeZen 通道：&#10;1. 本工具仅反代其免费模型（绕过官方客户端限制）；付费账号可直接使用官方端点，无需经此通道&#10;2. 在 OpenCodeZen 获取的 API-Key 可在设置中配置，避免匿名账号共享限额超限&#10;3. 地域受限模型需经「备用上游通道」，该渠道待上游恢复后接入（目前仅 Cline 自动取用）">?</span>`;
     const ops = noCredits
       ? `${oczenHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
@@ -1343,21 +1343,20 @@ async function saveModelFallback() {
   } catch (e) { $("fbErr").textContent = e.message; }
 }
 
-// ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/渠道代理） ----------
-// PROXY_CHANNELS 渠道上游代理列表（顺序与面板渠道序一致；旧 qoder 已下线不提供代理配置）。
-const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "qwenwork", "glm", "cline", "monkeycode", "raccoon", "loomy"];
-const PROXY_HINT = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", cline: "Cline", oczen: "OpenCodeZen" };
-
-// renderProxyList 按当前 state.proxies 渲染每渠道一个输入行。
-function renderProxyList() {
-  const proxies = state.proxies || {};
-  $("proxyList").innerHTML = PROXY_CHANNELS.map((ch) => {
-    const val = proxies[ch] || "";
-    return `<div class="row proxy-row">
-      <label class="lbl wide" title="${esc(PROXY_HINT[ch] || ch)}">${esc(PROXY_HINT[ch] || ch)}</label>
-      <input class="input grow proxy-input" data-ch="${ch}" value="${esc(val)}" spellcheck="false" placeholder="如 socks5://127.0.0.1:1080（留空直连）">
-    </div>`;
-  }).join("");
+// ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/备用上游通道） ----------
+// renderBackupProxy 回显全局备用上游通道（单一地址，空 = 关闭）。
+// 定位是**备份链路**而不是全局代理：不参与常规请求，仅渠道命中「上游地区拒绝」
+// 时在同一次请求内自动取用（决议 R57），故文案里不说「走代理」而说「重发」。
+function renderBackupProxy() {
+  const inp = $("backupProxyInput");
+  inp.value = state.backup_proxy || "";
+  inp.placeholder = "如 socks5://127.0.0.1:1080 或 http://127.0.0.1:7890（留空 = 关闭）";
+  // 生效位：后端同时回 backup_proxy（配置）与 backup_proxy_active（运行时已装载）。
+  // 两者不等 = 配置写了但进程内未生效（地址不合法/启动失败），必须让用户看见。
+  const s = $("backupProxyState");
+  s.textContent = !state.backup_proxy ? ""
+    : (state.backup_proxy_active ? "已生效" : "未生效（地址无效或启动失败）");
+  s.style.color = state.backup_proxy && !state.backup_proxy_active ? "var(--danger)" : "var(--muted)";
   $("proxyErr").textContent = "";
 }
 
@@ -1418,8 +1417,8 @@ function openSettings() {
   $("mapEditor").classList.add("hidden");
   $("mapErr").textContent = "";
   renderMapPresets(channels);
-  // 渠道代理 + oczen 自定义 key
-  renderProxyList();
+  // 备用上游通道 + oczen 自定义 key
+  renderBackupProxy();
   $("oczenKeyInput").value = state.oczen_api_key || ""; // 回显脱敏值；未改动则原样回传，后端按脱敏值识别为「未变」
   $("oczenKeyInput").dataset.touched = "";
   // 模型降级链
@@ -1438,22 +1437,18 @@ function closeSettings() {
   $("settingsOverlay").classList.add("hidden");
 }
 
-// validateProxies 收集代理输入并做本地形态校验，返回 {proxies, err}。
-function validateProxies() {
-  const proxies = {};
-  for (const inp of document.querySelectorAll(".proxy-input")) {
-    const ch = inp.dataset.ch;
-    const v = inp.value.trim();
-    if (!v) continue;
-    let u;
-    try { u = new URL(v); } catch { return [null, `渠道 ${ch} 代理地址无效：${v}`]; }
-    if (!["http:", "https:", "socks5:"].includes(u.protocol)) {
-      return [null, `渠道 ${ch} 代理协议不支持（仅 http/https/socks5）：${v}`];
-    }
-    if (!u.hostname) return [null, `渠道 ${ch} 代理缺少主机名：${v}`];
-    proxies[ch] = v;
+// validateBackupProxy 校验备用上游通道地址，返回 [url, err]（空串合法 = 关闭）。
+// 判据与后端 backuplink.Parse 同源：仅 http/https/socks5，且必须有主机名。
+function validateBackupProxy() {
+  const v = $("backupProxyInput").value.trim();
+  if (!v) return ["", ""];
+  let u;
+  try { u = new URL(v); } catch { return [null, `备用代理地址无效：${v}`]; }
+  if (!["http:", "https:", "socks5:"].includes(u.protocol)) {
+    return [null, `备用代理协议不支持（仅 http/https/socks5）：${v}`];
   }
-  return [proxies, ""];
+  if (!u.hostname) return [null, `备用代理缺少主机名：${v}`];
+  return [v, ""];
 }
 
 // testOczenKey 「测试」按钮：用输入框当前的候选 key（含脱敏值/空）调后端实测。
@@ -1504,10 +1499,10 @@ async function saveSettings() {
     } catch (e) { toast(e.message); closeSettings(); showLogin("管理密码已变更，请重新登录"); return; }
   }
 
-  // 2) 代理（先本地校验，失败阻断保存）+ oczen key（仅在用户改动过时提交，避免把脱敏回显值存回）
-  const [proxies, perr] = validateProxies();
+  // 2) 备用上游通道（先本地校验，失败阻断保存）+ oczen key（仅在用户改动过时提交，避免把脱敏回显值存回）
+  const [proxy, perr] = validateBackupProxy();
   if (perr) { $("proxyErr").textContent = perr; toast(perr); return; }
-  const body = { proxies };
+  const body = { proxy };
   const kIn = $("oczenKeyInput");
   if (kIn.dataset.touched === "1") {
     let k = kIn.value.trim();
@@ -1516,7 +1511,7 @@ async function saveSettings() {
     if (k !== undefined) body.oczen_api_key = k; // undefined 时不携带字段 = 不改动；空串 = 清除回匿名
   }
   try {
-    await api("/api/config/proxies", body);
+    await api("/api/config/proxy", body);
   } catch (e) { toast(e.message); return; }
 
   // 3) 模型映射：优先读编辑器；编辑器从未展开过则用原值（保证「只改监听/渠道不碰映射」）
