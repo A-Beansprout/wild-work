@@ -27,8 +27,9 @@ type Client struct {
 	// Go 的 Client.Timeout 覆盖整个请求生命周期（含读 body），对 SSE 意味着
 	// 「长回答必被从中间掐断」。空闲兜底改由 IdleReader 承担。
 	StreamHTTP *http.Client
-	// IdleTimeout 流式空闲上限，0 = DefaultIdleTimeout；由 main 注入
-	// config.upstream.stream_idle_seconds。
+	// IdleTimeout 流式空闲上限，0 = DefaultIdleTimeout。
+	// ⚠️ 目前**没有配置项**：config.Upstream 只有 timeout_seconds，main 也不注入，
+	// 实际生效值恒为 DefaultIdleTimeout（旧注释承诺的 stream_idle_seconds 从未实现）。
 	IdleTimeout time.Duration
 	// Base 网关基址（默认 APIBase）；测试注入 httptest 假上游用，生产不设。
 	Base string

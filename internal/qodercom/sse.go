@@ -6,7 +6,6 @@ package qodercom
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"wild-work/internal/loopguard"
+	"wild-work/internal/provider"
 )
 
 // parseNestedSSE 逐行解析嵌套 SSE，每个有效 chunk 调 onChunk。
@@ -275,14 +275,19 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[s
 	}, &truncated)
 	// 截断优先于 err：读错误（连接中断/超时）本身就体现为 err != nil，必须先把
 	// 已透传的半截流的收尾处理掉（发 error 帧、不补 [DONE]），再报错给调用方。
+	//
+	// 出口帧与错误文本都**保留原始原因**（R58）：此前无论什么原因都只报固定串
+	// "upstream stream truncated"，err 被丢弃 ⇒ 生产上分不清「空闲看门狗掐的」
+	// （连续无字节，疑似上游排队/卡死）与「上游主动断连 / 读到半个帧」。
+	// 空闲超时另给 code=upstream_timeout，其余仍为 upstream_truncated。
 	if truncated {
-		if _, werr := io.WriteString(w, "data: {\"error\":{\"message\":\"upstream stream truncated\",\"type\":\"upstream_error\",\"code\":\"upstream_truncated\"}}\n\n"); werr != nil {
+		if werr := provider.WriteTruncationFrame(w, err); werr != nil {
 			return usage, werr
 		}
 		if flush != nil {
 			flush()
 		}
-		return usage, errors.New("upstream stream truncated")
+		return usage, provider.TruncationError(err)
 	}
 	if err != nil {
 		return usage, err

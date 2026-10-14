@@ -719,8 +719,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						rt.Kind, acct.UID, clientModel, lge.Hit.Kind, lge.Hit.Reason)
 					return
 				}
-				// 上游中断/空流已尽力透传，错误仅在日志可见
-				log.Printf("stream relay end platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
+				// 上游中断/空流已尽力透传，错误仅在日志可见。
+				// 必须带耗时与 TTFB（R58）：只有这个数字能把几种原因分开——
+				// 耗时 ≈ 空闲阈值（idle.DefaultTimeout 300s / 各渠道 IdleReader 90s）
+				// 且 TTFB 远小于它 ⇒ 看门狗掐的；耗时远小于阈值 ⇒ 上游自己断的。
+				// 原先只记 err，两种完全同形，定位只能靠猜。
+				log.Printf("stream relay end platform=%s uid=%s model=%s elapsed=%.1fs ttfb=%dms err=%v",
+					rt.Kind, acct.UID, clientModel, time.Since(sw.start).Seconds(), sw.ttfbMs, serr)
 				// 流内业务错误（traework SOLO 的 event:error，如 3004 限流）：
 				// HTTP 200 与响应头早已发出，无法在同一请求内换号重试；唯一补救是把
 				// 中招账号冷却掉——下次请求挑号会自动换到别的账号（粘性路由见
