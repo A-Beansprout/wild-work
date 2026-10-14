@@ -182,6 +182,7 @@ type Snapshot struct {
 	Expiry          []ExpiryRow    `json:"expiry"`            // 最近临期（到期日升序）
 	Rotation        []RotationView `json:"rotation"`          // 使用中 / 接棒顺序
 	Abnormal        []AbnormalRow  `json:"abnormal"`          // 异常账号（无异常为空，前端隐藏区块）
+	Fallbacks       []FallbackEvent `json:"fallbacks"`        // 降级记录（最新在前；空 = 无事件，前端隐藏区块）
 	MilestoneTotal  int64          `json:"milestone_total"`
 	MilestoneCount  int            `json:"milestone_count"`
 	ToastQueue      []Toast        `json:"toasts"`
@@ -236,6 +237,8 @@ type Stats struct {
 	accts  map[string]*acct
 	sticky map[string]stickyInfo // platform -> 当前粘性账号
 	events map[string]int64      // 今日签到事件收入：uid|day -> 数额（事件口径，见 events.go）
+	// fallbacks 降级链事件环形（见 fallbacks.go；纯内存，重启清零，最新在尾部）。
+	fallbacks []*fbEv
 
 	creditInTotal  int64
 	creditOutTotal int64
@@ -883,6 +886,7 @@ func (s *Stats) Snapshot(now time.Time) Snapshot {
 		Expiry:          s.expiryRowsLocked(now),
 		Rotation:        s.rotationLocked(),
 		Abnormal:        s.abnormalRowsLocked(now),
+		Fallbacks:       s.fallbackRowsLocked(),
 		MilestoneTotal:  s.creditOutTotal,
 		MilestoneCount:  s.milestone,
 		ToastQueue:      toasts,

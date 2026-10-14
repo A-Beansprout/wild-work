@@ -1071,3 +1071,8 @@ body {
 /* 缓存利用率单元格（用量与流水 / 运行统计）：三态渲染见 app.js 的 cacheCell。
    有样本 → 等宽数字便于纵向比对；无样本 → 沿用 .muted 的「—」低对比显示。 */
 .cache-pct { font-variant-numeric: tabular-nums; }
+
+/* ---------- 降级记录（运行统计区块）：进行中事件高亮 + 实时计时 ---------- */
+.st-fbs tr.fb-active { background: #fffbeb; }
+.st-fbs .fb-live { color: var(--warn); font-weight: 600; white-space: nowrap; }
+.st-fbs .fb-arrow { color: var(--muted, #94a3b8); text-align: center; padding: 0 6px; }

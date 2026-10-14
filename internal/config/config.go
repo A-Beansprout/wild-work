@@ -151,6 +151,13 @@ type Config struct {
 	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
 	OczenAPIKey string `json:"oczen_api_key,omitempty"`
 
+	// ModelFallback 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account
+	// 的「模型全冷」形态）时，按 To 顺序找第一个仍有可用账号的备胎模型顶上，
+	// 响应头 X-Model-Fallback 标注实际使用的备胎。仅全冷场景触发，正常路由零开销；
+	// 不粘滞——每个请求都按原模型重新判定，上游解冻即自动切回。
+	// From/To 均为 "channel/model" 全路径；面板可视化编辑，保存走 POST /api/config/model_fallback。
+	ModelFallback []ModelFallbackRule `json:"model_fallback,omitempty"`
+
 	// Features 功能开关（面板「设置」可切换，默认全部开启）。
 	Features struct {
 		// LoopGuard 思考链死循环检测（发癫拦截）：流式生成中检测推理复读/空转，
@@ -164,6 +171,14 @@ type Config struct {
 	ErrCooldownDur time.Duration `json:"-"`
 	// ExpiringThresholdDur 临期阈值解析结果（normalize 里钳到 >= 24h）。
 	ExpiringThresholdDur time.Duration `json:"-"`
+}
+
+// ModelFallbackRule 单条模型降级规则：From（"channel/model" 全路径）在其渠道内
+// 全部账号上限流冷却时，按 To 顺序找第一个仍有可用账号的备胎模型顶上。
+// 约束：From 全局唯一；To 内不含 From（不自环）；To 至少一项。
+type ModelFallbackRule struct {
+	From string   `json:"from"`
+	To   []string `json:"to"`
 }
 
 // Default 默认配置。
