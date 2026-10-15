@@ -1089,3 +1089,12 @@ body {
 .st-fbs tr.fb-active { background: #fffbeb; }
 .st-fbs .fb-live { color: var(--warn); font-weight: 600; white-space: nowrap; }
 .st-fbs .fb-arrow { color: var(--muted, #94a3b8); text-align: center; padding: 0 6px; }
+
+/* ---------- 设置弹层内的模型查找入口（模型降级链 / 思考强度标题右侧） ----------
+   与首页 .panel-head h2 .search-btn 视觉同源（同高 24px、同圆角 6px），但带「查询模型」
+   文字，故宽度自适应；点击复用同一 #modelSearchOverlay 弹层（见 app.js 的 openModelSearch）。 */
+.cfg-heading .cfg-search-btn {
+  height: 24px; font-size: 12px; border-radius: 6px;
+  vertical-align: middle; margin-left: 6px; padding: 0 8px; line-height: 1;
+  white-space: nowrap; font-family: inherit; font-weight: 400;
+}

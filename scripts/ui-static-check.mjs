@@ -556,6 +556,29 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 设置弹层内的模型查找入口（模型降级链 / 思考强度标题右侧）----
+// 与 R34/R41 同族：「按钮存在但没接线」不报错，只表现为点了没反应，故静态锁住。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const need = [
+    ["两处 cfg-heading 各带一个 data-model-search 查找按钮",
+      (html.match(/data-model-search/g) || []).length === 2],
+    ["按钮文案含「🔍 查询模型」（与首页纯图标入口区分）",
+      (html.match(/🔍 查询模型/g) || []).length === 2],
+    ["模型降级链标题右侧有查找入口", /模型降级链[\s\S]{0,80}data-model-search/.test(html)],
+    ["思考强度标题右侧有查找入口", /思考强度[\s\S]{0,80}data-model-search/.test(html)],
+    ["app.js 统一接线 data-model-search → openModelSearch",
+      /querySelectorAll\("\[data-model-search\]"\)/.test(raw) && raw.includes("el.onclick = openModelSearch")],
+    ["style.css 有 .cfg-search-btn 样式（宽度自适应，与首页 search-btn 同源）",
+      css.includes(".cfg-heading .cfg-search-btn")],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 // ---- 自定义渠道（R66）：设置面板接线与样式 ----
 {
   const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");

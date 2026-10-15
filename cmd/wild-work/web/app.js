@@ -1932,6 +1932,11 @@ function bind() {
   $("btnRefreshFees").onclick = refreshFees;
   // 模型查找面板（纯前端）：入口按钮 + 关闭 + 输入即过滤 + 结果点击复制完整 ID。
   $("btnModelSearch").onclick = openModelSearch;
+  // 设置弹层内「模型降级链 / 思考强度」标题右侧的查找入口：与首页共用同一套弹层与渲染，
+  // 故只做入口接线（这些按钮在动态渲染的配置区之外，属静态 DOM，用属性选择器统一绑定）。
+  for (const el of document.querySelectorAll("[data-model-search]")) {
+    el.onclick = openModelSearch;
+  }
   $("modelSearchOverlay").onclick = (e) => { if (e.target === $("modelSearchOverlay")) closeModelSearch(); };
   $("modelSearchInput").oninput = (e) => renderModelSearch(e.target.value);
   $("modelSearchInput").onkeydown = (e) => { if (e.key === "Escape") closeModelSearch(); };
