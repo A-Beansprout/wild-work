@@ -825,6 +825,10 @@ func (a *App) pollLogin(ctx context.Context) {
 func (a *App) completeRaccoonLogin(r loginraccoon.Result) {
 	uid := strings.TrimSpace(jwtClaim(r.AccessToken, "name"))
 	if uid == "" {
+		// 新版（2026-10-15 上游迁站后）JWT 为标准 OIDC，无 name claim，用户标识在 sub。
+		uid = strings.TrimSpace(jwtClaim(r.AccessToken, "sub"))
+	}
+	if uid == "" {
 		uid = "default"
 	}
 	expiresAt := r.ExpiresAt
