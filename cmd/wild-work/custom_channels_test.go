@@ -18,7 +18,7 @@ func TestBuildCustomRuntimes(t *testing.T) {
 			Name:    "stepfun",
 			BaseURL: "https://api.stepfun.com/step_plan/v1",
 			APIKey:  "key-step",
-			Models:  []string{"step-5-preview"},
+			Models:  []custom.ModelConfig{{ID: "step-5-preview"}},
 			Enabled: &enabled,
 		},
 		{

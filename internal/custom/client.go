@@ -20,7 +20,7 @@ import (
 // Client 代理自定义 OpenAI 兼容上游的客户端，实现 provider.Upstream 接口。
 type Client struct {
 	cfg        ChannelConfig
-	HTTP       *http.Client // 带超时（120s），供非流式与元数据拉取
+	HTTP       *http.Client // 带超时（120s），供非流式
 	StreamHTTP *http.Client // 无超时，供长 SSE 流式（R35）
 }
 
@@ -164,77 +164,38 @@ func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
 	return resp, nil
 }
 
-// FetchModels 尝试从上游 GET /models 动态获取模型列表；失败时回退静态配置。
+// FetchModels 返回该渠道配置的模型列表。
+// 规则：用户配的是什么就返回什么，绝不向上游拉取，绝不做任何启发式推测。
 func (c *Client) FetchModels(_ *auth.Auth) ([]provider.ModelInfo, error) {
-	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/models"
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err == nil {
-		if c.cfg.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-		}
-		hc := c.HTTP
-		if hc == nil {
-			hc = &http.Client{Timeout: 10 * time.Second}
-		}
-		resp, err := hc.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			defer resp.Body.Close()
-			var data struct {
-				Data []struct {
-					ID               string   `json:"id"`
-					MaxInputTokens   int64    `json:"max_input_tokens"`
-					EnableVision     bool     `json:"enable_vision_input"`
-					EnableReason     bool     `json:"enable_reason"`
-					ReasoningEfforts []string `json:"reasoning_effort_support_list"`
-				} `json:"data"`
-			}
-			if json.NewDecoder(resp.Body).Decode(&data) == nil && len(data.Data) > 0 {
-				seen := map[string]bool{}
-				var models []provider.ModelInfo
-				for _, d := range data.Data {
-					id := strings.TrimSpace(d.ID)
-					if id != "" && !seen[id] {
-						seen[id] = true
-						mi := provider.ModelInfo{
-							ID:                id,
-							Name:              id,
-							ContextWindow:     d.MaxInputTokens,
-							SupportsImages:    d.EnableVision,
-							SupportsReasoning: d.EnableReason,
-							ReasoningEfforts:  provider.CleanEfforts(d.ReasoningEfforts),
-						}
-						models = append(models, mi)
-					}
-				}
-				for _, m := range c.cfg.Models {
-					m = strings.TrimSpace(m)
-					if m != "" && !seen[m] {
-						seen[m] = true
-						models = append(models, provider.ModelInfo{ID: m, Name: m})
-					}
-				}
-				if len(models) > 0 {
-					return models, nil
-				}
-			}
-		}
-	}
 	return c.StaticModels(), nil
 }
 
-// StaticModels 返回预配置的模型信息。
+// StaticModels 返回用户配置的模型信息（配什么返回什么，字段如实映射）。
 func (c *Client) StaticModels() []provider.ModelInfo {
-	var out []provider.ModelInfo
+	out := make([]provider.ModelInfo, 0, len(c.cfg.Models))
 	for _, m := range c.cfg.Models {
-		m = strings.TrimSpace(m)
-		if m != "" {
-			out = append(out, provider.ModelInfo{ID: m, Name: m})
+		if m.ID == "" {
+			continue
 		}
+		efforts := provider.CleanEfforts(m.ReasoningEfforts)
+		hasReasoning := m.SupportsReasoning || len(efforts) > 0 || m.DefaultReasoningEffort != ""
+		mi := provider.ModelInfo{
+			ID:                     m.ID,
+			Name:                   m.ID,
+			ContextWindow:          m.ContextWindow,
+			MaxTokens:              m.MaxTokens,
+			SupportsImages:         m.SupportsImages,
+			SupportsReasoning:      hasReasoning,
+			ReasoningEfforts:       efforts,
+			DefaultReasoningEffort: m.DefaultReasoningEffort,
+			SupportsTools:          true,
+		}
+		out = append(out, mi)
 	}
 	return out
 }
 
-// TestConnection 测试与上游的连通性并拉取可用模型列表。
+// TestConnection 测试与上游的连通性。
 func (c *Client) TestConnection() ([]string, error) {
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/models"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -272,7 +233,7 @@ func (c *Client) TestConnection() ([]string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// SSE 模型名回填器（对齐 oczen 既有实现，保证流式与非流式模型名一致）
+// SSE 模型名回填器
 // ---------------------------------------------------------------------------
 
 type modelRewriter struct {

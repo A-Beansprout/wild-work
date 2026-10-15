@@ -1351,14 +1351,14 @@ function renderCustomChList() {
     const offTag = isOff ? '<span class="tag neutral" style="margin-right:6px">已禁用</span>' : '<span class="tag ok" style="margin-right:6px">已启用</span>';
     const modelsText = (c.models && c.models.length > 0) ? c.models.join(", ") : "自动拉取";
     const keyMask = c.api_key ? (c.api_key.length > 8 ? c.api_key.slice(0, 3) + "…" + c.api_key.slice(-4) : "••••••") : "无密钥";
-    return `<div class="row proxy-row" style="align-items:center;margin-bottom:6px">
-      <span class="badge custom" style="margin-right:6px">${esc(c.name)}</span>
-      <span style="font-family:ui-monospace,monospace;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
-      <span class="hint" style="margin:0 6px" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
-      <span class="hint" style="margin:0 6px" title="模型列表: ${esc(modelsText)}">模型: ${esc(modelsText)}</span>
+    return `<div class="row proxy-row" style="align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:4px">
+      <span class="badge custom" style="margin-right:4px">${esc(c.name)}</span>
+      <span style="font-family:ui-monospace,monospace;font-size:12px;min-width:180px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
+      <span class="hint" style="margin:0 4px;white-space:nowrap" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
+      <span class="hint" style="margin:0 4px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="模型列表: ${esc(modelsText)}">模型: ${esc(modelsText)}</span>
       ${offTag}
-      <button class="btn small" data-test-custom="${i}" style="margin-right:4px">测试</button>
-      <button class="btn small" data-toggle-custom="${i}" style="margin-right:4px">${isOff ? "启用" : "停用"}</button>
+      <button class="btn small" data-test-custom="${i}" style="margin-right:2px">测试</button>
+      <button class="btn small" data-toggle-custom="${i}" style="margin-right:2px">${isOff ? "启用" : "停用"}</button>
       <button class="icon-btn" data-del-custom="${i}" title="删除该渠道">🗑</button>
     </div>`;
   }).join("");

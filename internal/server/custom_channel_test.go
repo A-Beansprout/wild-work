@@ -48,7 +48,7 @@ func TestCustomChannelChatCompletionsAndModels(t *testing.T) {
 		Name:    "stepfun",
 		BaseURL: upstreamServer.URL,
 		APIKey:  "test-key-123",
-		Models:  []string{"step-5-preview"},
+		Models:  []custom.ModelConfig{{ID: "step-5-preview"}},
 	}
 	customClient := custom.New(chCfg)
 
@@ -124,7 +124,7 @@ func TestCustomChannelChatCompletionsAndModels(t *testing.T) {
 	c2 := custom.New(custom.ChannelConfig{
 		Name:    "cliproxy",
 		BaseURL: upstreamServer.URL,
-		Models:  []string{"gemini-3.8-flash-high"},
+		Models:  []custom.ModelConfig{{ID: "gemini-3.8-flash-high"}},
 	})
 	h.SetCustomRuntimes(map[provider.Kind]*Runtime{
 		provider.Kind("cliproxy"): {
