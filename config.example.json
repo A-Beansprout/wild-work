@@ -31,6 +31,7 @@
     }
   },
   "backup_proxy": "",
+  "reasoning_efforts": {},
   "features": {
     "loop_guard": true
   }

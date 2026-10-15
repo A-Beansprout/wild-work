@@ -170,6 +170,13 @@ type Config struct {
 	// From/To 均为 "channel/model" 全路径；面板可视化编辑，保存走 POST /api/config/model_fallback。
 	ModelFallback []ModelFallbackRule `json:"model_fallback,omitempty"`
 
+	// ReasoningEfforts 思考强度注入映射：客户端请求体**未带** reasoning_effort 键时，
+	// 按请求模型 ID（"channel/model" 全路径）注入配置档位；`*` 为全局默认（精确未命中时回退）。
+	// 键已存在（任意值含 null，客户端显式意图）一律不碰；未配置（空 map）= 零开销直通。
+	// 哑管道：不校验档位取值合法性，上游吃什么档位由渠道模型自己说了算。
+	// 面板可视化编辑，保存走 POST /api/config/reasoning_efforts。
+	ReasoningEfforts map[string]string `json:"reasoning_efforts,omitempty"`
+
 	// Features 功能开关（面板「设置」可切换，默认全部开启）。
 	Features struct {
 		// LoopGuard 思考链死循环检测（发癫拦截）：流式生成中检测推理复读/空转，
