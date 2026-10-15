@@ -524,8 +524,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 统计/流水的归一 ID：新旧写法（cline-free/x 与 cline/cline-free/x）归一到同一串，
 	// 否则同一模型会在用量榜/请求日志里裂成两行（R59）；其余渠道为恒等变换。
 	canonModel := provider.CanonicalModelID(clientModel)
-	// 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account 的「模型全冷」
-	// 形态，pickWithSticky 必败）时，按用户配置的链找第一个仍有可用账号的备胎模型顶上。
+	// 模型降级链：请求模型在本渠道已无账号可承载（no_healthy_account 的两种形态——
+	// 「模型全冷」或「整渠道全灭」，pickWithSticky 必败）时，按用户配置的链找第一个
+	// 仍有可用账号的备胎模型顶上；备胎可跨渠道，渠道全灭时不至于直接 503。
 	// 仅此场景触发，正常路由零开销；不粘滞——每个请求都按原模型重新判定，上游解冻即自动切回。
 	// fbApplied=实际备胎全路径（用于把响应 model 字段/X-Model-Fallback 头告知 agent）；
 	// dispModel=写进响应的模型名（无降级=客户端请求名，保持官方「回填请求名」语义；降级=备胎全路径，
@@ -1037,11 +1038,13 @@ func modelHasCapacity(rt *Runtime, model string) bool {
 	return avail
 }
 
-// pickModelFallback 模型降级链解析：仅当请求模型在自身渠道全部账号上限流冷却
-// （存在健康账号但 modelHasCapacity 全否，同 no_healthy_account「模型全冷」分支口径）
-// 时，按规则顺序（规则间按配置顺序、链内按 To 顺序）找第一个有容量的备胎模型
-// 全路径 ID；无规则/无可用备胎返回空串。备胎允许跨渠道（To 为 "channel/model"
-// 全路径，经 runtimeForModel 解析）。
+// pickModelFallback 模型降级链解析：请求模型在本渠道已无账号可承载时
+// （两种形态——①「模型全冷」：渠道内有健康账号，但该模型在全部账号上处于
+// 模型级限流冷却；②「整渠道全灭」：渠道内已无任何健康账号，含全部禁用与
+// pool 的「多模型接连限流升级整号冷却」）时，按规则顺序（规则间按配置顺序、
+// 链内按 To 顺序）找第一个有容量的备胎模型全路径 ID；无规则/无可用备胎返回空串。
+// 备胎允许跨渠道（To 为 "channel/model" 全路径，经 runtimeForModel 解析）——
+// 整渠道全灭时正需要跨渠道备胎顶上，而非直接 503。
 //
 // 第二返回值 primaryAvail = 「原模型此刻有可用账号」，与降级与否无关，只给恢复探针用：
 // 旧实现「未降级就算恢复」会把两种情形谎报成已恢复——① 原模型仍全冷但备胎也没容量，
@@ -1055,13 +1058,12 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
 	if len(rules) == 0 {
 		return "", false
 	}
-	hasHealthy, avail := runtimeCapacity(rt, model)
+	_, avail := runtimeCapacity(rt, model)
 	if avail {
 		return "", true // 未全冷：走原路由，并告知探针「容量已在」
 	}
-	if !hasHealthy {
-		return "", false // 整渠道无健康账号：交原报错分支给针对性提示
-	}
+	// 注意：此处不再因「本渠道无健康账号」提前返回——渠道全灭同样是可降级信号，
+	// 继续往下遍历规则；链路里落在同渠道的备胎会被 modelHasCapacity 自然跳过。
 	for _, rule := range rules {
 		// 规则里的 from 与请求模型都要按同一套 ID 解析（R59：cline 的 `cline-free/x`
 		// 与旧写法 `cline/cline-free/x` 必须都能命中同一条规则）。
