@@ -551,6 +551,30 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 自定义渠道（R66）：设置面板接线与样式 ----
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
+  const need = [
+    ["设置弹层有自定义渠道编辑区", html.includes('id="customChList"') && html.includes('id="inCustomName"') && html.includes('id="inCustomURL"')],
+    ["app.js 接线自定义渠道测试/添加/保存按钮", raw.includes('$("btnCustomTest").onclick') && raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
+    ["app.js 调 POST /api/config/custom_channels", raw.includes('"/api/config/custom_channels"')],
+    ["app.js 调 POST /api/config/custom_channel_test", raw.includes('"/api/config/custom_channel_test"')],
+    ["openSettings 从 state.custom_channels 初始化编辑态", /editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
+    // 内建同名拒绝（R66）：前后端各自守一道——前端给即时反馈，后端 Validate 会拒。
+    ["前端有内建渠道名保留集（防与内建同名）", raw.includes("RESERVED_CHANNEL_NAMES") && raw.includes('"workbuddy"') && raw.includes('"cline-free"')],
+    ["后端拒绝内建同名的文案已在 hint 写清", html.includes("不得与内建渠道同名")],
+    // 测试按钮必须带 name（否则脱敏回显态的 api_key 无法在后端找回真实密钥，恒 401）
+    ["自定义渠道测试请求携带 name（后端子据以找回被脱敏的真实 api_key）",
+      /custom_channel_test[\s\S]{0,90}name[:,]/.test(raw)],
+    ["style.css 有自定义渠道徽章颜色", css.includes(".badge.custom")],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 

@@ -44,6 +44,24 @@ const (
 
 func (k Kind) String() string { return string(k) }
 
+// BuiltinKinds 本仓内建渠道集合（R66）。
+//
+// 用于拒绝自定义渠道占用内建渠道名：两者同名时两层会指向不同 Runtime
+// （server 侧 getRuntime 内建优先，而 app 侧 UpdateCustomRuntimes 无条件覆盖），
+// 表现为「面板/账号操作打到自定义池、对话请求走内建渠道」——不报错但静默出错。
+// 同时排除 ModelNamespaces 里的上游命名空间（如 cline-free），以免路由歧义。
+func BuiltinKinds() map[string]bool {
+	m := map[string]bool{}
+	for _, k := range []Kind{WorkBuddy, WorkBuddyAI, TraeWork, Qoder, QoderCN, QoderCOM,
+		QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline} {
+		m[k.String()] = true
+	}
+	for ns := range ModelNamespaces {
+		m[ns] = true
+	}
+	return m
+}
+
 // ModelNamespaces 声明「上游 ID 自带命名空间」的渠道：命名空间前缀 → 渠道 kind。
 //
 // 这类渠道对客户端**直接透传上游 ID**，不再拼 `<kind>/` 前缀（决议 R59，首例为 cline 免费档：

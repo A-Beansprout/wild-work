@@ -32,6 +32,8 @@
   },
   "backup_proxy": "",
   "reasoning_efforts": {},
+  "model_fallback": [],
+  "custom_channels": [],
   "features": {
     "loop_guard": true
   }

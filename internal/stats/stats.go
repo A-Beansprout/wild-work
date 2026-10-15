@@ -561,14 +561,31 @@ func (s *Stats) expiryRowsLocked(now time.Time) []ExpiryRow {
 // 用于把模型名 "<渠道>/<模型>" 归属到平台行。新增渠道须同步此表——遗漏会让该渠道
 // 的 token 不进平台表；不在表内（含无前缀的裸模型名——那类请求由 compat 层映射，
 // 本地看不到真实渠道）一律不归属，宁可少计也不误计。
-var channelKind = map[string]bool{
-	string(provider.WorkBuddy): true, string(provider.WorkBuddyAI): true,
-	string(provider.TraeWork): true, string(provider.TraeCode): true,
-	string(provider.Qoder): true, string(provider.QoderCN): true, string(provider.QoderCOM): true,
-	string(provider.QwenWork): true, string(provider.MonkeyCode): true,
-	string(provider.Raccoon): true, string(provider.Loomy): true,
-	string(provider.Oczen): true, string(provider.GLM): true,
-	string(provider.Cline): true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
+var (
+	channelKindMu sync.RWMutex
+	channelKind   = map[string]bool{
+		string(provider.WorkBuddy): true, string(provider.WorkBuddyAI): true,
+		string(provider.TraeWork): true, string(provider.TraeCode): true,
+		string(provider.Qoder): true, string(provider.QoderCN): true, string(provider.QoderCOM): true,
+		string(provider.QwenWork): true, string(provider.MonkeyCode): true,
+		string(provider.Raccoon): true, string(provider.Loomy): true,
+		string(provider.Oczen): true, string(provider.GLM): true,
+		string(provider.Cline): true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
+	}
+)
+
+// RegisterChannelKind 注册动态/自定义渠道前缀（R66），使其 token 与请求进平台概览表。
+func RegisterChannelKind(k string) {
+	channelKindMu.Lock()
+	defer channelKindMu.Unlock()
+	channelKind[k] = true
+}
+
+// IsKnownChannel 检查渠道前缀是否已知。
+func IsKnownChannel(k string) bool {
+	channelKindMu.RLock()
+	defer channelKindMu.RUnlock()
+	return channelKind[k]
 }
 
 // traeKinds 为 Trae 系渠道集合（TraeWork + TraeCode 共用账号与积分池——上游只为

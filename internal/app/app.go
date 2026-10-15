@@ -22,6 +22,7 @@ import (
 	"wild-work/internal/backuplink"
 	"wild-work/internal/cline"
 	"wild-work/internal/config"
+	"wild-work/internal/custom"
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
 	"wild-work/internal/login_glm"
@@ -69,6 +70,9 @@ type Runtime struct {
 	// uid → 账号反查）必须跳过别名渠道，否则同一账号会被计入两次（见 issue #36）。
 	// 别名渠道仍保留独立的模型/费率抓取（各自 upstream 的 function 不同）。
 	Alias bool
+
+	// Custom 标记该渠道为用户自定义 OpenAI 兼容第三方渠道（R66）。
+	Custom bool
 }
 
 // Options 构建 App 的依赖。
@@ -83,11 +87,17 @@ type Options struct {
 
 // App 应用编排。
 type App struct {
-	cfgPath  string
-	cfg      *config.Config
-	runtimes map[provider.Kind]*Runtime
-	handler  *server.Handler // 内层（保留强类型，用于 SetAPIKey/ChannelModels 等）
-	httpRoot http.Handler    // 对外暴露的根 handler，可能为外层兼容层 mux（见 SetRootHandler）
+	cfgPath string
+	cfg     *config.Config
+	// runtimes 渠道运行时表。启动时装配完成，此后仅在「面板保存自定义渠道」时
+	// 经 UpdateCustomRuntimes 增删（R66）——这是唯一一处 post-init 写。
+	// 读写一律经 runtimesMu 保护：后台统计喂入器（30s ticker）与 /api/state 轮询
+	// 都会遍历此表，若不加锁，与保存操作重叠时即 Go 的
+	// `fatal error: concurrent map read and map write`（不可 recover，daemon 直接死）。
+	runtimes   map[provider.Kind]*Runtime
+	runtimesMu sync.RWMutex
+	handler    *server.Handler // 内层（保留强类型，用于 SetAPIKey/ChannelModels 等）
+	httpRoot   http.Handler    // 对外暴露的根 handler，可能为外层兼容层 mux（见 SetRootHandler）
 
 	mu         sync.Mutex // 保护 httpSrv / cfg 修改
 	httpSrv    *http.Server
@@ -131,6 +141,10 @@ type App struct {
 	// efSyncer 面板保存思考强度映射后推给 server.Handler（热更新注入表）。
 	// 由 main.go 注入；nil 时仅写配置不热更。
 	efSyncer func(efforts map[string]string)
+
+	// customSyncer 面板保存自定义渠道后热更新（R66）。
+	// 由 main.go 注入；nil 时仅写配置不热更。
+	customSyncer func(channels []custom.ChannelConfig)
 
 	refreshMu  sync.Mutex // 防并发刷新积分
 	refreshing bool
@@ -261,10 +275,24 @@ func (a *App) Ledger() *ledger.Ledger { return a.ledger }
 func (a *App) Stats() *statsEngine.Stats { return a.stats }
 
 func (a *App) runtime(kind provider.Kind) *Runtime {
+	a.runtimesMu.RLock()
+	defer a.runtimesMu.RUnlock()
 	if a.runtimes == nil {
 		return nil
 	}
 	return a.runtimes[kind]
+}
+
+// runtimesSnapshot 返回运行时表的浅拷贝（调用方据此遍历，期间不受热更新影响）。
+// 热更新只增删 map 键、不修改 Runtime 本体，故拷贝元素指针安全。
+func (a *App) runtimesSnapshot() []*Runtime {
+	a.runtimesMu.RLock()
+	defer a.runtimesMu.RUnlock()
+	out := make([]*Runtime, 0, len(a.runtimes))
+	for _, rt := range a.runtimes {
+		out = append(out, rt)
+	}
+	return out
 }
 
 func (a *App) firstRuntime() *Runtime {
@@ -280,7 +308,7 @@ func (a *App) firstRuntime() *Runtime {
 
 func (a *App) totalAccounts() int {
 	n := 0
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		if rt != nil && rt.Pool != nil && !rt.Alias {
 			n += len(rt.Pool.List())
 		}
@@ -290,7 +318,7 @@ func (a *App) totalAccounts() int {
 
 func (a *App) allStatuses() []pool.Status {
 	out := []pool.Status{}
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		// 别名渠道（TraeCode）复用同一 Pool：计入会导致每个账号重复一条（issue #36）。
 		if rt != nil && rt.Pool != nil && !rt.Alias {
 			out = append(out, rt.Pool.List()...)
@@ -339,27 +367,79 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 //   - oczen：匆名通道，根本没有账号/余额概念；
 //   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
 //     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
-func creditsNAKind(group string) bool {
-	return group == provider.Oczen.String() || group == provider.Cline.String()
+//   - 自定义渠道（R66）：无积分与额度接口，同样走 NA。
+func (a *App) creditsNAKind(group string) bool {
+	if group == provider.Oczen.String() || group == provider.Cline.String() {
+		return true
+	}
+	return a.isCustomChannel(group)
 }
 
-// noExplicitCheckinKinds 不支持显式签到（手动按钮）的渠道。
+// isCustomChannel 报告该分组名是否是自定义渠道。先查运行时表（热更新后的权威态），
+// 再回退查配置（供应器未装配/已停用的渠道）。
+// 两把锁分开取：runtimesMu 只管运行时表，a.mu 只管 cfg——不可与外层已持 a.mu 的调用嵌套。
+func (a *App) isCustomChannel(group string) bool {
+	a.runtimesMu.RLock()
+	rt := a.runtimes[provider.Kind(group)]
+	a.runtimesMu.RUnlock()
+	if rt != nil && rt.Custom {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, cc := range a.cfg.CustomChannels {
+		if strings.EqualFold(cc.Name, group) {
+			return true
+		}
+	}
+	return false
+}
+
+// UpdateCustomRuntimes 热更新 app 持有的自定义渠道运行时（R66）。
+// 只碰 runtimes 表（不读 cfg），故用 runtimesMu 而非 a.mu。
+func (a *App) UpdateCustomRuntimes(customRts map[provider.Kind]*Runtime) {
+	a.runtimesMu.Lock()
+	defer a.runtimesMu.Unlock()
+	for k, rt := range a.runtimes {
+		if rt != nil && rt.Custom {
+			delete(a.runtimes, k)
+		}
+	}
+	for k, rt := range customRts {
+		rt.Custom = true
+		a.runtimes[k] = rt
+	}
+}
+
+// SetCustomChannelsSyncer 注入自定义渠道热更新回调。
+func (a *App) SetCustomChannelsSyncer(fn func(channels []custom.ChannelConfig)) {
+	a.customSyncer = fn
+}
+
+// noExplicitCheckin 不支持显式签到（手动按钮）的渠道。
 // WorkBuddy 国际版改为定时自动对话保活并领取日活奖励（详见 workbuddyai.DailyCheckin），
 // 无需用户手动触发，故也不提供手动签到入口；
 // 千问办公无签到活动且每日积分服务端被动发放，无需领取/保活。
 // QoderCN/QoderCOM 已实现 campaigns 签到，支持手动按钮（上游同一套机制）。
 // 智谱清言已实现 activity-api 每日签到，支持手动按钮。
-// 小浣熊已实现 setting_info 触发每日积分落账（见 internal/raccoon/checkin.go），支持手动按钮。
+// 小浣熊已实现 setting_info 触发每日积分落账（见 internal/raccoon/checkin.go，R65），支持手动按钮。
 // MonkeyCode 一期也不提供手动签到：上游未提供额度或签到端点。
 // Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
 // Cline 走官方 API Key：无签到活动、Key 不过期 ⇒ 既不需手动签到也不需保活。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
+// noExplicitCheckin 不支持显式签到（手动按钮）的渠道。
+// 自定义渠道无签到活动（R66）；内建名单固定，故抽成无状态的包级函数（可脱离 App 断言），
+// 方法体仅补上「是否自定义渠道」这一动态判定。
 func noExplicitCheckin(k provider.Kind) bool {
 	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Cline
 }
 
+func (a *App) noExplicitCheckinKind(k provider.Kind) bool {
+	return noExplicitCheckin(k) || a.isCustomChannel(k.String())
+}
+
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		// 跳过别名渠道：map 遍历无序，若命中 TraeCode 会拿到错误 upstream（function=solo_agent），
 		// 且 accountGroup 会误报 traecode；账号级操作一律归主渠道（TraeWork）。
 		if rt == nil || rt.Pool == nil || rt.Alias {
@@ -1351,7 +1431,7 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 	if rt == nil || rt.Scheduler == nil {
 		return scheduler.CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
-	if noExplicitCheckin(rt.Kind) {
+	if a.noExplicitCheckinKind(rt.Kind) {
 		if rt.Kind == provider.WorkBuddyAI {
 			return scheduler.CheckinResult{}, fmt.Errorf("workbuddyai 渠道无需手动签到，已定时自动领取日活奖励")
 		}
@@ -1369,12 +1449,12 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 // CheckinAll 全部账号立即签到。
 func (a *App) CheckinAll() []scheduler.CheckinResult {
 	results := make([]scheduler.CheckinResult, 0)
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		// 别名渠道复用同一 Pool 且无独立 Scheduler：计入会重复签到同一批账号。
 		if rt == nil || rt.Pool == nil || rt.Scheduler == nil || rt.Alias {
 			continue
 		}
-		if noExplicitCheckin(rt.Kind) { // 无签到活动渠道，跳过
+		if a.noExplicitCheckinKind(rt.Kind) { // 无签到活动渠道，跳过
 			continue
 		}
 		for _, st := range rt.Pool.List() {
@@ -1616,7 +1696,7 @@ func (a *App) RefreshAll() RefreshSummary {
 		a.refreshMu.Unlock()
 	}()
 	sum := RefreshSummary{Platforms: map[string]PlatformSummary{}}
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		// 别名渠道复用同一 Pool：计入会重复刷新同一批账号。
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Alias {
 			continue
@@ -1687,6 +1767,15 @@ func (a *App) RemoveAccount(uid string) error {
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可删除")
 	}
+	if rt.Custom {
+		var next []custom.ChannelConfig
+		for _, cc := range a.cfg.CustomChannels {
+			if !strings.EqualFold(cc.Name, rt.Kind.String()) {
+				next = append(next, cc)
+			}
+		}
+		return a.SetCustomChannels(next)
+	}
 	if au.FilePath != "" {
 		_ = os.Remove(au.FilePath)
 	}
@@ -1705,6 +1794,17 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 	}
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可停用/启用")
+	}
+	if rt.Custom {
+		var next []custom.ChannelConfig
+		for _, cc := range a.cfg.CustomChannels {
+			if strings.EqualFold(cc.Name, rt.Kind.String()) {
+				en := !disabled
+				cc.Enabled = &en
+			}
+			next = append(next, cc)
+		}
+		return a.SetCustomChannels(next)
 	}
 	rt.Pool.SetDisabled(uid, disabled)
 	if disabled {
@@ -1756,7 +1856,7 @@ func (a *App) SetCheckinTimes(times []string) error {
 	if err != nil {
 		return err
 	}
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		if rt != nil && rt.Scheduler != nil {
 			rt.Scheduler.SetCheckinMinutes(clean)
 		}
@@ -1913,6 +2013,82 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d model_map=%d 条",
 		defaultChannel, maxTokensCap, len(modelMap))
 	return nil
+}
+
+// SetCustomChannels 保存并热更新自定义渠道配置（R66）。
+//
+// api_key 脱敏回写处理（同 oczen key）：面板回显的是脱敏值（含 …）。
+// 用户没改动过某个渠道的 key 时，提交回来的仍是脱敏串——若原样落盘，
+// 就会把真实密钥换成「sk-abc…wxyz」这种废值。故此处对每个渠道：
+// 提交值含 「…」 则视为未修改，从现有配置按渠道名找回真实密钥。
+func (a *App) SetCustomChannels(channels []custom.ChannelConfig) error {
+	seen := map[string]bool{}
+	for i := range channels {
+		if strings.Contains(channels[i].APIKey, "…") { // 脱敏形态 = 未改动，保留现值
+			channels[i].APIKey = ""
+		}
+		if err := channels[i].Validate(); err != nil {
+			return err
+		}
+		if seen[channels[i].Name] {
+			return fmt.Errorf("重复的渠道标识 %q", channels[i].Name)
+		}
+		seen[channels[i].Name] = true
+	}
+	a.mu.Lock()
+	// 找回被提交为脱敏形态的密钥（按渠道名匹配现值）
+	prev := map[string]string{}
+	for _, cc := range a.cfg.CustomChannels {
+		prev[strings.ToLower(cc.Name)] = cc.APIKey
+	}
+	for i := range channels {
+		if channels[i].APIKey == "" {
+			if k := prev[channels[i].Name]; k != "" {
+				channels[i].APIKey = k
+			}
+		}
+	}
+	a.cfg.CustomChannels = channels
+	err := config.Save(a.cfg, a.cfgPath)
+	syncer := a.customSyncer
+	a.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("保存配置失败：%w", err)
+	}
+	if syncer != nil {
+		syncer(channels)
+	}
+	log.Printf("自定义渠道配置已更新：共 %d 个渠道", len(channels))
+	return nil
+}
+
+// resolveCustomKey 按渠道名取真实 api_key（供脱敏回显时的测试与保存路径使用）。
+// 名称为空（面板新增渠道时只填了 URL/Key）则返回空串，交由调用方自行处理。
+func (a *App) resolveCustomKey(name string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, cc := range a.cfg.CustomChannels {
+		if strings.EqualFold(cc.Name, name) {
+			return cc.APIKey
+		}
+	}
+	return ""
+}
+
+// maskCustomChannels 返回配置的深拷贝，并将 api_key 脱敏（非空时仅露首 3 + 尾 4）。
+// 脱敏串保留 「…」 标记，供 SetCustomChannels 识别「未改动」。
+func maskCustomChannels(in []custom.ChannelConfig) []custom.ChannelConfig {
+	out := make([]custom.ChannelConfig, 0, len(in))
+	for _, cc := range in {
+		if cc.APIKey != "" {
+			cc.APIKey = maskKey(cc.APIKey)
+		}
+		if cc.Models != nil {
+			cc.Models = append([]custom.ModelConfig(nil), cc.Models...)
+		}
+		out = append(out, cc)
+	}
+	return out
 }
 
 // SetCompatSyncer 注入 compat 热更新回调（由 main.go 注入，指向 gateway.SetCompat）。
@@ -2210,6 +2386,9 @@ type State struct {
 
 	// ReasoningEfforts 思考强度注入映射（键=模型 ID 或 `*` 全局默认；保存走 POST /api/config/reasoning_efforts）。
 	ReasoningEfforts map[string]string `json:"reasoning_efforts"`
+
+	// CustomChannels 自定义第三方渠道列表（保存走 POST /api/config/custom_channels，R66）。
+	CustomChannels []custom.ChannelConfig `json:"custom_channels"`
 }
 
 // GetState 返回面板初始数据。
@@ -2254,14 +2433,19 @@ func (a *App) GetState() State {
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
 	}
-	for k := range a.runtimes {
-		st.Compat.Channels = append(st.Compat.Channels, k.String())
+	for _, rt := range a.runtimesSnapshot() {
+		if rt != nil {
+			st.Compat.Channels = append(st.Compat.Channels, rt.Kind.String())
+		}
 	}
 	sort.Strings(st.Compat.Channels)
 	st.BackupProxy = a.cfg.BackupProxy
 	st.BackupProxyActive = backuplink.Enabled()
 	// oczen key 脱敏回显：仅露首 5 + 尾 4（空则原样空串）
 	st.OczenAPIKey = maskKey(a.cfg.OczenAPIKey)
+	// 自定义渠道路由的 api_key 同样脱敏回显（不把上游密钥明文送进面板载荷）。
+	// 返回深拷贝而非配置引用，避免调用方意外改写配置。
+	st.CustomChannels = maskCustomChannels(a.cfg.CustomChannels)
 	st.Accounts = a.accountViews()
 	return st
 }
@@ -2279,8 +2463,8 @@ func (a *App) accountViews() []AccountView {
 			ExpiringCredits: s.ExpiringCredits,
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
-			// 匿名渠道无积分：前端据此显示「不适用」
-			CreditsNA:      creditsNAKind(group),
+			// 匿名与自定义渠道无积分：前端据此显示「不适用」
+			CreditsNA:      a.creditsNAKind(group),
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,
@@ -2726,6 +2910,43 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": status == 200 || status == 429, "status": status, "body": body, "via_backup": via})
 	})
+	mux.HandleFunc("POST /api/config/custom_channels", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Channels []custom.ChannelConfig `json:"channels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "解析请求失败："+err.Error())
+			return
+		}
+		if err := a.SetCustomChannels(req.Channels); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channels": a.cfg.CustomChannels})
+	})
+	mux.HandleFunc("POST /api/config/custom_channel_test", func(w http.ResponseWriter, r *http.Request) {
+		var req custom.ChannelConfig
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "解析请求失败："+err.Error())
+			return
+		}
+		if req.BaseURL == "" {
+			apiError(w, http.StatusBadRequest, "base_url 不能为空")
+			return
+		}
+		// 面板回显的 api_key 是脱敏值（含 …）：测试未改动过的渠道时必须用真实密钥，
+		// 否则测试恒报 401（与 #117 的「探针没走同一条链路」同类）。
+		if strings.Contains(req.APIKey, "…") {
+			req.APIKey = a.resolveCustomKey(req.Name)
+		}
+		client := custom.New(req)
+		models, err := client.TestConnection()
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
+	})
 	mux.HandleFunc("POST /api/account/nickname", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID      string `json:"uid"`
@@ -2757,7 +2978,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		// enrich：uid → 昵称/渠道（查 pool 状态，仅一次遍历）
 		nameOf := map[string]string{}
 		chOf := map[string]string{}
-		for _, rt := range a.runtimes {
+		for _, rt := range a.runtimesSnapshot() {
 			if rt == nil || rt.Pool == nil || rt.Alias {
 				continue
 			}
@@ -2894,6 +3115,27 @@ type feesModelRow struct {
 	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"`
 }
 
+// feeChannelOrderWithDynamic 返回费率表渠道顺序：静态 feeChannelOrder + 未登记的动态渠道
+// （自定义渠道，R66）追加到末尾（按名排序）。仅当 modelsByKind 里确有该渠道的模型时
+// 才追加，避免空渠道占位。
+func feeChannelOrderWithDynamic(modelsByKind map[provider.Kind][]provider.ModelInfo) []provider.Kind {
+	seen := make(map[provider.Kind]bool, len(feeChannelOrder))
+	for _, k := range feeChannelOrder {
+		seen[k] = true
+	}
+	var extra []provider.Kind
+	for k, infos := range modelsByKind {
+		if !seen[k] && len(infos) > 0 {
+			extra = append(extra, k)
+		}
+	}
+	if len(extra) == 0 {
+		return feeChannelOrder
+	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i] < extra[j] })
+	return append(append([]provider.Kind{}, feeChannelOrder...), extra...)
+}
+
 // buildFeesChannels 以「渠道 models 列表」为基准组表：
 //   - 每个渠道的模型行来自该渠道当前生效的 models（与 /v1/models 同源）；
 //   - 再用该渠道费率接口返回的 model→rate 映射逐行填充；
@@ -2999,8 +3241,12 @@ func (a *App) FeesInfo() map[string]any {
 		go a.safeGo(func() { a.RefreshPricing() })
 	}
 
-	// 展示顺序固定（见 feeChannelOrder；旧 Qoder 跳过）
-	channels := buildFeesChannels(modelsByKind, cached, feeChannelOrder)
+	// 展示顺序固定（见 feeChannelOrder；旧 Qoder 跳过），**末尾追加动态自定义渠道**（R66）。
+	// 必须追加：feeChannelOrder 是静态表，自定义渠道不在其中，若不追加则
+	// 面板费率表永远不出现该渠道 tab（buildFeesChannels 只遍历传入的 order）——
+	// 这与 /v1/models、用量流水、运行统计的可见性不一致。按渠道名排序保证稳定顺序。
+	order := feeChannelOrderWithDynamic(modelsByKind)
+	channels := buildFeesChannels(modelsByKind, cached, order)
 
 	result := map[string]any{
 		"note":       "本表以各渠道实际可用模型列表为准；倍率为空的模型表示上游未返回定价（未知）。",
@@ -3043,7 +3289,7 @@ func (a *App) RefreshPricing() {
 	allPricing := make([]provider.ModelPricing, 0)
 	var errs []string
 
-	for _, rt := range a.runtimes {
+	for _, rt := range a.runtimesSnapshot() {
 		// 旧 Qoder 渠道已从界面下线：不再自动刷新其模型/费率（也避免无谓的 token refresh 报错日志）
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Kind == provider.Qoder || len(rt.Pool.List()) == 0 {
 			continue

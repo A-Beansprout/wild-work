@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"wild-work/internal/backuplink"
+	"wild-work/internal/custom"
 )
 
 // Listen 监听地址：Host 为空表示全部接口。
@@ -183,6 +184,9 @@ type Config struct {
 		// 命中即中断 SSE 并返回错误，由下游 agent 自行重试。默认 true。
 		LoopGuard bool `json:"loop_guard"`
 	} `json:"features"`
+
+	// CustomChannels 自定义第三方 OpenAI 兼容渠道列表（R66）。
+	CustomChannels []custom.ChannelConfig `json:"custom_channels,omitempty"`
 
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
@@ -490,6 +494,17 @@ func (c *Config) normalize() error {
 				c.Schedule.CheckinHours = append(c.Schedule.CheckinHours, m/60)
 			}
 		}
+	}
+	seenCustom := map[string]bool{}
+	for i := range c.CustomChannels {
+		ch := &c.CustomChannels[i]
+		if err := ch.Validate(); err != nil {
+			return fmt.Errorf("custom_channels[%d]: %w", i, err)
+		}
+		if seenCustom[ch.Name] {
+			return fmt.Errorf("custom_channels[%d]: duplicate channel name %q", i, ch.Name)
+		}
+		seenCustom[ch.Name] = true
 	}
 	return nil
 }
