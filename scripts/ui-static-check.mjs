@@ -96,7 +96,8 @@ const patched =
       { model: "deepseek-v4", priced: false, rate: 0, free: false, has_context: false },
       { model: "muse-free", priced: true, rate: 0, free: true, has_context: true, context_window: 128000 },
     ] },
-    // 溢出场景：另 12 个 qwen* 模型，与 qodercn/qwen3.8-flash 合并共 13 条命中 > 上限 12
+    // 溢出场景：另 12 个 qwen* 模型，与 qodercn/qwen3.8-flash 合并共 13 条命中，
+    // 用于验证「命中数超过旧上限 12」时仍全量渲染（结果不再截断，改由列表滚动展示）
     { channel: "loomy", models: Array.from({ length: 12 }, (_, i) =>
       ({ model: `qwen-bulk-${i}`, priced: true, rate: 0.1, free: false, has_context: false })) },
     // 上游 ID 自带命名空间的渠道（cline 免费档）：完整 ID 取服务端给的 id
