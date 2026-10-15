@@ -572,6 +572,10 @@ for (const [label, re] of uniq) {
       /querySelectorAll\("\[data-model-search\]"\)/.test(raw) && raw.includes("el.onclick = openModelSearch")],
     ["style.css 有 .cfg-search-btn 样式（宽度自适应，与首页 search-btn 同源）",
       css.includes(".cfg-heading .cfg-search-btn")],
+    // 只断言选择器存在会给假绿：本按钮带 .icon-btn（width:30px 纯图标尺寸），
+    // 规则里漏写 width 时标签会挣出边框盒（实测 30px 盒 / 68px 文字 / overflow 默认 visible）。
+    ["该规则显式声明 width:auto（覆盖 .icon-btn 的 30px）",
+      /\.cfg-heading \.cfg-search-btn \{[^}]*\bwidth:\s*auto/.test(css)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
