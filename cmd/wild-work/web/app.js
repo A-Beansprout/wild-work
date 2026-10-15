@@ -1309,7 +1309,7 @@ function renderFbList() {
       `<span class="fb-to" style="display:inline-flex;align-items:center;gap:2px;background:var(--card,#f5f5f5);border:1px solid var(--line,#ddd);border-radius:10px;padding:1px 7px;margin:0 3px;font-family:ui-monospace,monospace;font-size:12px">${esc(t)}<a data-del-to="${i}:${j}" title="移除该备胎" style="cursor:pointer;color:var(--danger);margin-left:3px">×</a></span>`
     ).join("");
     return `<div class="row proxy-row" style="align-items:flex-start">
-      <span class="lbl wide" style="max-width:260px;overflow-wrap:anywhere;font-family:ui-monospace,monospace" title="${esc(r.from)}">${esc(r.from)}</span>
+      <span class="lbl wide" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace" title="${esc(r.from)}">${esc(r.from)}</span>
       <span style="margin:0 4px">→</span>
       <span style="flex:1;overflow-wrap:anywhere">${tos || "（无备胎）"}</span>
       <input class="input fb-to-add" data-add-idx="${i}" style="width:170px" spellcheck="false" placeholder="＋备胎 ID（回车添加）">
@@ -1351,7 +1351,7 @@ let effRules = [];
 function renderEffList() {
   const rows = effRules.map((r, i) =>
     `<div class="row proxy-row">
-      <span class="lbl wide" style="max-width:260px;overflow-wrap:anywhere;font-family:ui-monospace,monospace" title="${esc(r.model)}">${esc(r.model)}</span>
+      <span class="lbl wide" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace" title="${esc(r.model)}">${esc(r.model)}</span>
       <span style="margin:0 4px">→</span>
       <span style="flex:1;font-family:ui-monospace,monospace">${esc(r.effort)}</span>
       <button class="icon-btn" data-del-eff="${i}" title="删除该映射">🗑</button>
