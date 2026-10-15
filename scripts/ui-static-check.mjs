@@ -429,6 +429,23 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 小浣熊签到接线（R65）----
+// 与 R34/R41 同族：签到接入横跨「渠道实现 + 调度器配置 + noExplicitCheckin + 前端集合」四处，
+// 漏任意一处都**不报错**——只表现为「按钮是灰的」或「定时不跑」，极难发现，故在此静态锁住。
+// （渠道实现与调度器配置由 Go 侧锁：internal/raccoon/checkin_test.go、internal/app 的 noExplicitCheckin 断言。）
+{
+  const need = [
+    ["raccoon 不在无签到集合（否则手动按钮永久置灰、批量签到静默跳过）",
+      !/NO_EXPLICIT_CHECKIN[^)]*"raccoon"/.test(raw)],
+    ["raccoon 仍保留渠道名/样式登记（防止误删）",
+      /raccoon: "小浣熊"/.test(raw) && /raccoon: "raccoon"/.test(raw)],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 // ---- 积分明细浮窗点击式 + 手机竖屏响应式 ----
 // 与 R34/R41 同族：这两处都是「改了交互/样式但没接线/被后写规则覆盖」就静默失效，
 // 且宽度断点一旦被人调大就会重新弄坏桌面端（本次就是靠像素级 diff 才发现过一次），故在此锁死。
