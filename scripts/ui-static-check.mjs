@@ -549,6 +549,8 @@ for (const [label, re] of uniq) {
     ["模型行拒绝 `*`（全局默认专用键另有入口）", raw.includes("* 是全局默认专用键")],
     ["renderEffList 空态占位常显（未配置 = 不注入，不整块隐藏）",
       (T.renderEffList(), nodes["effList"].innerHTML.includes("暂无模型档位"))],
+    ["renderEffList 模型 ID 列显式 width:auto（.lbl.wide 的 90px 定宽会压掉 max-width）",
+      /class="lbl wide" style="width:auto;max-width:340px/.test(raw)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

@@ -1500,10 +1500,13 @@ async function saveCustomChannels() {
 let effRules = [];
 
 // renderEffList 渲染模型档位编辑区：每条映射一行（模型 → 档位 ＋ 🗑）。
+// 模型 ID 列显式 width:auto：本行复用了 .lbl.wide，而该类带定宽 width:90px；
+// 同时给定宽与 max-width 时实际宽度取二者较小值 ⇒ 只写 max-width 不生效，
+// 长模型名会被截到 90px（PR 前的实际表现）。
 function renderEffList() {
   const rows = effRules.map((r, i) =>
     `<div class="row proxy-row">
-      <span class="lbl wide" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace" title="${esc(r.model)}">${esc(r.model)}</span>
+      <span class="lbl wide" style="width:auto;max-width:340px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace" title="${esc(r.model)}">${esc(r.model)}</span>
       <span style="margin:0 4px">→</span>
       <span style="flex:1;font-family:ui-monospace,monospace">${esc(r.effort)}</span>
       <button class="icon-btn" data-del-eff="${i}" title="删除该映射">🗑</button>
