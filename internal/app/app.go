@@ -345,13 +345,13 @@ func creditsNAKind(group string) bool {
 // 千问办公无签到活动且每日积分服务端被动发放，无需领取/保活。
 // QoderCN/QoderCOM 已实现 campaigns 签到，支持手动按钮（上游同一套机制）。
 // 智谱清言已实现 activity-api 每日签到，支持手动按钮。
+// 小浣熊已实现 setting_info 触发每日积分落账（见 internal/raccoon/checkin.go），支持手动按钮。
 // MonkeyCode 一期也不提供手动签到：上游未提供额度或签到端点。
-// 小浣熊一期也不提供手动签到：上游未提供额度或签到端点。
 // Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
 // Cline 走官方 API Key：无签到活动、Key 不过期 ⇒ 既不需手动签到也不需保活。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen || k == provider.Cline
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Cline
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -736,7 +736,8 @@ func (a *App) pollLogin(ctx context.Context) {
 // completeRaccoonLogin 小浣熊网页版登录成功：把捕获并换取的 token 落成本工具凭据。
 // 凭据形态与「从本机客户端导入」完全一致（两者拿到的是同一个上游账号）：
 // uid 取 access_token 的 JWT name claim，domain/apiHost 对齐 internal/raccoon 的调用前缀。
-// 小浣熊无签到活动，故不做首次签到；access_token 约 1h，靠 refresh_token 续期。
+// access_token 约 1h，靠 refresh_token 续期；签到走 setting_info 触发每日积分落账
+// （见 internal/raccoon/checkin.go），故登录后立即签到一次，让当日积分马上落账。
 func (a *App) completeRaccoonLogin(r loginraccoon.Result) {
 	uid := strings.TrimSpace(jwtClaim(r.AccessToken, "name"))
 	if uid == "" {
@@ -770,6 +771,27 @@ func (a *App) completeRaccoonLogin(r loginraccoon.Result) {
 	a.reloadAccounts()
 	a.finishLogin()
 	a.afterAccountAdded(provider.Raccoon)
+	// 首次签到（对齐 workbuddy/traework）：setting_info 触发当日每日积分落账，
+	// 不签到的话新账号要等下一个签到时刻才会把当天该给的 300 分记上。
+	a.safeGo(func() { a.firstCheckinRaccoon(uid) })
+}
+
+// firstCheckinRaccoon 新账号首次签到 + 积分兜底（幂等：已领过时上游返回空 popups）。
+func (a *App) firstCheckinRaccoon(uid string) {
+	rt := a.runtime(provider.Raccoon)
+	if rt == nil || rt.Scheduler == nil {
+		return
+	}
+	if res, err := rt.Scheduler.CheckinAccount(uid); err != nil {
+		log.Printf("raccoon 新账号签到失败 %s: %v", uid, err)
+	} else {
+		log.Printf("raccoon 新账号签到完成 %s：%s", uid, res.Msg)
+	}
+	// 积分兜底：签到路径失败（余额查询失败/签到异常）时 pool 内 credits 仍为 0，
+	// 独立刷一次保证新账号首屏正确（幂等：多刷无害）。
+	if _, err := a.RefreshCredits(uid); err != nil {
+		log.Printf("raccoon 新账号积分兜底失败 %s: %v", uid, err)
+	}
 }
 
 // completeLogin 登录成功：写 auth 文件、重载账号池，异步签到。

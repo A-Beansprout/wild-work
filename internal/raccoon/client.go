@@ -619,11 +619,6 @@ func parsePointsBalance(d pointsBalanceData) (int64, []provider.ResourceItem) {
 	return d.AvailablePoints, items
 }
 
-// DailyCheckin 实现 provider.Upstream：小浣熊无签到活动。
-func (c *Client) DailyCheckin(a *auth.Auth) error {
-	return fmt.Errorf("raccoon 无签到活动")
-}
-
 // ---------------------------------------------------------------------------
 // 错误分类
 // ---------------------------------------------------------------------------

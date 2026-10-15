@@ -513,6 +513,8 @@ func (a *App) importRaccoon() (*ImportLocalResult, error) {
 	}
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.Raccoon)
+	// 首次签到（与网页版登录路径同源）：setting_info 触发当日每日积分落账。
+	a.safeGo(func() { a.firstCheckinRaccoon(uid) })
 	return &ImportLocalResult{
 		Channel: "raccoon", UID: uid, File: filepath.Base(file),
 		Note: "access_token 约 2 小时有效，wild-work 会用 refresh_token 自动续期（上游会轮换 refresh_token，新值已随刷新落盘）",
