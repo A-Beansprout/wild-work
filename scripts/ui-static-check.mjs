@@ -594,6 +594,43 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- overlay 嵌套完整性（issue #125）----
+// 起因：v2.7.3 的「思考强度」cfg-section 少写一个 </div> ⇒ settingsOverlay 提前“吃掉”
+// 其后的 rename/help/about/modelSearch/**adminLogin** 五个弹层。DOM 上 JS 已去掉 hidden 且
+// display:flex，但父级 settingsOverlay.hidden 为 display:none，子树布局恒 0×0 ⇒ 用户开了
+// admin_password 却看不到登录弹层、点任何按钮无反应，而 JS/后端全都正常（零报错零崩溃）。
+// 与 R34/R41 同族「声明了却没接线」，只是这次是 HTML 结构层面的静默失效，故静态锁住。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const opens = (html.match(/<div\b/g) || []).length;
+  const closes = (html.match(/<\/div>/g) || []).length;
+  // 从任一 overlay 起点按花括号/标签配平找到它的匹配 </div>（返回闭合处的下标，找不到返回 -1）。
+  const matchClose = (from) => {
+    let depth = 0;
+    const re = /<div\b|<\/div>/g;
+    re.lastIndex = from;
+    for (let m; (m = re.exec(html)); ) {
+      if (m[0] === "</div>") {
+        if (--depth === 0) return m.index;
+      } else depth++;
+    }
+    return -1;
+  };
+  const start = html.indexOf('id="settingsOverlay"');
+  const closeAt = start < 0 ? -1 : matchClose(html.lastIndexOf("<", start));
+  const adminAt = html.indexOf('id="adminLoginOverlay"');
+  const need2 = [
+    ["index.html 的 <div> 开闭数量配平（少一个 </div> 会把后续弹层全卷进上一层）", opens === closes],
+    ["settingsOverlay 有匹配闭合标签（未闭合即 issue #125 复现）", closeAt >= 0],
+    ["adminLoginOverlay 位于 settingsOverlay **之外**（登录层必须在 body 直系，否则被 hidden 父级压成 0×0）",
+      closeAt > 0 && adminAt > closeAt],
+  ];
+  for (const [label, pass] of need2) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 
