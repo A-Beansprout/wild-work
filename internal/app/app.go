@@ -1951,24 +1951,28 @@ func (a *App) SetOczenSyncer(fn func(key string)) { a.oczenSyncer = fn }
 // TestOczenKey 验证 OpenCodeZen 凭证可用性（设置面板「测试」按钮）。
 // apiKey 非空时先用该 key 临时写入渠道 client（测试后恢复原值），空则直接测当前生效凭证。
 // 判定：200/429 均 return ok（200=配额正常，429=连通但限流，对匿名 key 属正常现象）。
-func (a *App) TestOczenKey(apiKey string) (int, string, error) {
+//
+// 测试后经同一个 backuplink.Replay 编排（与真实对话同源，见 issue #117）：直连被上游按地区
+// 拒绝时机内自动改走备用通道；viaBackup 报告答复是否来自备用出口，面板据此如实展示——
+// 原先只看 403 是看不出「代理到底有没有被用上」的。
+func (a *App) TestOczenKey(apiKey string) (int, string, bool, error) {
 	rt := a.runtime(provider.Oczen)
 	if rt == nil {
-		return 0, "", fmt.Errorf("oczen 渠道未启用")
+		return 0, "", false, fmt.Errorf("oczen 渠道未启用")
 	}
 	c, ok := rt.Upstream.(*oczen.Client)
 	if !ok {
-		return 0, "", fmt.Errorf("oczen 渠道类型异常")
+		return 0, "", false, fmt.Errorf("oczen 渠道类型异常")
 	}
 	// 临时写入候选 key（含空串 = 测匿名）；结束后恢复配置值，保证面板「取消」不残留半生效状态
 	orig := a.cfg.OczenAPIKey
 	c.SetAPIKey(apiKey)
 	defer c.SetAPIKey(orig)
-	status, body, err := c.TestKey()
+	status, body, via, err := c.TestKey()
 	if err != nil {
-		return 0, body, fmt.Errorf("无法连接 OpenCodeZen（检查网络/代理）：%v", err)
+		return 0, body, via, fmt.Errorf("无法连接 OpenCodeZen（检查网络/代理）：%v", err)
 	}
-	return status, body, nil
+	return status, body, via, nil
 }
 
 // maskKey 脱敏 API key：保留前 5 后 4，中间以 … 代替；空串原样返回。
@@ -2638,12 +2642,12 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			APIKey string `json:"api_key"` // 空 = 用当前生效凭证（配置中的 key 或匿名）
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		status, body, err := a.TestOczenKey(req.APIKey)
+		status, body, via, err := a.TestOczenKey(req.APIKey)
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "status": 0, "error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": status == 200 || status == 429, "status": status, "body": body})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": status == 200 || status == 429, "status": status, "body": body, "via_backup": via})
 	})
 	mux.HandleFunc("POST /api/account/nickname", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

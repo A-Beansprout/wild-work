@@ -390,12 +390,17 @@ func IsRegionBlocked(status int, body string) bool {
 }
 
 // TestKey 用 big-pickle 模型发一次最小对话验证凭证可用性。
-// 返回 (status, 上游原文片段, error)。判定口径（面板展示用）：
+// 返回 (status, 上游原文片段, viaBackup, error)。判定口径（面板展示用）：
 //   - 200：key 有效且配额正常；
 //   - 429：key 有效但触发限流（匿名共享配额或临时背压）——也算「连通」；
-//   - 401/403：key 无效或被风控；402：付费模型余额不足（key 本身有效，但免费模型不该出现此错）；
+//   - 401/403：key 无效、免费档形态不符或被风控；402：付费模型余额不足；
 //   - 503：上游端点故障（key 无法判定，连接是通的）。
-func (c *Client) TestKey() (int, string, error) {
+//
+// 与 ChatStream 同一条编排（R62 的补充）：直连被地域拒（403/451 + RegionError 文案）时
+// **同样**经备用上游通道重放一次——否则用户点了「测试」看到 403，就无从判断是「备用通道
+// 没生效」还是「上游本来就不给这个出口用」（issue #117）。viaBackup 报告本次答复是否
+// 来自备用出口，供面板如实展示「经备用通道」。
+func (c *Client) TestKey() (status int, body string, viaBackup bool, err error) {
 	obj := map[string]any{
 		"model":      "big-pickle",
 		"stream":     true,
@@ -405,20 +410,39 @@ func (c *Client) TestKey() (int, string, error) {
 	ensureAgentShape(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.base()+"/chat/completions", bytes.NewReader(out))
-	if err != nil {
-		return 0, "", err
+	session := canonicalSessionID(randomID("testkey", 8))
+	via := false
+	attempt := func(useBackup bool) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, c.base()+"/chat/completions", bytes.NewReader(out))
+		if err != nil {
+			return nil, err
+		}
+		c.headered(req, session)
+		hc := c.HTTP
+		if useBackup {
+			tr, _ := hc.Transport.(*http.Transport)
+			bc := backuplink.Client(tr)
+			if bc == nil {
+				return nil, backuplink.ErrNoBackup
+			}
+			hc = bc
+		}
+		return hc.Do(req)
 	}
-	c.headered(req, canonicalSessionID(randomID("testkey", 8)))
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return 0, "", err
+	rp := &backuplink.Replay{Kind: "oczen-test", Model: "big-pickle", Routes: &c.routes, Attempt: attempt, Blocked: IsRegionBlocked, MaxErrBody: 4 << 10,
+		Note: func(v bool) { via = v }} // 学习路由 + 本次答复出口标记：两者都要（issue #117）
+	rc, st, raw, rerr := rp.Do()
+	if rerr != nil {
+		return 0, "", via, rerr
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-	return resp.StatusCode, string(raw), nil
+	if rc != nil { // 200：读尽小片段后关闭（上游恒流式，同 ChatStream）
+		defer rc.Close()
+		b, _ := io.ReadAll(io.LimitReader(rc, 4<<10))
+		return st, string(b), via, nil
+	}
+	return st, string(raw), via, nil
 }
 
 // FetchModels 拉取上游模型列表并只保留免费集合。

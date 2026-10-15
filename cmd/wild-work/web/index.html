@@ -432,7 +432,9 @@
           它<b>不影响本工具的任何常规请求</b>：所有渠道一律直连；只有上游回「地区限制」时，
           才在同一次请求内自动改走备用通道重发一次（重发也失败则透传原始错误）。
           目前取用方：<b>Cline</b> 与 <b>OpenCodeZen</b>（两渠道的部分模型直连会被上游按地域拒）。</div>
-        <div class="hint" style="margin:0 0 8px">OC Zen Key 留空 = 匿名凭证；填入 sk-… 自定义 key 可解锁独立配额与付费模型。</div>
+        <div class="hint" style="margin:0 0 8px">OC Zen Key 留空 = 匿名凭证；填入 sk-… 自定义 key 可解锁独立配额与付费模型。
+          <b>「测试」按钮与真实对话同源</b>：直连被上游按地区拒绝时也会自动改走备用通道，
+          结果会标明答复来自<b>直连</b>还是<b>备用</b>出口——否则配了代理点测试仍看到 403，无从判断代理到底生效了没有。</div>
         <div class="row proxy-row">
           <label class="lbl wide" title="备用上游代理地址（仅命中地区限制时自动取用）">备用代理</label>
           <input id="backupProxyInput" class="input grow proxy-input" spellcheck="false" placeholder="如 socks5://127.0.0.1:1080 或 http://127.0.0.1:7890（留空 = 关闭）">

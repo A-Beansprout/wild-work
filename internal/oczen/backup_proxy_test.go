@@ -253,6 +253,46 @@ func TestOczenStreamNotCancelledByLaterAttempt(t *testing.T) {
 	}
 }
 
+// ⑨ TestKey（面板「测试」按钮）也走与真实对话同源的编排（issue #117）：
+// 直连被地区拒 → 同请求内自动改走备用通道，并把「答复是否来自备用出口」如实回传面板。
+// 原先 TestKey 直接用 c.HTTP 直连，用户配了代理点测试仍看到 403，也无从判断代理有没有生效。
+func TestOczenTestKeyUsesBackupOnRegionBlock(t *testing.T) {
+	up, c, px := newOczenBackupCase(t)
+	up.regionMode.Store(true) // big-pickle 直连被地区拒（模拟用户只能靠代理的场景）
+	if err := backuplink.Set(px); err != nil {
+		t.Fatal(err)
+	}
+	status, _, via, err := c.TestKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK || !via {
+		t.Fatalf("测试应经备用出口成功：status=%d via=%v", status, via)
+	}
+	if up.backup.Load() != 1 {
+		t.Errorf("应恰好经备用出口 1 次：%d", up.backup.Load())
+	}
+}
+
+// ⑩ 未配备用通道时 TestKey 如实透传直连 403 且 via=false（面板据此提示“代理未生效”）。
+func TestOczenTestKeyWithoutBackupReportsDirect(t *testing.T) {
+	up, c, _ := newOczenBackupCase(t)
+	up.regionMode.Store(true)
+	status, body, via, err := c.TestKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusForbidden || via {
+		t.Fatalf("未配备用通道应透传直连 403 且 via=false：status=%d via=%v", status, via)
+	}
+	if !strings.Contains(body, "RegionError") {
+		t.Errorf("应透传原文：%s", body)
+	}
+	if up.backup.Load() != 0 {
+		t.Errorf("未配备用通道却有备用命中：%d", up.backup.Load())
+	}
+}
+
 // ⑦ 判据单测：只有 403/451 + 地域文案才算，其余一律不算。
 func TestOczenIsRegionBlocked(t *testing.T) {
 	cases := []struct {

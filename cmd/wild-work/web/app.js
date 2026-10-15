@@ -1453,6 +1453,8 @@ function validateBackupProxy() {
 // testOczenKey 「测试」按钮：用输入框当前的候选 key（含脱敏值/空）调后端实测。
 // 后端逻辑：候选 key 临时写入渠道 client → big-pickle 发最小对话 → 200/429 均算通过
 // （200 = 配额正常；429 = 连通但匿名共享配额限流，属预期现象）；测试后恢复配置原值。
+// 与真实对话同源（issue #117）：直连被地区拒时后端会自动改走备用通道，
+// via_backup 标出答复来自哪个出口——否则用户配了代理点测试仍看到 403 会误以为功能没生效。
 async function testOczenKey() {
   const btn = $("btnOczenTest");
   if (btn.disabled) return;
@@ -1464,11 +1466,14 @@ async function testOczenKey() {
     let k = $("oczenKeyInput").value.trim();
     if (k.includes("…")) k = ""; // 脱敏形态 = 未改动，用当前配置值测
     const r = await api("/api/config/oczen_test", { api_key: k });
+    const via = r.via_backup ? "经备用通道" : "直连";
     if (r.ok) {
-      toast(r.status === 200 ? "✓ OpenCodeZen 凭证可用（200）" : "✓ 连通正常（429 匿名限流，属预期）");
+      toast(r.status === 200 ? `✓ OpenCodeZen 凭证可用（200，${via}）` : `✓ 连通正常（429 匿名限流，属预期，${via}）`);
     } else {
       const brief = (r.body || r.error || "").slice(0, 90).replace(/\s+/g, " ");
-      toast(`✗ 测试失败 HTTP ${r.status}：${brief}`);
+      // 403 且经直连 = 最可能是地区限制，而备用通道未配置/未生效：给出可行动提示
+      const hint = (!r.via_backup && r.status === 403) ? "（未走备用通道；若已配代理仍为直连，说明本次不是地区拒绝或备用链路拨不动，详见日志）" : "";
+      toast(`✗ 测试失败 HTTP ${r.status}${hint}：${brief}`);
     }
   } catch (e) {
     toast("✗ 测试失败：" + e.message);

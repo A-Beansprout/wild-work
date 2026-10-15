@@ -105,6 +105,11 @@ type Replay struct {
 	// Translate 可选：把上游状态码还原为内层真实码（cline 的网关会把真码压平成 500）。
 	// nil 时原样返回。
 	Translate func(status int, body string) int
+	// Note 可选：交出结果前回调，报告本次答复是否来自**备用出口**。
+	// 用途：面板「测试」按钮要如实告诉用户「代理到底有没有被用上」（oczen 的 issue #117）。
+	// 注意与 Routes 的区别——Routes 记的是「该模型以后就走备用」的学习结果持久态，
+	// 本钩子只描述**这一次**请求。
+	Note func(viaBackup bool)
 	// MaxErrBody 可选：非 200 响应体读取上限（字节）。0 = 默认 64KB。
 	// oczen 旧实现用 1MB（上游错误详情偶尔较长），这里保留其原值以免削弱「原文透传」。
 	MaxErrBody int64
@@ -123,7 +128,17 @@ func (r *Replay) limit() int64 {
 
 // Do 执行编排，返回 (流, 状态码, 错误体, 传输层错误)。
 // 200 分支返回可读流且 body 为 nil；非 200 分支返回已读尽的原文。
+//
+// 所有出口路径统一收口到 viaBackup := false + defer 回调（见 Note）：本函数有 8 处 return，
+// 逐处手工标记「这次答复来自哪个出口」必会漏（R52 教训：判据分裂就出过真 bug），
+// 故只在「交出备用答复」的两处把 via 置 true，由 defer 统一上报。
 func (r *Replay) Do() (io.ReadCloser, int, []byte, error) {
+	via := false
+	defer func() {
+		if r.Note != nil {
+			r.Note(via)
+		}
+	}()
 	logf := func(format string, args ...any) { log.Printf("%s: "+format, append([]any{r.Kind}, args...)...) }
 
 	useBackup := r.Routes != nil && r.Routes.Learned(r.Model)
@@ -145,6 +160,7 @@ func (r *Replay) Do() (io.ReadCloser, int, []byte, error) {
 		useBackup = false
 	}
 	if resp.StatusCode == http.StatusOK {
+		via = useBackup
 		if useBackup {
 			r.Routes.Mark(r.Model) // 备用出口确认可用，续期学习结果
 		}
@@ -183,6 +199,7 @@ func (r *Replay) Do() (io.ReadCloser, int, []byte, error) {
 			logf("备用通道重放失败 model=%s err=%v（透传直连原始响应）", r.Model, e2)
 		case r2.StatusCode == http.StatusOK:
 			r.Routes.Mark(r.Model)
+			via = true // 答复来自备用出口
 			logf("地区限制已改走备用通道 model=%s（后续同模型直接走备用）", r.Model)
 			return r.wrap(r2), r2.StatusCode, nil, nil
 		default:
@@ -193,6 +210,7 @@ func (r *Replay) Do() (io.ReadCloser, int, []byte, error) {
 			} else {
 				// 链路可达、上游给了**不同**的权威答复 ⇒ 以它为准，并记学习结果。
 				r.Routes.Mark(r.Model)
+				via = true // 答复来自备用出口（即使非 200，用户也需要知道「代理被用上了」）
 				r.finalize(s2, raw2)
 				// 日志附答复前 160 字符：排障时「备用出口到底说了什么」是最关键的信息
 				// （实盘例子：muse 经某出口回 400 ModelProtocolUnsupported）。

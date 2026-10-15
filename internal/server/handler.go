@@ -621,8 +621,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					log.Printf("model cooldown (single-account 402) platform=%s uid=%s model=%s cooldown=%s",
 						rt.Kind, acct.UID, model, h.cfg.HardCooldown)
 				}
-				log.Printf("upstream error platform=%s uid=%s status=%d kind=%s（单账号渠道不罚账号，原文透传）",
-					rt.Kind, acct.UID, status, kind)
+				// 日志点明错误性质与上游原文：旧文案（「不罚账号」）会让用户看到 403 时
+				// 误以为「工具把这个错误当成了请求级问题」，掩盖了真实原因（issue #117）。
+				log.Printf("upstream error platform=%s uid=%s status=%d kind=%s body=%s（单账号渠道无号可轮换，故原样透传、不冷却）",
+					rt.Kind, acct.UID, status, kind, truncateBody(respBody))
 				transparentError(w, status, respBody)
 				return
 			}

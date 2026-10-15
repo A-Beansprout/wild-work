@@ -413,6 +413,12 @@ for (const [label, re] of uniq) {
     ["备用上游通道入口在位（单一输入 + 生效位回显 + 保存走 /api/config/proxy）",
       html.includes('id="backupProxyInput"') && html.includes('id="backupProxyState"')
         && raw.includes('"/api/config/proxy"') && raw.includes("backup_proxy_active")],
+    // issue #117：面板「测试」按钮原先直连上游（实际对话走备用通道），用户配了代理点测试
+    // 仍看到 403 且无从判断代理是否生效。现已与真实对话同源，并把出口（直连/备用）如实展示。
+    ["OC Zen 测试按钮展示出口（直连/备用）——后端同源编排 + 前端读 via_backup",
+      raw.includes("via_backup") && raw.includes("经备用通道")],
+    ["hint 写明测试与真实对话同源（否则用户仍会误读 403）",
+      html.includes("与真实对话同源") && html.includes("自动改走备用通道")],
     ["旧「每渠道代理」输入表已清除（R57：不再有 PROXY_CHANNELS / proxyList）",
       !raw.includes("PROXY_CHANNELS") && !html.includes('id="proxyList"') && !raw.includes("/api/config/proxies")],
     ["style.css 有 cline 渠道色", css.includes(".badge.cline") && css.includes(".btn.primary.alt.cline")],
