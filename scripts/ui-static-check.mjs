@@ -568,6 +568,17 @@ for (const [label, re] of uniq) {
     ["自定义渠道测试请求携带 name（后端子据以找回被脱敏的真实 api_key）",
       /custom_channel_test[\s\S]{0,90}name[:,]/.test(raw)],
     ["style.css 有自定义渠道徽章颜色", css.includes(".badge.custom")],
+    // 悬空 DOM 引用检测（本轮实测踩坑）：app.js 里 $("x") 指向的 id 必须在 index.html 存在，
+    // 否则 openSettings() 直接抛 TypeError: Cannot set properties of null 导致弹层打不开——
+    // 不报错到日志、静态检查也全绿，属 R34/R41 家族的「声明了却没接线」。
+    // 例外：creditTip 由 JS 动态创建（见 newCreditTip），故白名单放行。
+    (() => {
+      const dyn = new Set(["creditTip"]);
+      const ids = new Set([...html.matchAll(/id="([A-Za-z0-9_-]+)"/g)].map((m) => m[1]));
+      const missing = [...new Set([...raw.matchAll(/\$\("([A-Za-z0-9_-]+)"\)/g)].map((m) => m[1]))]
+        .filter((id) => !ids.has(id) && !dyn.has(id));
+      return ["app.js 的 $() DOM 引用无悬空（防 openSettings 抛 TypeError 打不开弹层）", missing.length === 0];
+    })(),
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

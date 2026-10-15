@@ -1573,7 +1573,7 @@ function openSettings() {
   // 自定义渠道
   editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
   renderCustomChList();
-  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = ""; $("inCustomModels").value = "";
+  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
