@@ -1301,19 +1301,23 @@ async function toggleAutostart() {
 // fbRules 编辑态副本（openSettings 时从 state.model_fallback 深拷贝；保存成功后由 loadState 刷新）
 let fbRules = [];
 
-// renderFbList 渲染降级链编辑区：每条规则一行（主模型 → 备胎1 ×… ＋输入 ＋ | 🗑）。
-// 交互全部事件委托在 #fbList 上（data-del-rule / data-del-to / data-add-to）。
+// renderFbList 渲染降级链编辑区：每条规则一行——左列上下两行（主模型可编辑输入框 +
+// 备胎添加框），右侧 → 备胎 chips ＋ | 🗑。左列定宽 300px：主模型 ID 超长时在输入框内
+// 横向滚动（不遮挡箭头与档位），右侧 chips 不再为行内添加框预留宽度。
+// 交互全部事件委托在 #fbList 上（data-del-rule / data-del-to / data-add-to / data-edit-idx）。
 function renderFbList() {
   const rows = fbRules.map((r, i) => {
     const tos = r.to.map((t, j) =>
       `<span class="fb-to" style="display:inline-flex;align-items:center;gap:2px;background:var(--card,#f5f5f5);border:1px solid var(--line,#ddd);border-radius:10px;padding:1px 7px;margin:0 3px;font-family:ui-monospace,monospace;font-size:12px">${esc(t)}<a data-del-to="${i}:${j}" title="移除该备胎" style="cursor:pointer;color:var(--danger);margin-left:3px">×</a></span>`
     ).join("");
     return `<div class="row proxy-row" style="align-items:flex-start">
-      <span class="lbl wide" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace" title="${esc(r.from)}">${esc(r.from)}</span>
-      <span style="margin:0 4px">→</span>
-      <span style="flex:1;overflow-wrap:anywhere">${tos || "（无备胎）"}</span>
-      <input class="input fb-to-add" data-add-idx="${i}" style="width:170px" spellcheck="false" placeholder="＋备胎 ID（回车添加）">
-      <button class="icon-btn" data-add-to="${i}" title="把左侧备胎追加到该规则末尾">＋</button>
+      <span style="display:flex;flex-direction:column;gap:4px;width:300px;flex-shrink:0">
+        <input class="input fb-from-edit" data-edit-idx="${i}" value="${esc(r.from)}" spellcheck="false" title="主模型 ID（channel/model，可编辑；失焦或回车确认，点「保存降级链」生效）" style="font-family:ui-monospace,monospace">
+        <input class="input fb-to-add" data-add-idx="${i}" spellcheck="false" placeholder="＋备胎 ID（回车添加）">
+      </span>
+      <span style="margin:0 4px;padding-top:5px">→</span>
+      <span style="flex:1;overflow-wrap:anywhere;min-width:0">${tos || "（无备胎）"}</span>
+      <button class="icon-btn" data-add-to="${i}" title="把下方添加框中的备胎追加到该规则末尾">＋</button>
       <button class="icon-btn" data-del-rule="${i}" title="删除整条规则">🗑</button>
     </div>`;
   }).join("");
@@ -1853,14 +1857,30 @@ function bind() {
       renderFbList();
     }
   });
-  // 行内备胎输入框回车 = 追加到该规则（事件委托 keydown）
+  // 行内备胎输入框回车 = 追加到该规则（事件委托 keydown）；主模型输入框回车 = blur 确认
   $("fbList").addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || !e.target.classList.contains("fb-to-add")) return;
+    if (e.key !== "Enter") return;
+    if (e.target.classList.contains("fb-from-edit")) { e.target.blur(); return; }
+    if (!e.target.classList.contains("fb-to-add")) return;
     const i = +e.target.dataset.addIdx;
     const [tos, err] = parseModelList(e.target.value);
     if (err) { $("fbErr").textContent = err; return; }
     if (tos.length === 0) return;
     fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
+    renderFbList();
+  });
+  // 行内主模型 ID 编辑：change（失焦/回车后 blur）提交——形态校验 + 主模型唯一性校验，
+  // 失败回滚输入框；成功写回 fbRules 并滤掉与新 from 自环的备胎，重渲染刷新 title。
+  $("fbList").addEventListener("change", (e) => {
+    if (!e.target.classList.contains("fb-from-edit")) return;
+    const i = +e.target.dataset.editIdx;
+    const from = String(e.target.value || "").trim();
+    const cur = fbRules[i].from;
+    if (!from || from === cur) { e.target.value = cur; return; }
+    if (!/^[^/]+\/.+/.test(from)) { $("fbErr").textContent = `主模型 ${from} 需为 channel/model 形式（如 workbuddyai/deepseek-v4.1-flash）`; e.target.value = cur; return; }
+    if (fbRules.some((r, k) => k !== i && r.from === from)) { $("fbErr").textContent = `主模型 ${from} 已有规则（每个主模型只允许一条）`; e.target.value = cur; return; }
+    fbRules[i].from = from;
+    fbRules[i].to = fbRules[i].to.filter((t) => t !== from);
     renderFbList();
   });
 

@@ -489,6 +489,8 @@ for (const [label, re] of uniq) {
     ["已恢复事件渲染恢复时刻与持续时长", fbHtml.includes("08:05:12") && fbHtml.includes("4 分 12 秒")],
     ["原/备胎模型与箭头均在行内", fbHtml.includes("workbuddyai/deepseek-v4.1-flash") && fbHtml.includes("→")],
     ["空事件常显占位说明（不整块隐藏）", (T.renderFallbacks([]), nodes["stFbs"].innerHTML.includes("暂无降级记录"))],
+    ["行内主模型 ID 是可编辑输入框（fb-from-edit + data-edit-idx）", raw.includes('fb-from-edit') && raw.includes('data-edit-idx')],
+    ["行内主模型编辑有 change 提交接线（校验+回滚）", raw.includes('classList.contains("fb-from-edit")') && raw.includes("已有规则（每个主模型只允许一条）")],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
