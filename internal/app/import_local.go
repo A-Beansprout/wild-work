@@ -15,6 +15,7 @@ import (
 
 	"wild-work/internal/monkeycode"
 	"wild-work/internal/provider"
+	"wild-work/internal/raccoon"
 )
 
 // 本文件实现「导入型」渠道的凭据获取：凭据由官方客户端在本机维护，
@@ -489,7 +490,9 @@ func (a *App) importRaccoon() (*ImportLocalResult, error) {
 	if access == "" {
 		return nil, fmt.Errorf("客户端凭据里没有 access_token（%s）：请先在客户端完成登录", path)
 	}
-	uid := strings.TrimSpace(jwtClaim(access, "name"))
+	// uid 提取统一走 raccoon.JWTUID（旧版取 name、新版 OIDC 回落 sub）——
+	// 2026-10-15 上游迁站后 JWT 无 name claim，自行写 jwtClaim(access,"name") 会恒空。
+	uid := raccoon.JWTUID(access)
 	if uid == "" {
 		uid = "default"
 	}
@@ -559,17 +562,6 @@ func jwtPayload(tok string) map[string]any {
 		return nil
 	}
 	return out
-}
-
-func jwtClaim(tok, key string) string {
-	m := jwtPayload(tok)
-	if m == nil {
-		return ""
-	}
-	if s, ok := m[key].(string); ok {
-		return s
-	}
-	return ""
 }
 
 func jwtExp(tok string) int64 {

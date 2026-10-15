@@ -1011,31 +1011,27 @@ func numField(u map[string]any, keys ...string) int64 {
 // 必须落同一行，否则同一模型会在用量榜上裂成两行；裸名原样返回。
 func ledgerModelOf(clientModel string) string { return provider.UpstreamModelOf(clientModel) }
 
-// runtimeCapacity 一次 Pool.List() 同时得出两个降级判据：
-//   - hasHealthy：渠道内是否还有非禁用/非整号冷却的账号；
-//   - modelAvail：是否有账号能承载 model（该模型不在模型级冷却中；
-//     pool.statusOf 已剔掉过期条目，此处再比一次到期时间属防御）。
+// modelHasCapacity 报告 rt 渠道此刻是否有账号能承载 model。
 //
-// 两者共同构成「模型全冷」判据，口径与 no_healthy_account 的同名分支一致。
-func runtimeCapacity(rt *Runtime, model string) (hasHealthy, modelAvail bool) {
+// 一次 Pool.List() 得出答案，口径与 no_healthy_account 的「模型全冷」分支一致：
+// 跳过禁用/整号冷却的账号后，看是否还有账号不在该模型的模型级冷却中
+// （pool.statusOf 已剔掉过期条目，此处再比一次到期时间属防御）。
+//
+// 注意本函数对「整渠道全灭」（无任何健康账号）同样返回 false——
+// 这正是降级链该顶上的两种形态（模型全冷 / 整渠道全灭），调用方不得
+// 再额外要求「渠道内有健康账号」才降级（R54，PR #127 修正的旧判据）。
+func modelHasCapacity(rt *Runtime, model string) bool {
 	now := time.Now()
 	for _, s := range rt.Pool.List() {
 		if s.Disabled || s.Cooling {
 			continue
 		}
-		hasHealthy = true
 		if t, ok := s.ModelCooling[model]; ok && t.After(now) {
 			continue
 		}
-		modelAvail = true
+		return true
 	}
-	return
-}
-
-// modelHasCapacity 报告 rt 渠道此刻是否有账号能承载 model。
-func modelHasCapacity(rt *Runtime, model string) bool {
-	_, avail := runtimeCapacity(rt, model)
-	return avail
+	return false
 }
 
 // pickModelFallback 模型降级链解析：请求模型在本渠道已无账号可承载时
@@ -1058,12 +1054,11 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
 	if len(rules) == 0 {
 		return "", false
 	}
-	_, avail := runtimeCapacity(rt, model)
-	if avail {
+	if modelHasCapacity(rt, model) {
 		return "", true // 未全冷：走原路由，并告知探针「容量已在」
 	}
-	// 注意：此处不再因「本渠道无健康账号」提前返回——渠道全灭同样是可降级信号，
-	// 继续往下遍历规则；链路里落在同渠道的备胎会被 modelHasCapacity 自然跳过。
+	// 未全冷之外（模型全冷 / 整渠道全灭）都继续往下遍历规则找备胎；
+	// 链路里落在同渠道的备胎会被 modelHasCapacity 自然跳过。
 	for _, rule := range rules {
 		// 规则里的 from 与请求模型都要按同一套 ID 解析（R59：cline 的 `cline-free/x`
 		// 与旧写法 `cline/cline-free/x` 必须都能命中同一条规则）。

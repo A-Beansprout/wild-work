@@ -143,7 +143,7 @@
       <div class="st-scroll st-scroll-4"><table class="st-table st-logs" id="stLogs"></table></div>
     </div>
     <div class="st-block" id="stFbBlock" hidden>
-      <div class="st-block-title">降级记录<span class="st-hint">主模型全冷切备胎的事件 · 进程内记录（重启清零）· 30s 刷新</span></div>
+      <div class="st-block-title">降级记录<span class="st-hint">原模型无可用账号切备胎的事件（模型全冷 / 整渠道全灭）· 进程内记录（重启清零）· 30s 刷新</span></div>
       <div class="st-scroll st-scroll-4"><table class="st-table st-fbs" id="stFbs"></table></div>
     </div>
     <div class="st-panel">
@@ -451,7 +451,7 @@
       <!-- 模型降级链 -->
       <div class="cfg-section">
         <div class="cfg-heading">模型降级链</div>
-        <div class="hint" style="margin:0 0 8px">主模型在渠道全部账号上限流冷却（503 提示解冻时间）时，按顺序找第一个可用的备胎模型顶上，响应头 <span style="font-family:ui-monospace,monospace">X-Model-Fallback</span> 标注实际备胎；原模型解冻后自动切回，不粘滞。模型 ID 用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），备胎可跨渠道。</div>
+        <div class="hint" style="margin:0 0 8px">原模型在该渠道已无账号可承载（请求模型的全部账号限流冷却，或整渠道账号全部不可用 / 已禁用）时，按顺序找第一个可用的备胎模型顶上，响应头 <span style="font-family:ui-monospace,monospace">X-Model-Fallback</span> 标注实际备胎；原模型恢复后自动切回，不粘滞。模型 ID 用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），备胎可跨渠道。</div>
         <div id="fbList" class="proxy-list"></div>
         <div class="row" style="margin-top:8px">
           <input id="fbFromInput" class="input" style="width:230px" spellcheck="false" placeholder="主模型 ID（channel/model）">

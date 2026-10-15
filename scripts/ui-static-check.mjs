@@ -514,6 +514,11 @@ for (const [label, re] of uniq) {
     ["空事件常显占位说明（不整块隐藏）", (T.renderFallbacks([]), nodes["stFbs"].innerHTML.includes("暂无降级记录"))],
     ["行内主模型 ID 是可编辑输入框（fb-from-edit + data-edit-idx）", raw.includes('fb-from-edit') && raw.includes('data-edit-idx')],
     ["行内主模型编辑有 change 提交接线（校验+回滚）", raw.includes('classList.contains("fb-from-edit")') && raw.includes("已有规则（每个主模型只允许一条）")],
+    // PR #127（R54 触发判据扩展）：文案必须覆盖「整渠道全灭」而非只说「模型全冷」，
+    // 否则用户在渠道全灭时看到 503 会以为降级链没配好。
+    ["降级链 hint 写明两种触发形态（模型全冷 / 整渠道全灭）",
+      /无账号可承载[\s\S]{0,120}整渠道/.test(html)],
+    ["降级记录区块标题不再写死「主模型全冷」", !html.includes("主模型全冷切备胎")],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

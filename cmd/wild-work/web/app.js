@@ -1298,7 +1298,7 @@ async function toggleAutostart() {
   } catch (e) { toast(e.message); loadState(); }
 }
 
-// ---------- 模型降级链（设置弹层：主模型全冷时按链顶备胎，不粘滞自动切回） ----------
+// ---------- 模型降级链（设置弹层：原模型无可用账号时按链顶备胎，不粘滞自动切回） ----------
 // fbRules 编辑态副本（openSettings 时从 state.model_fallback 深拷贝；保存成功后由 loadState 刷新）
 let fbRules = [];
 
@@ -1322,7 +1322,7 @@ function renderFbList() {
       <button class="icon-btn" data-del-rule="${i}" title="删除整条规则">🗑</button>
     </div>`;
   }).join("");
-  $("fbList").innerHTML = rows || `<div class="hint">（暂无规则——主模型全冷时将直接返回 503 提示）</div>`;
+  $("fbList").innerHTML = rows || `<div class="hint">（暂无规则——原模型无可用账号时将直接返回 503 提示）</div>`;
   $("fbErr").textContent = "";
 }
 
@@ -2858,7 +2858,7 @@ function renderLogs(rows) {
   $("stLogs").innerHTML = rows.length ? h : `<tr><td class="st-empty">暂无请求</td></tr>`;
 }
 
-// ---------- 降级记录（主模型全冷切备胎的事件流；无事件整块隐藏） ----------
+// ---------- 降级记录（原模型无可用账号切备胎的事件流；无事件整块隐藏） ----------
 // fmtFbDur 秒数 → 紧凑文案（"42 秒" / "3 分 12 秒" / "1 时 02 分"）
 function fmtFbDur(sec) {
   sec = Math.max(0, Math.floor(sec));
@@ -2873,7 +2873,7 @@ function renderFallbacks(evs) {
   block.hidden = false; // 常显：让用户随时知道有这个区块；无事件显示占位行
   const $t = $("stFbs");
   if (!evs.length) {
-    $t.innerHTML = `<tr><td class="st-empty">暂无降级记录——主模型全冷切备胎时这里会出现事件（降级/恢复时刻与持续时长）</td></tr>`;
+    $t.innerHTML = `<tr><td class="st-empty">暂无降级记录——原模型无可用账号切备胎时这里会出现事件（降级/恢复时刻与持续时长）</td></tr>`;
     return;
   }
   let h = `<tr><th>#</th><th>降级时间</th><th>原模型</th><th></th><th>备胎</th><th>恢复</th><th>持续</th></tr>`;
