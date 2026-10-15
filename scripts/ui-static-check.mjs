@@ -105,7 +105,7 @@ const patched =
       { model: "cline-free/mimo-v2.6-flash", id: "cline-free/mimo-v2.6-flash", priced: true, rate: 0, free: true, has_context: true, context_window: 1000000 },
     ] },
   ] }) + ";"
-  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderFallbacks, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
+  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderFallbacks, renderEffList, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
   document,
@@ -489,6 +489,36 @@ for (const [label, re] of uniq) {
     ["已恢复事件渲染恢复时刻与持续时长", fbHtml.includes("08:05:12") && fbHtml.includes("4 分 12 秒")],
     ["原/备胎模型与箭头均在行内", fbHtml.includes("workbuddyai/deepseek-v4.1-flash") && fbHtml.includes("→")],
     ["空事件常显占位说明（不整块隐藏）", (T.renderFallbacks([]), nodes["stFbs"].innerHTML.includes("暂无降级记录"))],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 思考强度注入（issue #96）：设置弹层接线与三态语义文案 ----
+// 与降级链同族：「后端有端点、面板没接线」不报错不崩溃，只表现为配不了
+// 档位 / 配了不生效，故把编辑区、建议集与接线一并锁死。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const need = [
+    ["设置弹层有思考强度编辑区（全局默认行 + 映射列表 + 输入行）",
+      html.includes('id="effGlobalInput"') && html.includes('id="effList"') && html.includes('id="effModelInput"') && html.includes('id="effEffortInput"') && html.includes('id="btnEffAdd"') && html.includes('id="btnEffSave"')],
+    ["档位建议集 datalist = none/low/medium/high/max（哑管道：输入框仍可自由输入）",
+      /<datalist id="effortDatalist">[\s\S]*?value="none"[\s\S]*?value="low"[\s\S]*?value="medium"[\s\S]*?value="high"[\s\S]*?value="max"/.test(html)
+      && html.includes('list="effortDatalist"')],
+    ["hint 含三态语义（未带才注入 / 显式传不覆盖 / 回退全局默认）",
+      html.includes("客户端请求<b>未带</b>") && html.includes("一律不覆盖") && html.includes("精确未命中回退全局默认")],
+    ["hint 含 channel/model 格式与 TraeWork 无效说明",
+      html.includes("channel/model") && html.includes("TraeWork 渠道协议无 reasoning 注入点")],
+    ["app.js 接线添加/保存按钮", raw.includes('$("btnEffAdd").onclick') && raw.includes('$("btnEffSave").onclick')],
+    ["app.js 调 POST /api/config/reasoning_efforts", raw.includes('"/api/config/reasoning_efforts"')],
+    ["openSettings 从 state.reasoning_efforts 初始化且 `*` 分离到全局默认行",
+      /effRules = Object\.entries\(effs\)\.filter\(\(\[k\]\) => k !== "\*"\)/.test(raw) && raw.includes('effs["*"] || ""')],
+    ["重复模型拒绝（每个模型只允许一条）", raw.includes("已有档位（每个模型只允许一条）")],
+    ["模型行拒绝 `*`（全局默认专用键另有入口）", raw.includes("* 是全局默认专用键")],
+    ["renderEffList 空态占位常显（未配置 = 不注入，不整块隐藏）",
+      (T.renderEffList(), nodes["effList"].innerHTML.includes("暂无模型档位"))],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

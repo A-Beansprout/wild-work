@@ -128,6 +128,10 @@ type App struct {
 	// 由 main.go 注入；nil 时仅写配置不热更。
 	fbSyncer func(rules []config.ModelFallbackRule)
 
+	// efSyncer 面板保存思考强度映射后推给 server.Handler（热更新注入表）。
+	// 由 main.go 注入；nil 时仅写配置不热更。
+	efSyncer func(efforts map[string]string)
+
 	refreshMu  sync.Mutex // 防并发刷新积分
 	refreshing bool
 
@@ -1945,6 +1949,39 @@ func (a *App) SetModelFallback(rules []config.ModelFallbackRule) error {
 	return nil
 }
 
+// SetReasoningEffortsSyncer 注入思考强度映射热更新回调（由 main.go 注入：推给 server.Handler）。
+func (a *App) SetReasoningEffortsSyncer(fn func(efforts map[string]string)) { a.efSyncer = fn }
+
+// SetReasoningEfforts 保存思考强度注入映射（设置面板可视化编辑）。
+// 校验：键（模型 ID，含 `*` 全局默认）与值（档位）trim 后均非空；删除 = 键缺席；
+// 空 map = 清空禁用。哑管道：不校验档位取值合法性，上游吃什么档位由渠道模型自己说了算。
+// 保存即热生效（efSyncer）。
+func (a *App) SetReasoningEfforts(efforts map[string]string) error {
+	clean := make(map[string]string, len(efforts))
+	for k, v := range efforts {
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if k == "" {
+			return fmt.Errorf("模型 ID 不能为空（`*` 为合法的全局默认键）")
+		}
+		if v == "" {
+			return fmt.Errorf("模型 %q 的思考档位不能为空", k)
+		}
+		clean[k] = v
+	}
+	a.mu.Lock()
+	a.cfg.ReasoningEfforts = clean
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if a.efSyncer != nil {
+		a.efSyncer(clean)
+	}
+	log.Printf("思考强度映射已更新（%d 条，保存即热生效）", len(clean))
+	return nil
+}
+
 // SetOczenSyncer 注入 oczen key 热更新回调（由 main.go 注入：写入渠道 client）。
 func (a *App) SetOczenSyncer(fn func(key string)) { a.oczenSyncer = fn }
 
@@ -2144,6 +2181,9 @@ type State struct {
 
 	// ModelFallback 模型降级链（保存走 POST /api/config/model_fallback）。
 	ModelFallback []config.ModelFallbackRule `json:"model_fallback"`
+
+	// ReasoningEfforts 思考强度注入映射（键=模型 ID 或 `*` 全局默认；保存走 POST /api/config/reasoning_efforts）。
+	ReasoningEfforts map[string]string `json:"reasoning_efforts"`
 }
 
 // GetState 返回面板初始数据。
@@ -2178,6 +2218,10 @@ func (a *App) GetState() State {
 		LoopGuard:      a.cfg.Features.LoopGuard,
 	}
 	st.ModelFallback = a.cfg.ModelFallback
+	st.ReasoningEfforts = a.cfg.ReasoningEfforts
+	if st.ReasoningEfforts == nil {
+		st.ReasoningEfforts = map[string]string{}
+	}
 	st.Compat.DefaultChannel = a.cfg.Compat.DefaultChannel
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
@@ -2599,6 +2643,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetModelFallback(req.Rules); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/reasoning_efforts", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Efforts map[string]string `json:"efforts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetReasoningEfforts(req.Efforts); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

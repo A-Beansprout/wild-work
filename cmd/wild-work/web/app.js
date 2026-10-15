@@ -1342,6 +1342,38 @@ async function saveModelFallback() {
   } catch (e) { $("fbErr").textContent = e.message; }
 }
 
+// ---------- 思考强度注入（设置弹层：客户端未传 reasoning_effort 时按模型注入档位） ----------
+// effRules 编辑态副本（openSettings 时从 state.reasoning_efforts 拷贝，`*` 全局默认
+// 单独走「全局默认」输入行；保存成功后由 loadState 刷新）。
+let effRules = [];
+
+// renderEffList 渲染模型档位编辑区：每条映射一行（模型 → 档位 ＋ 🗑）。
+function renderEffList() {
+  const rows = effRules.map((r, i) =>
+    `<div class="row proxy-row">
+      <span class="lbl wide" style="max-width:260px;overflow-wrap:anywhere;font-family:ui-monospace,monospace" title="${esc(r.model)}">${esc(r.model)}</span>
+      <span style="margin:0 4px">→</span>
+      <span style="flex:1;font-family:ui-monospace,monospace">${esc(r.effort)}</span>
+      <button class="icon-btn" data-del-eff="${i}" title="删除该映射">🗑</button>
+    </div>`
+  ).join("");
+  $("effList").innerHTML = rows || `<div class="hint">（暂无模型档位——未配置的请求不注入）</div>`;
+  $("effErr").textContent = "";
+}
+
+async function saveReasoningEfforts() {
+  try {
+    const efforts = {};
+    const g = $("effGlobalInput").value.trim();
+    if (g) efforts["*"] = g;
+    for (const r of effRules) efforts[r.model] = r.effort;
+    await api("/api/config/reasoning_efforts", { efforts });
+    toast("思考强度已保存（热生效）");
+    $("effErr").textContent = "";
+    loadState();
+  } catch (e) { $("effErr").textContent = e.message; }
+}
+
 // ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/备用上游通道） ----------
 // renderBackupProxy 回显全局备用上游通道（单一地址，空 = 关闭）。
 // 定位是**备份链路**而不是全局代理：不参与常规请求，仅渠道命中「上游地区拒绝」
@@ -1424,6 +1456,12 @@ function openSettings() {
   fbRules = JSON.parse(JSON.stringify(state.model_fallback || []));
   renderFbList();
   $("fbFromInput").value = ""; $("fbToInput").value = "";
+  // 思考强度注入（`*` 全局默认单独回显到「全局默认」行）
+  const effs = state.reasoning_efforts || {};
+  effRules = Object.entries(effs).filter(([k]) => k !== "*").map(([model, effort]) => ({ model, effort }));
+  $("effGlobalInput").value = effs["*"] || "";
+  renderEffList();
+  $("effModelInput").value = ""; $("effEffortInput").value = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
@@ -1824,6 +1862,28 @@ function bind() {
     if (tos.length === 0) return;
     fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
     renderFbList();
+  });
+
+  // 思考强度：添加映射 / 保存 / 列表内删除 / 回车添加
+  $("btnEffAdd").onclick = () => {
+    const model = $("effModelInput").value.trim();
+    const effort = $("effEffortInput").value.trim();
+    if (!model) { $("effErr").textContent = "模型 ID 不能为空（全局默认请在上方「全局默认」行填）"; return; }
+    if (model === "*") { $("effErr").textContent = "* 是全局默认专用键，请在上方「全局默认」行填"; return; }
+    if (!effort) { $("effErr").textContent = "思考档位不能为空"; return; }
+    if (effRules.some((r) => r.model === model)) { $("effErr").textContent = `模型 ${model} 已有档位（每个模型只允许一条）`; return; }
+    effRules.push({ model, effort });
+    $("effModelInput").value = ""; $("effEffortInput").value = "";
+    renderEffList();
+  };
+  $("effEffortInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnEffAdd").onclick(); });
+  $("btnEffSave").onclick = saveReasoningEfforts;
+  $("effList").addEventListener("click", (e) => {
+    const del = e.target.closest("[data-del-eff]");
+    if (del) {
+      effRules.splice(+del.dataset.delEff, 1);
+      renderEffList();
+    }
   });
 
   // 点击弹层空白处关闭

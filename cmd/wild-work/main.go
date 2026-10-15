@@ -479,17 +479,18 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	inner := server.NewHandler(server.Config{
-		Runtimes:       runtimes,
-		APIKey:         cfg.APIKey,
-		Ledger:         appInst.Ledger(),
-		Stats:          appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
-		HardCooldown:   cfg.HardCreditDur,
-		SoftCooldown:   cfg.SoftRateDur,
-		ErrThreshold:   cfg.Cooldown.ErrThresh,
-		ErrCooldown:    cfg.ErrCooldownDur,
-		ModelFallbacks: cfg.ModelFallback, // 启动时载入降级链（此前仅面板保存后热更新，重启即丢）
-		WebUI:          sub,
-		AttachAPI:      appInst.HandleAPI,
+		Runtimes:         runtimes,
+		APIKey:           cfg.APIKey,
+		Ledger:           appInst.Ledger(),
+		Stats:            appInst.Stats(), // 转发路径插桩 AddUsage/AddRequestRow（运行统计）
+		HardCooldown:     cfg.HardCreditDur,
+		SoftCooldown:     cfg.SoftRateDur,
+		ErrThreshold:     cfg.Cooldown.ErrThresh,
+		ErrCooldown:      cfg.ErrCooldownDur,
+		ModelFallbacks:   cfg.ModelFallback,    // 启动时载入降级链（此前仅面板保存后热更新，重启即丢）
+		ReasoningEfforts: cfg.ReasoningEfforts, // 启动时载入思考强度映射（同上）
+		WebUI:            sub,
+		AttachAPI:        appInst.HandleAPI,
 	})
 
 	// 两层结构：外层兼容层只接管三个新端点，其余（含 /v1/chat/completions、Web UI、
@@ -516,6 +517,10 @@ func main() {
 	// 面板保存模型降级链时热更新内层 handler（不然新链要重启才生效）
 	appInst.SetModelFallbackSyncer(func(rules []config.ModelFallbackRule) {
 		inner.SetModelFallbacks(rules)
+	})
+	// 面板保存思考强度映射时热更新内层 handler（不然新映射要重启才生效）
+	appInst.SetReasoningEffortsSyncer(func(efforts map[string]string) {
+		inner.SetReasoningEfforts(efforts)
 	})
 	// 备用上游通道无需热更新接线：面板保存走 app.SetBackupProxy → backuplink.Set（只换指针），
 	// 渠道在命中地区拒绝时按需自取（R57），因此不存在旧的「两张接线表不一致」失效形态。

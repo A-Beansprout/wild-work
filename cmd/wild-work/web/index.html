@@ -460,6 +460,31 @@
         <div class="hint" id="fbErr" style="color:var(--danger)"></div>
       </div>
 
+      <!-- 思考强度注入 -->
+      <div class="cfg-section">
+        <div class="cfg-heading">思考强度</div>
+        <div class="hint" style="margin:0 0 8px">客户端请求<b>未带</b> <span style="font-family:ui-monospace,monospace">reasoning_effort</span> 时，按请求模型 ID 注入配置的思考档位；客户端显式传了的（任意值）一律不覆盖；精确未命中回退全局默认。哑管道不校验档位取值（支持什么档位由渠道模型自己决定）；<b>TraeWork 渠道协议无 reasoning 注入点，注入无害但无效</b>。模型 ID 用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），<span style="font-family:ui-monospace,monospace">*</span> 为全局默认。</div>
+        <div class="row" style="margin-top:8px">
+          <label class="lbl wide" title="全局默认档位：精确未命中时回退注入">全局默认</label>
+          <input id="effGlobalInput" class="input grow" spellcheck="false" list="effortDatalist" placeholder="留空 = 无全局默认（如 medium）">
+        </div>
+        <div id="effList" class="proxy-list"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="effModelInput" class="input" style="width:230px" spellcheck="false" placeholder="模型 ID（channel/model）">
+          <input id="effEffortInput" class="input grow" spellcheck="false" list="effortDatalist" placeholder="思考档位（可自由输入，建议 none/low/medium/high/max）">
+          <button class="btn small" id="btnEffAdd" title="添加一条模型档位映射">添加</button>
+          <button class="btn small primary" id="btnEffSave">保存思考强度</button>
+        </div>
+        <datalist id="effortDatalist">
+          <option value="none"></option>
+          <option value="low"></option>
+          <option value="medium"></option>
+          <option value="high"></option>
+          <option value="max"></option>
+        </datalist>
+        <div class="hint" id="effErr" style="color:var(--danger)"></div>
+      </div>
+
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnSettingsCancel">取消</button>

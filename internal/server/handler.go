@@ -83,6 +83,9 @@ type Config struct {
 
 	// ModelFallbacks 模型降级链初始值（面板保存后经 SetModelFallbacks 热更新）。
 	ModelFallbacks []config.ModelFallbackRule
+
+	// ReasoningEfforts 思考强度注入映射初始值（面板保存后经 SetReasoningEfforts 热更新）。
+	ReasoningEfforts map[string]string
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -108,6 +111,9 @@ type Handler struct {
 
 	fbMu      sync.RWMutex               // 保护 fallbacks（面板可运行时修改）
 	fallbacks []config.ModelFallbackRule // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
+
+	efMu    sync.RWMutex      // 保护 efforts（面板可运行时修改）
+	efforts map[string]string // 思考强度注入映射（cfg.ReasoningEfforts 初始，热更新经 SetReasoningEfforts）
 }
 
 // SetModelFallbacks 热更新模型降级链（面板保存后由 app 层回调；nil/空 = 清空禁用）。
@@ -115,6 +121,13 @@ func (h *Handler) SetModelFallbacks(rules []config.ModelFallbackRule) {
 	h.fbMu.Lock()
 	h.fallbacks = rules
 	h.fbMu.Unlock()
+}
+
+// SetReasoningEfforts 热更新思考强度注入映射（面板保存后由 app 层回调；nil/空 = 清空禁用）。
+func (h *Handler) SetReasoningEfforts(efforts map[string]string) {
+	h.efMu.Lock()
+	h.efforts = efforts
+	h.efMu.Unlock()
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -141,7 +154,7 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats, fallbacks: cfg.ModelFallbacks}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats, fallbacks: cfg.ModelFallbacks, efforts: cfg.ReasoningEfforts}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -525,6 +538,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	// 思考强度注入：客户端未传 reasoning_effort 且面板配置命中（按客户端请求模型 ID 匹配，
+	// 含 `*` 全局默认）时补上档位。未配置 = 零开销直通（applyEffort 内部快检）；
+	// 注入失败仅记日志、原 body 照发，绝不因此中断请求。
+	body = h.applyEffort(body, clientModel)
 
 	// 运行统计插桩：每客户端请求一行（最终结果；中间换号尝试不逐行——对齐 sidecar 口径）。
 	// TTFB 由 statWriter 记首字节，耗时/吞吐在出口由 defer 收口；
@@ -1093,6 +1110,66 @@ func rewriteModel(body []byte, model string) ([]byte, error) {
 	normalizeToolTurnContent(obj)
 	obj["model"] = model
 	return json.Marshal(obj)
+}
+
+// applyEffort 思考强度档位注入收口：未传且命中面板配置（lookupEffort 精确未命中回退
+// 通配 `*`）时填入 reasoning_effort；键已存在（任意值含 null，客户端显式意图）不碰；
+// 未配置（空 map，未配置 = 常态）零开销直通。注入失败不中断——原样返回旧 body，
+// 让上游给出权威结果（同模型降级链「仅触发才干活」哲学，也与 rewriteModel 失败
+// 处理同套路）。
+func (h *Handler) applyEffort(body []byte, model string) []byte {
+	h.efMu.RLock()
+	ef, ok := lookupEffort(h.efforts, model)
+	h.efMu.RUnlock()
+	if !ok {
+		return body
+	}
+	nb, changed, err := injectEffortField(body, ef)
+	if err != nil {
+		log.Printf("effort 注入失败 %s: %v", model, err)
+		return body
+	}
+	if changed {
+		log.Printf("effort inject: %s -> %s", model, ef)
+		return nb
+	}
+	return body
+}
+
+// lookupEffort 思考强度映射查询：精确命中优先，未命中回退 `*` 全局默认；皆无 = 不注入。
+// 空 map / 空模型名一律未命中（调用方无需再加前置判断）。
+func lookupEffort(efforts map[string]string, model string) (string, bool) {
+	if len(efforts) == 0 || model == "" {
+		return "", false
+	}
+	if ef, ok := efforts[model]; ok {
+		return ef, true
+	}
+	ef, ok := efforts["*"]
+	return ef, ok
+}
+
+// injectEffortField 思考强度档位注入：请求体顶层**无** reasoning_effort 键时填入配置
+// 档位。整体 map 解析 → 增键 → Marshal，保留其余全部字段；顶层键已存在（任意值含
+// null——客户端显式意图）不碰，返回 changed=false。失败返回 error，调用方保持原样
+// 转发（绝不因注入失败中断请求）。
+func injectEffortField(body []byte, ef string) (nb []byte, changed bool, err error) {
+	var obj map[string]any
+	if err = json.Unmarshal(body, &obj); err != nil {
+		return nil, false, err
+	}
+	if obj == nil {
+		return nil, false, errors.New("body 不是 JSON 对象")
+	}
+	if _, ok := obj["reasoning_effort"]; ok {
+		return nil, false, nil
+	}
+	obj["reasoning_effort"] = ef
+	nb, err = json.Marshal(obj)
+	if err != nil {
+		return nil, false, err
+	}
+	return nb, true, nil
 }
 
 // normalizeToolTurnContent 把「content 为 null 或缺失」的 assistant / tool 消息补成空串。
