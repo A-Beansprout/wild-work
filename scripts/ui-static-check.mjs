@@ -579,6 +579,14 @@ for (const [label, re] of uniq) {
         .filter((id) => !ids.has(id) && !dyn.has(id));
       return ["app.js 的 $() DOM 引用无悬空（防 openSettings 抛 TypeError 打不开弹层）", missing.length === 0];
     })(),
+    // ---- 跟进项（PR #121：自定义渠道 UI 打磨，R66 延续）----
+    ["模型添加按钮为 ➕ emoji（紧凑单行）", raw.includes('data-add-model="${i}"') && raw.includes("➕")],
+    ["上下文/输出输入支持 k/M 单位（parseTokens）", raw.includes("function parseTokens(") && raw.includes("function formatTokenCount(")],
+    ["上下文/输出默认值使用 1M / 64k 单位串", raw.includes('value="1M"') && raw.includes('value="64k"')],
+    ["模型行含工具能力勾选（supports_tools）", raw.includes('data-m-tools="${i}"') && raw.includes("supports_tools: hasTools")],
+    ["模型表格有固定列宽 colgroup（对齐）", raw.includes('<colgroup>') && css.includes("table-layout: fixed")],
+    ["openSettings 不再引用已移除的 inCustomModels", !raw.includes('$("inCustomModels")')],
+    ["模型添加行回车快捷提交", raw.includes("模型添加输入框回车快捷添加")],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

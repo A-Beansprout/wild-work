@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"wild-work/internal/provider"
@@ -30,12 +31,61 @@ type ModelConfig struct {
 	MaxTokens              int64    `json:"max_tokens,omitempty"`               // 最大输出 tokens，0 = 未设置
 	SupportsImages         bool     `json:"supports_images,omitempty"`          // 是否支持视觉/多模态
 	SupportsReasoning      bool     `json:"supports_reasoning,omitempty"`       // 是否支持思考/推理
+	SupportsTools          *bool    `json:"supports_tools,omitempty"`           // 工具/函数调用（nil = 未声明 ⇒ 默认 true；指针以保留显式 false，否则 omitempty 会把 false 丢掉）
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`        // 思考档位，如 ["low", "medium", "high"]
 	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"` // 默认思考档位，如 "high"
 }
 
-// UnmarshalJSON 兼容简写字符串（如 "step-5-preview"）与完整 JSON 对象。
+// boolPtr 返回 bool 的指针（用于区分三态：nil = 未声明，取默认）。
+func boolPtr(b bool) *bool { return &b }
+
+// ToolsEnabled 报告该模型是否支持工具调用：未声明（nil）视为支持，与旧配置向后兼容。
+func (m ModelConfig) ToolsEnabled() bool { return m.SupportsTools == nil || *m.SupportsTools }
+
+// ParseTokens 解析带 k/K/m/M 单位的 token 数量（如 1M, 64k, 128k, 1000000）。
+func ParseTokens(v any) (int64, error) {
+	switch val := v.(type) {
+	case float64:
+		return int64(val), nil
+	case int64:
+		return val, nil
+	case int:
+		return int64(val), nil
+	case string:
+		s := strings.TrimSpace(strings.ToUpper(val))
+		if s == "" {
+			return 0, nil
+		}
+		multiplier := int64(1)
+		if strings.HasSuffix(s, "M") {
+			multiplier = 1000000
+			s = strings.TrimSuffix(s, "M")
+		} else if strings.HasSuffix(s, "K") {
+			multiplier = 1000
+			s = strings.TrimSuffix(s, "K")
+		}
+		s = strings.TrimSpace(s)
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid token amount %q: %w", val, err)
+		}
+		return int64(f * float64(multiplier)), nil
+	default:
+		return 0, fmt.Errorf("unsupported token type %T", v)
+	}
+}
+
+// UnmarshalJSON 兼容简写字符串（如 "step-5-preview"）与完整 JSON 对象
+// （context_window / max_tokens 支持 1M / 64k 带单位串）。
+//
+// 注意：**字符串形态也要补 SupportsTools=true**（缺省 = 支持）。新字段一律以
+// 「零值 = 关闭」声明（bool 无三态），故默认值必须在每条解析路径上显式补上——
+// 只在对象分支补会让 `["step-5-preview"]` 这种最常用的简写落成「不支持工具」，
+// 静默地从 /v1/models 消失（客户端据此判断能否发 tools）。
 func (m *ModelConfig) UnmarshalJSON(data []byte) error {
+	// 默认值先置位，两条分支都不必重复（与 SupportsImages/Reasoning 不同：那两个
+	// 上游默认就是 false，这里默认是 true）。
+	m.SupportsTools = boolPtr(true)
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || string(data) == "null" {
 		return nil
@@ -48,14 +98,53 @@ func (m *ModelConfig) UnmarshalJSON(data []byte) error {
 		m.ID = strings.TrimSpace(s)
 		return nil
 	}
-	type alias ModelConfig
-	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	var raw struct {
+		ID                     string          `json:"id"`
+		ContextWindow          json.RawMessage `json:"context_window,omitempty"`
+		MaxTokens              json.RawMessage `json:"max_tokens,omitempty"`
+		SupportsImages         bool            `json:"supports_images,omitempty"`
+		SupportsReasoning      bool            `json:"supports_reasoning,omitempty"`
+		SupportsTools          *bool           `json:"supports_tools,omitempty"`
+		ReasoningEfforts       []string        `json:"reasoning_efforts,omitempty"`
+		DefaultReasoningEffort string          `json:"default_reasoning_effort,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	a.ID = strings.TrimSpace(a.ID)
-	*m = ModelConfig(a)
+	m.ID = strings.TrimSpace(raw.ID)
+	m.SupportsImages = raw.SupportsImages
+	m.SupportsReasoning = raw.SupportsReasoning
+	m.SupportsTools = raw.SupportsTools
+	m.ReasoningEfforts = raw.ReasoningEfforts
+	m.DefaultReasoningEffort = raw.DefaultReasoningEffort
+
+	// 单位串解析失败不吞错：把错误往上抛，让配置层 normalize() 报「哪一条渠道的哪个字段
+	// 写错了」，而不是静默落成 0（= 未设置）——否则用户输错单位后会看到「上下文未知」
+	// 却无人告知，属 R55 的「展示字段不得吞掉配置错误」同类。
+	if len(raw.ContextWindow) > 0 {
+		v, err := decodeTokenAmount(raw.ContextWindow)
+		if err != nil {
+			return fmt.Errorf("context_window: %w", err)
+		}
+		m.ContextWindow = v
+	}
+	if len(raw.MaxTokens) > 0 {
+		v, err := decodeTokenAmount(raw.MaxTokens)
+		if err != nil {
+			return fmt.Errorf("max_tokens: %w", err)
+		}
+		m.MaxTokens = v
+	}
 	return nil
+}
+
+// decodeTokenAmount 把 JSON 原始值（数字或带单位串）解成 token 数。
+func decodeTokenAmount(raw json.RawMessage) (int64, error) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, err
+	}
+	return ParseTokens(v)
 }
 
 // ChannelConfig 自定义 OpenAI 兼容渠道配置。
