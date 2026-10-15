@@ -267,3 +267,74 @@ func TestCustomClientAggregateNonStreamJSON(t *testing.T) {
 		t.Fatalf("expected choices, got %v", resp)
 	}
 }
+
+func TestParseTokens(t *testing.T) {
+	cases := []struct {
+		input any
+		want  int64
+	}{
+		{"1M", 1000000},
+		{"1m", 1000000},
+		{"1.5M", 1500000},
+		{"64k", 64000},
+		{"64K", 64000},
+		{"128k", 128000},
+		{"1000000", 1000000},
+		{1000000, 1000000},
+		{float64(64000), 64000},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		got, err := ParseTokens(tc.input)
+		if err != nil {
+			t.Fatalf("ParseTokens(%v) error: %v", tc.input, err)
+		}
+		if got != tc.want {
+			t.Errorf("ParseTokens(%v) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestModelConfigUnitStrings(t *testing.T) {
+	// 上下文/输出支持 1M / 64k 带单位串；supports_tools 显式 false 时如实保留
+	raw := `{
+		"id": "m1",
+		"context_window": "1M",
+		"max_tokens": "64k",
+		"supports_images": true,
+		"supports_reasoning": true,
+		"supports_tools": true,
+		"reasoning_efforts": ["low", "high"]
+	}`
+	var m ModelConfig
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m.ContextWindow != 1000000 || m.MaxTokens != 64000 {
+		t.Errorf("unit parse mismatch: ctx=%d max=%d", m.ContextWindow, m.MaxTokens)
+	}
+	if !m.SupportsTools {
+		t.Errorf("supports_tools should be true")
+	}
+	if len(m.ReasoningEfforts) != 2 {
+		t.Errorf("efforts mismatch: %v", m.ReasoningEfforts)
+	}
+
+	// 缺省 supports_tools = true（向后兼容老配置）
+	var m2 ModelConfig
+	if err := json.Unmarshal([]byte(`{"id":"m2"}`), &m2); err != nil {
+		t.Fatalf("unmarshal m2: %v", err)
+	}
+	if !m2.SupportsTools {
+		t.Errorf("missing supports_tools should default to true")
+	}
+
+	// 显式 false 保留
+	var m3 ModelConfig
+	if err := json.Unmarshal([]byte(`{"id":"m3","supports_tools":false}`), &m3); err != nil {
+		t.Fatalf("unmarshal m3: %v", err)
+	}
+	if m3.SupportsTools {
+		t.Errorf("explicit false should be preserved")
+	}
+}

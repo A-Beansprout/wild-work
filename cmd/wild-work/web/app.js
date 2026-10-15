@@ -1356,6 +1356,37 @@ const RESERVED_CHANNEL_NAMES = new Set([
 ]);
 let editCustomChannels = [];
 
+// parseTokens 解析带 k/M 单位的 token 数（如 1M→1000000、64k→64000）；纯数字原样返回。
+function parseTokens(str, fallback) {
+  if (str === undefined || str === null || str === "") return fallback || 0;
+  if (typeof str === "number") return str;
+  const s = String(str).trim();
+  if (!s) return fallback || 0;
+  const upper = s.toUpperCase();
+  let mult = 1;
+  let numStr = upper;
+  if (upper.endsWith("M")) {
+    mult = 1000000;
+    numStr = upper.slice(0, -1).trim();
+  } else if (upper.endsWith("K")) {
+    mult = 1000;
+    numStr = upper.slice(0, -1).trim();
+  }
+  const n = parseFloat(numStr);
+  if (isNaN(n) || n < 0) return fallback || 0;
+  return Math.round(n * mult);
+}
+
+// formatTokenCount 反向格式化：优先整数 k/M（1M、64k），非整除时保留一位小数。
+function formatTokenCount(num) {
+  if (!num) return "—";
+  if (num >= 1000000 && num % 100000 === 0) return `${num / 1000000}M`;
+  if (num >= 1000 && num % 1000 === 0) return `${num / 1000}k`;
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(num);
+}
+
 function renderCustomChList() {
   const cards = editCustomChannels.map((c, i) => {
     const isOff = c.enabled === false;
@@ -1365,16 +1396,23 @@ function renderCustomChList() {
 
     const modelRows = models.map((m, j) => {
       const mid = typeof m === "string" ? m : m.id;
-      const ctx = typeof m === "object" && m.context_window ? m.context_window.toLocaleString() : "—";
-      const maxTok = typeof m === "object" && m.max_tokens ? m.max_tokens.toLocaleString() : "—";
-      const efforts = typeof m === "object" && m.reasoning_efforts && m.reasoning_efforts.length ? m.reasoning_efforts.join("·") : "";
-      const defEff = typeof m === "object" && m.default_reasoning_effort ? m.default_reasoning_effort : "";
-      const rsnHtml = (typeof m === "object" && (m.supports_reasoning || efforts))
-        ? `<span class="tag ok">${esc(defEff || efforts.split("·")[0] || "开启")}</span> <span class="hint">[${esc(efforts || "默认")}]</span>`
+      const ctxNum = typeof m === "object" ? parseTokens(m.context_window, 0) : 0;
+      const outNum = typeof m === "object" ? parseTokens(m.max_tokens, 0) : 0;
+      const ctx = ctxNum ? formatTokenCount(ctxNum) : "—";
+      const maxTok = outNum ? formatTokenCount(outNum) : "—";
+      const efforts = typeof m === "object" && m.reasoning_efforts && m.reasoning_efforts.length ? m.reasoning_efforts : [];
+      const defEff = typeof m === "object" && m.default_reasoning_effort ? m.default_reasoning_effort : (efforts[0] || "");
+      const rsnHtml = (typeof m === "object" && (m.supports_reasoning || efforts.length > 0))
+        ? `<span class="tag ok" title="默认: ${esc(defEff)}">${esc(defEff || "开启")}</span> <span class="hint">[${esc(efforts.join(", "))}]</span>`
         : `<span class="hint">—</span>`;
       const hasImg = typeof m === "object" && m.supports_images;
-      const hasRsn = typeof m === "object" && m.supports_reasoning;
-      const caps = `${hasImg ? '<span class="tag">识图</span> ' : ''}${hasRsn ? '<span class="tag">思考</span> ' : ''}<span class="tag">工具</span>`;
+      const hasRsn = typeof m === "object" && (m.supports_reasoning || efforts.length > 0);
+      const hasTools = typeof m === "object" ? m.supports_tools !== false : true;
+      const capTags = [];
+      if (hasImg) capTags.push('<span class="tag">识图</span>');
+      if (hasRsn) capTags.push('<span class="tag">思考</span>');
+      if (hasTools) capTags.push('<span class="tag">工具</span>');
+      const caps = capTags.length > 0 ? capTags.join(" ") : '<span class="hint">—</span>';
 
       return `<tr>
         <td><code>${esc(mid)}</code></td>
@@ -1388,14 +1426,22 @@ function renderCustomChList() {
 
     const tableHtml = models.length > 0 ? `
       <table class="custom-models-table">
+        <colgroup>
+          <col style="width:auto">
+          <col style="width:75px">
+          <col style="width:75px">
+          <col style="width:130px">
+          <col style="width:130px">
+          <col style="width:36px">
+        </colgroup>
         <thead>
           <tr>
             <th>模型 ID</th>
-            <th>上下文(tokens)</th>
+            <th>上下文</th>
             <th>最大输出</th>
             <th>思考等级</th>
             <th>能力</th>
-            <th style="width:40px;text-align:center">操作</th>
+            <th style="text-align:center">操作</th>
           </tr>
         </thead>
         <tbody>${modelRows}</tbody>
@@ -1415,18 +1461,16 @@ function renderCustomChList() {
       </div>
 
       <div class="custom-models-box">
-        <div class="custom-models-title">
-          <span>渠道模型列表（共 ${models.length} 个，/v1/models 将如实返回）：</span>
-        </div>
         ${tableHtml}
         <div class="custom-model-add-row">
-          <input class="input" data-m-id="${i}" placeholder="模型 ID(如 ${c.name === 'stepfun' ? 'step-5-preview' : 'gemini-3.8-flash-high'})" style="width:180px">
-          <input class="input" data-m-ctx="${i}" placeholder="上下文(如 1000000)" type="number" style="width:130px" value="1000000">
-          <input class="input" data-m-out="${i}" placeholder="输出(如 64000)" type="number" style="width:100px" value="64000">
-          <input class="input" data-m-eff="${i}" placeholder="思考档位(如 high 或 low,medium,high)" style="width:170px" value="high">
-          <label class="hint" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" data-m-img="${i}" checked> 识图</label>
-          <label class="hint" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" data-m-rsn="${i}" checked> 思考</label>
-          <button class="btn small" data-add-model="${i}">＋ 添加模型</button>
+          <input class="input" data-m-id="${i}" placeholder="模型 ID" style="flex:1;min-width:110px">
+          <input class="input" data-m-ctx="${i}" placeholder="上下文(如 1M)" style="width:90px;flex-shrink:0" value="1M">
+          <input class="input" data-m-out="${i}" placeholder="输出(如 64k)" style="width:80px;flex-shrink:0" value="64k">
+          <input class="input" data-m-eff="${i}" placeholder="思考档位" style="width:110px;flex-shrink:0">
+          <label class="hint" style="display:inline-flex;align-items:center;gap:2px;cursor:pointer;white-space:nowrap;margin:0 1px"><input type="checkbox" data-m-img="${i}" checked>识图</label>
+          <label class="hint" style="display:inline-flex;align-items:center;gap:2px;cursor:pointer;white-space:nowrap;margin:0 1px"><input type="checkbox" data-m-rsn="${i}" checked>思考</label>
+          <label class="hint" style="display:inline-flex;align-items:center;gap:2px;cursor:pointer;white-space:nowrap;margin:0 1px"><input type="checkbox" data-m-tools="${i}" checked>工具</label>
+          <button class="btn small icon-btn" data-add-model="${i}" style="font-size:15px;width:32px;height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0" title="添加模型">➕</button>
         </div>
       </div>
     </div>`;
@@ -1573,7 +1617,9 @@ function openSettings() {
   // 自定义渠道
   editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
   renderCustomChList();
-  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = ""; $("inCustomModels").value = "";
+  if ($("inCustomName")) $("inCustomName").value = "";
+  if ($("inCustomURL")) $("inCustomURL").value = "";
+  if ($("inCustomKey")) $("inCustomKey").value = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
@@ -2091,6 +2137,7 @@ function bind() {
       const effInp = document.querySelector(`[data-m-eff="${idx}"]`);
       const imgInp = document.querySelector(`[data-m-img="${idx}"]`);
       const rsnInp = document.querySelector(`[data-m-rsn="${idx}"]`);
+      const toolsInp = document.querySelector(`[data-m-tools="${idx}"]`);
 
       const mid = idInp ? idInp.value.trim() : "";
       if (!mid) {
@@ -2102,12 +2149,14 @@ function bind() {
         $("customChErr").textContent = `该渠道下已存在模型 ${mid}`;
         return;
       }
-      const ctx = ctxInp ? (parseInt(ctxInp.value, 10) || 0) : 0;
-      const maxTok = outInp ? (parseInt(outInp.value, 10) || 0) : 0;
+      // 上下文/输出支持 k、M 单位（如 1M / 64k），未填时分别以 1M / 64k 兜底
+      const ctx = parseTokens(ctxInp ? ctxInp.value : "", 1000000);
+      const maxTok = parseTokens(outInp ? outInp.value : "", 64000);
       const effRaw = effInp ? effInp.value.trim() : "";
       const efforts = effRaw ? effRaw.split(/[,，\s]+/).filter(Boolean) : [];
-      const hasRsn = (rsnInp && rsnInp.checked) || efforts.length > 0;
-      const hasImg = imgInp && imgInp.checked;
+      const hasRsn = rsnInp ? rsnInp.checked : true;
+      const hasImg = imgInp ? imgInp.checked : true;
+      const hasTools = toolsInp ? toolsInp.checked : true;
 
       ch.models.push({
         id: mid,
@@ -2115,6 +2164,7 @@ function bind() {
         max_tokens: maxTok,
         supports_images: hasImg,
         supports_reasoning: hasRsn,
+        supports_tools: hasTools,
         reasoning_efforts: efforts,
         default_reasoning_effort: efforts[0] || (hasRsn ? "high" : ""),
       });
@@ -2123,6 +2173,13 @@ function bind() {
       $("customChOk").textContent = `已添加模型 [${mid}]，点击「保存全部配置」生效`;
       return;
     }
+  });
+
+  // 模型添加输入框回车快捷添加（整行任一输入框回车 = 点 ➕）
+  $("customChList").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const addBtn = e.target.closest(".custom-model-add-row")?.querySelector("[data-add-model]");
+    if (addBtn) { e.preventDefault(); addBtn.click(); }
   });
 
   $("btnCustomTest").onclick = async () => {

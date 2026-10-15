@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"wild-work/internal/provider"
@@ -30,11 +31,46 @@ type ModelConfig struct {
 	MaxTokens              int64    `json:"max_tokens,omitempty"`               // 最大输出 tokens，0 = 未设置
 	SupportsImages         bool     `json:"supports_images,omitempty"`          // 是否支持视觉/多模态
 	SupportsReasoning      bool     `json:"supports_reasoning,omitempty"`       // 是否支持思考/推理
+	SupportsTools          bool     `json:"supports_tools,omitempty"`           // 是否支持工具/函数调用
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`        // 思考档位，如 ["low", "medium", "high"]
 	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"` // 默认思考档位，如 "high"
 }
 
-// UnmarshalJSON 兼容简写字符串（如 "step-5-preview"）与完整 JSON 对象。
+// ParseTokens 解析带 k/K/m/M 单位的 token 数量（如 1M, 64k, 128k, 1000000）。
+func ParseTokens(v any) (int64, error) {
+	switch val := v.(type) {
+	case float64:
+		return int64(val), nil
+	case int64:
+		return val, nil
+	case int:
+		return int64(val), nil
+	case string:
+		s := strings.TrimSpace(strings.ToUpper(val))
+		if s == "" {
+			return 0, nil
+		}
+		multiplier := int64(1)
+		if strings.HasSuffix(s, "M") {
+			multiplier = 1000000
+			s = strings.TrimSuffix(s, "M")
+		} else if strings.HasSuffix(s, "K") {
+			multiplier = 1000
+			s = strings.TrimSuffix(s, "K")
+		}
+		s = strings.TrimSpace(s)
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid token amount %q: %w", val, err)
+		}
+		return int64(f * float64(multiplier)), nil
+	default:
+		return 0, fmt.Errorf("unsupported token type %T", v)
+	}
+}
+
+// UnmarshalJSON 兼容简写字符串（如 "step-5-preview"）与完整 JSON 对象
+// （context_window / max_tokens 支持 1M / 64k 带单位串）。
 func (m *ModelConfig) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || string(data) == "null" {
@@ -48,13 +84,38 @@ func (m *ModelConfig) UnmarshalJSON(data []byte) error {
 		m.ID = strings.TrimSpace(s)
 		return nil
 	}
-	type alias ModelConfig
-	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	var raw struct {
+		ID                     string          `json:"id"`
+		ContextWindow          json.RawMessage `json:"context_window,omitempty"`
+		MaxTokens              json.RawMessage `json:"max_tokens,omitempty"`
+		SupportsImages         bool            `json:"supports_images,omitempty"`
+		SupportsReasoning      bool            `json:"supports_reasoning,omitempty"`
+		SupportsTools          *bool           `json:"supports_tools,omitempty"`
+		ReasoningEfforts       []string        `json:"reasoning_efforts,omitempty"`
+		DefaultReasoningEffort string          `json:"default_reasoning_effort,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	a.ID = strings.TrimSpace(a.ID)
-	*m = ModelConfig(a)
+	m.ID = strings.TrimSpace(raw.ID)
+	m.SupportsImages = raw.SupportsImages
+	m.SupportsReasoning = raw.SupportsReasoning
+	m.SupportsTools = raw.SupportsTools == nil || *raw.SupportsTools
+	m.ReasoningEfforts = raw.ReasoningEfforts
+	m.DefaultReasoningEffort = raw.DefaultReasoningEffort
+
+	if len(raw.ContextWindow) > 0 {
+		var v any
+		if err := json.Unmarshal(raw.ContextWindow, &v); err == nil {
+			m.ContextWindow, _ = ParseTokens(v)
+		}
+	}
+	if len(raw.MaxTokens) > 0 {
+		var v any
+		if err := json.Unmarshal(raw.MaxTokens, &v); err == nil {
+			m.MaxTokens, _ = ParseTokens(v)
+		}
+	}
 	return nil
 }
 

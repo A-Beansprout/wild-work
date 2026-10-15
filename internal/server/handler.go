@@ -400,6 +400,9 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 	if mi.MaxTokens > 0 {
 		entry["max_output_tokens"] = mi.MaxTokens
 	}
+	if mi.SupportsTools {
+		entry["supports_tools"] = true
+	}
 	entry["architecture"] = map[string]any{
 		"input_modalities": mi.InputModalities(),
 		"modality":         mi.Modality(),

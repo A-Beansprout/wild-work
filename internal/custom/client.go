@@ -188,7 +188,7 @@ func (c *Client) StaticModels() []provider.ModelInfo {
 			SupportsReasoning:      hasReasoning,
 			ReasoningEfforts:       efforts,
 			DefaultReasoningEffort: m.DefaultReasoningEffort,
-			SupportsTools:          true,
+			SupportsTools:          m.SupportsTools,
 		}
 		out = append(out, mi)
 	}
