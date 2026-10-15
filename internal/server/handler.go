@@ -108,6 +108,25 @@ type Handler struct {
 
 	fbMu      sync.RWMutex               // 保护 fallbacks（面板可运行时修改）
 	fallbacks []config.ModelFallbackRule // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
+
+	runtimesMu sync.RWMutex               // 保护 customRts 动态热更新（R64）
+	customRts  map[provider.Kind]*Runtime // 自定义渠道运行时
+}
+
+// SetCustomRuntimes 热更新自定义渠道运行时（面板保存后由 app 层回调）。
+func (h *Handler) SetCustomRuntimes(rts map[provider.Kind]*Runtime) {
+	h.runtimesMu.Lock()
+	h.customRts = rts
+	h.runtimesMu.Unlock()
+}
+
+func (h *Handler) getRuntime(k provider.Kind) *Runtime {
+	if rt := h.cfg.Runtimes[k]; rt != nil {
+		return rt
+	}
+	h.runtimesMu.RLock()
+	defer h.runtimesMu.RUnlock()
+	return h.customRts[k]
 }
 
 // SetModelFallbacks 热更新模型降级链（面板保存后由 app 层回调；nil/空 = 清空禁用）。
@@ -279,8 +298,10 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	accounts := map[string]any{}
 	for _, k := range h.runtimeKinds() {
-		rt := h.cfg.Runtimes[k]
-		accounts[k.String()] = rt.Pool.List()
+		rt := h.getRuntime(k)
+		if rt != nil && rt.Pool != nil {
+			accounts[k.String()] = rt.Pool.List()
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
 }
@@ -331,8 +352,8 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) modelList() []map[string]any {
 	out := []map[string]any{}
 	for _, k := range h.runtimeKinds() {
-		rt := h.cfg.Runtimes[k]
-		if rt.Pool == nil || len(rt.Pool.List()) == 0 { // 只暴露已接入账号的平台
+		rt := h.getRuntime(k)
+		if rt == nil || rt.Pool == nil || len(rt.Pool.List()) == 0 { // 只暴露已接入账号的平台
 			continue
 		}
 		infos := h.fetchRuntimeModels(rt)
@@ -922,7 +943,7 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	if !ok {
 		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
 	}
-	rt := h.cfg.Runtimes[kind]
+	rt := h.getRuntime(kind)
 	if rt == nil || rt.Pool == nil || rt.Upstream == nil {
 		return nil, "", fmt.Errorf("provider %q is not configured", kind)
 	}
@@ -1147,9 +1168,10 @@ func normalizeToolTurnContent(obj map[string]any) {
 // 供管理端（费率面板）复用，保证「模型列表」与「模型费率」基于同一份清单。
 // 注意：会触发上游网络请求（fetchRuntimeModels），费控面板场景用 CachedChannelModels 避免阻塞。
 func (h *Handler) ChannelModels() map[provider.Kind][]provider.ModelInfo {
-	out := make(map[provider.Kind][]provider.ModelInfo, len(h.cfg.Runtimes))
-	for _, k := range h.runtimeKinds() {
-		rt := h.cfg.Runtimes[k]
+	ks := h.runtimeKinds()
+	out := make(map[provider.Kind][]provider.ModelInfo, len(ks))
+	for _, k := range ks {
+		rt := h.getRuntime(k)
 		if rt == nil || rt.Pool == nil || len(rt.Pool.List()) == 0 {
 			continue
 		}
@@ -1165,9 +1187,10 @@ func (h *Handler) ChannelModels() map[provider.Kind][]provider.ModelInfo {
 // CachedChannelModels 返回各渠道生效的模型列表，仅用内存缓存/静态兜底，不触发上游网络请求。
 // 供费控面板等需要即时返回的场景使用（后台刷新比用户点面板快）。
 func (h *Handler) CachedChannelModels() map[provider.Kind][]provider.ModelInfo {
-	out := make(map[provider.Kind][]provider.ModelInfo, len(h.cfg.Runtimes))
-	for _, k := range h.runtimeKinds() {
-		rt := h.cfg.Runtimes[k]
+	ks := h.runtimeKinds()
+	out := make(map[provider.Kind][]provider.ModelInfo, len(ks))
+	for _, k := range ks {
+		rt := h.getRuntime(k)
 		if rt == nil || rt.Pool == nil || len(rt.Pool.List()) == 0 {
 			continue
 		}
@@ -1196,7 +1219,8 @@ func (h *Handler) InvalidateModels() {
 	dynamicModelsCache.fetched = time.Time{}
 	dynamicModelsCache.lastFail = time.Time{}
 	dynamicModelsCache.Unlock()
-	for _, rt := range h.cfg.Runtimes {
+	for _, k := range h.runtimeKinds() {
+		rt := h.getRuntime(k)
 		if rt == nil {
 			continue
 		}
@@ -1209,9 +1233,23 @@ func (h *Handler) InvalidateModels() {
 }
 
 func (h *Handler) runtimeKinds() []provider.Kind {
-	ks := make([]provider.Kind, 0, len(h.cfg.Runtimes))
+	h.runtimesMu.RLock()
+	customCopy := make(map[provider.Kind]bool, len(h.customRts))
+	for k := range h.customRts {
+		customCopy[k] = true
+	}
+	h.runtimesMu.RUnlock()
+
+	ks := make([]provider.Kind, 0, len(h.cfg.Runtimes)+len(customCopy))
+	seen := map[provider.Kind]bool{}
 	for k := range h.cfg.Runtimes {
 		ks = append(ks, k)
+		seen[k] = true
+	}
+	for k := range customCopy {
+		if !seen[k] {
+			ks = append(ks, k)
+		}
 	}
 	sort.Slice(ks, func(i, j int) bool { return ks[i] < ks[j] })
 	return ks

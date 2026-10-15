@@ -186,6 +186,7 @@ body {
 .badge.qoder { background: #7c3aed; }
 .badge.qodercn { background: #6d28d9; }
 .badge.qodercom { background: #b45309; }
+.badge.custom { background: #6366f1; }
 
 .tag { font-size: 10px; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
 .tag.bad { background: #fee2e2; color: var(--danger); }

@@ -172,7 +172,7 @@ func (s *Stats) Logs(limit int) []ReqRow {
 func channelOfModel(model string) (string, bool) {
 	if k, _, ok := provider.SplitModelID(model); ok {
 		g := k.String()
-		return g, channelKind[g]
+		return g, IsKnownChannel(g)
 	}
 	return "", false
 }

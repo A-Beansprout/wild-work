@@ -22,6 +22,7 @@ import (
 	"wild-work/internal/backuplink"
 	"wild-work/internal/cline"
 	"wild-work/internal/config"
+	"wild-work/internal/custom"
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
 	"wild-work/internal/login_glm"
@@ -69,6 +70,9 @@ type Runtime struct {
 	// uid → 账号反查）必须跳过别名渠道，否则同一账号会被计入两次（见 issue #36）。
 	// 别名渠道仍保留独立的模型/费率抓取（各自 upstream 的 function 不同）。
 	Alias bool
+
+	// Custom 标记该渠道为用户自定义 OpenAI 兼容第三方渠道（R64）。
+	Custom bool
 }
 
 // Options 构建 App 的依赖。
@@ -127,6 +131,10 @@ type App struct {
 	// fbSyncer 面板保存模型降级链后推给 server.Handler（热更新降级路由）。
 	// 由 main.go 注入；nil 时仅写配置不热更。
 	fbSyncer func(rules []config.ModelFallbackRule)
+
+	// customSyncer 面板保存自定义渠道后热更新（R64）。
+	// 由 main.go 注入；nil 时仅写配置不热更。
+	customSyncer func(channels []custom.ChannelConfig)
 
 	refreshMu  sync.Mutex // 防并发刷新积分
 	refreshing bool
@@ -335,8 +343,46 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 //   - oczen：匆名通道，根本没有账号/余额概念；
 //   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
 //     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
-func creditsNAKind(group string) bool {
-	return group == provider.Oczen.String() || group == provider.Cline.String()
+//   - 自定义渠道（R64）：无积分与额度接口，同样走 NA。
+func (a *App) creditsNAKind(group string) bool {
+	if group == provider.Oczen.String() || group == provider.Cline.String() {
+		return true
+	}
+	return a.isCustomChannel(group)
+}
+
+func (a *App) isCustomChannel(group string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if rt := a.runtimes[provider.Kind(group)]; rt != nil && rt.Custom {
+		return true
+	}
+	for _, cc := range a.cfg.CustomChannels {
+		if strings.EqualFold(cc.Name, group) {
+			return true
+		}
+	}
+	return false
+}
+
+// UpdateCustomRuntimes 热更新 app 持有的自定义渠道运行时（R64）。
+func (a *App) UpdateCustomRuntimes(customRts map[provider.Kind]*Runtime) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k, rt := range a.runtimes {
+		if rt != nil && rt.Custom {
+			delete(a.runtimes, k)
+		}
+	}
+	for k, rt := range customRts {
+		rt.Custom = true
+		a.runtimes[k] = rt
+	}
+}
+
+// SetCustomChannelsSyncer 注入自定义渠道热更新回调。
+func (a *App) SetCustomChannelsSyncer(fn func(channels []custom.ChannelConfig)) {
+	a.customSyncer = fn
 }
 
 // noExplicitCheckinKinds 不支持显式签到（手动按钮）的渠道。
@@ -350,8 +396,12 @@ func creditsNAKind(group string) bool {
 // Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
 // Cline 走官方 API Key：无签到活动、Key 不过期 ⇒ 既不需手动签到也不需保活。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
-func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen || k == provider.Cline
+// 自定义渠道无签到活动（R64）。
+func (a *App) noExplicitCheckin(k provider.Kind) bool {
+	if k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen || k == provider.Cline {
+		return true
+	}
+	return a.isCustomChannel(k.String())
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -1325,7 +1375,7 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 	if rt == nil || rt.Scheduler == nil {
 		return scheduler.CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
-	if noExplicitCheckin(rt.Kind) {
+	if a.noExplicitCheckin(rt.Kind) {
 		if rt.Kind == provider.WorkBuddyAI {
 			return scheduler.CheckinResult{}, fmt.Errorf("workbuddyai 渠道无需手动签到，已定时自动领取日活奖励")
 		}
@@ -1348,7 +1398,7 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 		if rt == nil || rt.Pool == nil || rt.Scheduler == nil || rt.Alias {
 			continue
 		}
-		if noExplicitCheckin(rt.Kind) { // 无签到活动渠道，跳过
+		if a.noExplicitCheckin(rt.Kind) { // 无签到活动渠道，跳过
 			continue
 		}
 		for _, st := range rt.Pool.List() {
@@ -1661,6 +1711,15 @@ func (a *App) RemoveAccount(uid string) error {
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可删除")
 	}
+	if rt.Custom {
+		var next []custom.ChannelConfig
+		for _, cc := range a.cfg.CustomChannels {
+			if !strings.EqualFold(cc.Name, rt.Kind.String()) {
+				next = append(next, cc)
+			}
+		}
+		return a.SetCustomChannels(next)
+	}
 	if au.FilePath != "" {
 		_ = os.Remove(au.FilePath)
 	}
@@ -1679,6 +1738,17 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 	}
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可停用/启用")
+	}
+	if rt.Custom {
+		var next []custom.ChannelConfig
+		for _, cc := range a.cfg.CustomChannels {
+			if strings.EqualFold(cc.Name, rt.Kind.String()) {
+				en := !disabled
+				cc.Enabled = &en
+			}
+			next = append(next, cc)
+		}
+		return a.SetCustomChannels(next)
 	}
 	rt.Pool.SetDisabled(uid, disabled)
 	if disabled {
@@ -1886,6 +1956,33 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	}
 	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d model_map=%d 条",
 		defaultChannel, maxTokensCap, len(modelMap))
+	return nil
+}
+
+// SetCustomChannels 保存并热更新自定义渠道配置（R64）。
+func (a *App) SetCustomChannels(channels []custom.ChannelConfig) error {
+	seen := map[string]bool{}
+	for i := range channels {
+		if err := channels[i].Validate(); err != nil {
+			return err
+		}
+		if seen[channels[i].Name] {
+			return fmt.Errorf("重复的渠道标识 %q", channels[i].Name)
+		}
+		seen[channels[i].Name] = true
+	}
+	a.mu.Lock()
+	a.cfg.CustomChannels = channels
+	err := config.Save(a.cfg, a.cfgPath)
+	syncer := a.customSyncer
+	a.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("保存配置失败：%w", err)
+	}
+	if syncer != nil {
+		syncer(channels)
+	}
+	log.Printf("自定义渠道配置已更新：共 %d 个渠道", len(channels))
 	return nil
 }
 
@@ -2144,6 +2241,9 @@ type State struct {
 
 	// ModelFallback 模型降级链（保存走 POST /api/config/model_fallback）。
 	ModelFallback []config.ModelFallbackRule `json:"model_fallback"`
+
+	// CustomChannels 自定义第三方渠道列表（保存走 POST /api/config/custom_channels，R64）。
+	CustomChannels []custom.ChannelConfig `json:"custom_channels"`
 }
 
 // GetState 返回面板初始数据。
@@ -2192,6 +2292,7 @@ func (a *App) GetState() State {
 	st.BackupProxyActive = backuplink.Enabled()
 	// oczen key 脱敏回显：仅露首 5 + 尾 4（空则原样空串）
 	st.OczenAPIKey = maskKey(a.cfg.OczenAPIKey)
+	st.CustomChannels = a.cfg.CustomChannels
 	st.Accounts = a.accountViews()
 	return st
 }
@@ -2209,8 +2310,8 @@ func (a *App) accountViews() []AccountView {
 			ExpiringCredits: s.ExpiringCredits,
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
-			// 匿名渠道无积分：前端据此显示「不适用」
-			CreditsNA:      creditsNAKind(group),
+			// 匿名与自定义渠道无积分：前端据此显示「不适用」
+			CreditsNA:      a.creditsNAKind(group),
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,
@@ -2644,6 +2745,38 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": status == 200 || status == 429, "status": status, "body": body})
+	})
+	mux.HandleFunc("POST /api/config/custom_channels", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Channels []custom.ChannelConfig `json:"channels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "解析请求失败："+err.Error())
+			return
+		}
+		if err := a.SetCustomChannels(req.Channels); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channels": a.cfg.CustomChannels})
+	})
+	mux.HandleFunc("POST /api/config/custom_channel_test", func(w http.ResponseWriter, r *http.Request) {
+		var req custom.ChannelConfig
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "解析请求失败："+err.Error())
+			return
+		}
+		if req.BaseURL == "" {
+			apiError(w, http.StatusBadRequest, "base_url 不能为空")
+			return
+		}
+		client := custom.New(req)
+		models, err := client.TestConnection()
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
 	})
 	mux.HandleFunc("POST /api/account/nickname", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

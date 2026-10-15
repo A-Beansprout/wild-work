@@ -432,8 +432,8 @@ function renderTopbar() {
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
 const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", cline: "Cline" };
 const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", cline: "cline" };
-const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
-const chClass = (k) => CH_CLASS[k] || "wb";
+const chLabel = (k) => CH_LABEL[k] || k;
+const chClass = (k) => CH_CLASS[k] || "custom";
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
 // 千问办公无签到活动；MonkeyCode 无签到端点；小浣熊无签到端点；Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
@@ -1342,6 +1342,44 @@ async function saveModelFallback() {
   } catch (e) { $("fbErr").textContent = e.message; }
 }
 
+// ---------- 自定义渠道（OpenAI 兼容，R64） ----------
+let editCustomChannels = [];
+
+function renderCustomChList() {
+  const rows = editCustomChannels.map((c, i) => {
+    const isOff = c.enabled === false;
+    const offTag = isOff ? '<span class="tag neutral" style="margin-right:6px">已禁用</span>' : '<span class="tag ok" style="margin-right:6px">已启用</span>';
+    const modelsText = (c.models && c.models.length > 0) ? c.models.join(", ") : "自动拉取";
+    const keyMask = c.api_key ? (c.api_key.length > 8 ? c.api_key.slice(0, 3) + "…" + c.api_key.slice(-4) : "••••••") : "无密钥";
+    return `<div class="row proxy-row" style="align-items:center;margin-bottom:6px">
+      <span class="badge custom" style="margin-right:6px">${esc(c.name)}</span>
+      <span style="font-family:ui-monospace,monospace;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
+      <span class="hint" style="margin:0 6px" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
+      <span class="hint" style="margin:0 6px" title="模型列表: ${esc(modelsText)}">模型: ${esc(modelsText)}</span>
+      ${offTag}
+      <button class="btn small" data-test-custom="${i}" style="margin-right:4px">测试</button>
+      <button class="btn small" data-toggle-custom="${i}" style="margin-right:4px">${isOff ? "启用" : "停用"}</button>
+      <button class="icon-btn" data-del-custom="${i}" title="删除该渠道">🗑</button>
+    </div>`;
+  }).join("");
+  $("customChList").innerHTML = rows || `<div class="hint">（暂无自定义渠道，填入下方信息即可添加）</div>`;
+  $("customChErr").textContent = "";
+  $("customChOk").textContent = "";
+}
+
+async function saveCustomChannels() {
+  try {
+    await api("/api/config/custom_channels", { channels: editCustomChannels });
+    toast("自定义渠道已保存（热生效）");
+    $("customChErr").textContent = "";
+    $("customChOk").textContent = "渠道已成功保存并立即生效";
+    loadState();
+  } catch (e) {
+    $("customChErr").textContent = e.message;
+    $("customChOk").textContent = "";
+  }
+}
+
 // ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/备用上游通道） ----------
 // renderBackupProxy 回显全局备用上游通道（单一地址，空 = 关闭）。
 // 定位是**备份链路**而不是全局代理：不参与常规请求，仅渠道命中「上游地区拒绝」
@@ -1424,6 +1462,10 @@ function openSettings() {
   fbRules = JSON.parse(JSON.stringify(state.model_fallback || []));
   renderFbList();
   $("fbFromInput").value = ""; $("fbToInput").value = "";
+  // 自定义渠道
+  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
+  renderCustomChList();
+  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = ""; $("inCustomModels").value = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
@@ -1541,6 +1583,11 @@ async function saveSettings() {
       await api("/api/config/loop_guard", { on: loopGuardOn });
     } catch (e) { toast(e.message); return; }
   }
+
+  // 4.6) 自定义渠道（R64）
+  try {
+    await api("/api/config/custom_channels", { channels: editCustomChannels });
+  } catch (e) { toast(e.message); return; }
 
   // 5) API-Key（最后保存：改 Key 可能影响当前会话的后续请求）
   try {
@@ -1825,6 +1872,109 @@ function bind() {
     fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
     renderFbList();
   });
+
+  // 自定义渠道（R64）：测试、停用/启用、删除、添加、保存
+  $("customChList").addEventListener("click", async (e) => {
+    const testBtn = e.target.closest("[data-test-custom]");
+    if (testBtn) {
+      const idx = +testBtn.dataset.testCustom;
+      const ch = editCustomChannels[idx];
+      if (!ch) return;
+      testBtn.disabled = true;
+      const oldText = testBtn.textContent;
+      testBtn.textContent = "测试中…";
+      $("customChErr").textContent = "";
+      $("customChOk").textContent = "";
+      try {
+        const res = await api("/api/config/custom_channel_test", { base_url: ch.base_url, api_key: ch.api_key });
+        if (res.ok) {
+          toast(`[${ch.name}] 连接成功！拉取到 ${res.models?.length || 0} 个模型`);
+          $("customChOk").textContent = `[${ch.name}] 连接成功，模型: ${(res.models || []).slice(0, 6).join(", ")}${res.models?.length > 6 ? '…' : ''}`;
+        } else {
+          $("customChErr").textContent = `[${ch.name}] 测试失败：${res.error}`;
+        }
+      } catch (err) {
+        $("customChErr").textContent = `[${ch.name}] 测试失败：${err.message}`;
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = oldText;
+      }
+      return;
+    }
+    const toggleBtn = e.target.closest("[data-toggle-custom]");
+    if (toggleBtn) {
+      const idx = +toggleBtn.dataset.toggleCustom;
+      if (editCustomChannels[idx]) {
+        const cur = editCustomChannels[idx].enabled !== false;
+        editCustomChannels[idx].enabled = !cur;
+        renderCustomChList();
+      }
+      return;
+    }
+    const delBtn = e.target.closest("[data-del-custom]");
+    if (delBtn) {
+      const idx = +delBtn.dataset.delCustom;
+      editCustomChannels.splice(idx, 1);
+      renderCustomChList();
+      return;
+    }
+  });
+
+  $("btnCustomTest").onclick = async () => {
+    const u = $("inCustomURL").value.trim();
+    const k = $("inCustomKey").value.trim();
+    if (!u) {
+      $("customChErr").textContent = "请先填入 Base URL";
+      $("customChOk").textContent = "";
+      return;
+    }
+    const btn = $("btnCustomTest");
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = "测试中…";
+    $("customChErr").textContent = "";
+    $("customChOk").textContent = "";
+    try {
+      const res = await api("/api/config/custom_channel_test", { base_url: u, api_key: k });
+      if (res.ok) {
+        toast(`连接成功！拉取到 ${res.models?.length || 0} 个模型`);
+        $("customChOk").textContent = `连接成功，发现模型: ${(res.models || []).slice(0, 8).join(", ")}${res.models?.length > 8 ? '…' : ''}`;
+      } else {
+        $("customChErr").textContent = `测试失败：${res.error}`;
+      }
+    } catch (err) {
+      $("customChErr").textContent = `测试失败：${err.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  };
+
+  $("btnCustomAdd").onclick = () => {
+    const name = $("inCustomName").value.trim().toLowerCase();
+    const url = $("inCustomURL").value.trim();
+    const key = $("inCustomKey").value.trim();
+    const modelsRaw = $("inCustomModels").value.trim();
+    if (!name) { $("customChErr").textContent = "请填入渠道标识"; $("customChOk").textContent = ""; return; }
+    if (!/^[a-zA-Z0-9_\-]+$/.test(name)) { $("customChErr").textContent = "渠道标识仅允许字母、数字、下划线、短横线"; $("customChOk").textContent = ""; return; }
+    if (!url) { $("customChErr").textContent = "请填入 Base URL"; $("customChOk").textContent = ""; return; }
+    if (editCustomChannels.some(c => c.name.toLowerCase() === name)) {
+      $("customChErr").textContent = `已存在同名渠道 ${name}`;
+      $("customChOk").textContent = "";
+      return;
+    }
+    const models = modelsRaw ? modelsRaw.split(/[,，\s]+/).filter(Boolean) : [];
+    editCustomChannels.push({ name, base_url: url, api_key: key, models, enabled: true });
+    renderCustomChList();
+    $("inCustomName").value = "";
+    $("inCustomURL").value = "";
+    $("inCustomKey").value = "";
+    $("inCustomModels").value = "";
+    $("customChErr").textContent = "";
+    $("customChOk").textContent = `已添加渠道 [${name}]，点击「保存渠道」或「保存」生效`;
+  };
+
+  $("btnCustomSave").onclick = saveCustomChannels;
 
   // 点击弹层空白处关闭
   $("settingsOverlay").onclick = (e) => { if (e.target === $("settingsOverlay")) closeSettings(); };
