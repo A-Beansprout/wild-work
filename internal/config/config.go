@@ -164,6 +164,11 @@ type Config struct {
 	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
 	OczenAPIKey string `json:"oczen_api_key,omitempty"`
 
+	// BodyLog 诊断开关：把每次请求的「上下文构成摘要」写入 data/ledger/body-trace-*.jsonl，
+	// 用于定位上下文为何膨胀（哪条消息/哪段文本占了大头）。默认关。
+	// 摘要含消息内容前 200 字预览，属临时排查工具，用完请关掉。
+	BodyLog bool `json:"body_log,omitempty"`
+
 	// ModelFallback 模型降级链：请求模型在该渠道全部账号上限流冷却（no_healthy_account
 	// 的「模型全冷」形态）时，按 To 顺序找第一个仍有可用账号的备胎模型顶上，
 	// 响应头 X-Model-Fallback 标注实际使用的备胎。仅全冷场景触发，正常路由零开销；

@@ -424,6 +424,11 @@
           <label class="switch"><input type="checkbox" id="chkLoopGuard"><span class="slider"></span></label>
           <span class="hint" style="margin-left:8px">检测模型思维链死循环，命中即中断</span>
         </div>
+        <div class="row" style="margin-top:8px">
+          <label class="lbl wide" title="把每次请求的上下文构成摘要（消息条数、系统提示/工具定义体量、Top10 最大内容块及前 200 字）写入 data/ledger/body-trace-*.jsonl，用于排查「上下文为何膨胀、为何变慢」。按会话一个文件（单文件超 8MB 自动滚动分片），分片保留 7 天。含消息内容片段，用完请关闭">请求体摘要</label>
+          <label class="switch"><input type="checkbox" id="chkBodyLog"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">诊断用：按会话切片，保留 7 天</span>
+        </div>
       </div>
 
       <!-- 备用上游通道（全局单一代理；<b>不参与常规请求</b>，仅渠道命中地区拒绝时自动取用） -->

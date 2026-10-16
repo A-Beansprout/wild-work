@@ -91,6 +91,11 @@ function shortUid(uid) {
   return uid.length <= 12 ? uid : uid.slice(0, 6) + "…" + uid.slice(-4);
 }
 
+// shortKey 顶栏 API-Key 中间省略（同 shortUid 风格），完整值存 data-key 供复制。
+function shortKey(k) {
+  return k.length <= 24 ? k : k.slice(0, 6) + "…" + k.slice(-4);
+}
+
 // ---------- 全局状态 ----------
 let state = null;
 
@@ -419,7 +424,18 @@ function renderTopbar() {
     : "点击复制地址";
 
   const key = state.api_key;
-  $("apiKeyDisplay").querySelector(".val").textContent = key === "" ? "（无鉴权）" : key;
+  const keyEl = $("apiKeyDisplay");
+  const keyVal = keyEl.querySelector(".val");
+  if (key === "") {
+    keyVal.textContent = "（无鉴权）";
+    delete keyEl.dataset.key;
+    keyEl.title = "当前未设置 API-Key";
+  } else {
+    // 脱敏显示：中间省略，完整值存 data-key 供一键复制（防旁人瞟屏）
+    keyEl.dataset.key = key;
+    keyVal.textContent = shortKey(key);
+    keyEl.title = "完整 API-Key：" + key + "；点击复制；进入设置修改";
+  }
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
@@ -1358,6 +1374,14 @@ async function saveTimes(times) {
 }
 
 // ---------- 开机自启（设置弹层内，切换立即保存） ----------
+// ---------- 请求体摘要（诊断开关，设置弹层内，切换立即保存） ----------
+async function toggleBodyLog() {
+  try {
+    await api("/api/config/body_log", { on: $("chkBodyLog").checked });
+    toast("设置已保存");
+  } catch (e) { toast(e.message); loadState(); }
+}
+
 async function toggleAutostart() {
   try {
     await api("/api/config/autostart", { on: $("chkAutostart").checked });
@@ -1692,6 +1716,7 @@ function openSettings() {
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
   $("chkLoopGuard").checked = state.loop_guard !== false; // 缺省（旧后端）按开启显示
+  $("chkBodyLog").checked = !!state.body_log;
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
   $("settingsOverlay").classList.remove("hidden");
 }
@@ -2019,6 +2044,7 @@ function bind() {
     if (row) { e.preventDefault(); copyText(row.dataset.mid, "模型 ID"); }
   };
   $("chkAutostart").onchange = toggleAutostart;
+  $("chkBodyLog").onchange = toggleBodyLog;
   $("btnAdminLogout").onclick = () => logout();
   $("btnClearAdminPass").onclick = clearAdminPassword;
   $("btnAdminLogin").onclick = submitLogin;
@@ -2029,8 +2055,8 @@ function bind() {
     copyText(v, "OpenAI 接口地址");
   };
   $("apiKeyDisplay").onclick = () => {
-    const v = $("apiKeyDisplay").querySelector(".val").textContent;
-    if (v === "（无鉴权）") { toast("当前未设置 API-Key"); return; }
+    const v = $("apiKeyDisplay").dataset.key;
+    if (v === undefined || v === "") { toast("当前未设置 API-Key"); return; }
     copyText(v, "API-Key");
   };
   // 顶栏齿轮进入统一设置（点击地址/Key 文本仍为复制）
