@@ -2022,17 +2022,19 @@ Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对�
 
 ---
 
-# wild-work v2.7.4 — 小浣熊登录跟进上游迁站 + 监听失败终止 + 跨渠道降级
+# wild-work v2.7.4 — 小浣熊登录跟进上游迁站 + 监听失败终止 + 跨渠道降级 + 面板查找易用性
 
-> 发布主题：**上游改版适配与三处「静默失效」修复**。小浣熊登录跟进上游迁站
+> 发布主题：**上游改版适配与三处「静默失效」修复 + 面板易用性打磨**。小浣熊登录跟进上游迁站
 > （入口与凭据 cookie 名都变了，旧实现已完全失效）；启动时监听失败不再静默留在后台
 > 当僵尸实例；模型降级链在「整渠道全灭」时也能跨渠道顶上；另修一处会让
-> **管理面板登录层不可见**的 HTML 结构缺陷。
+> **管理面板登录层不可见**的 HTML 结构缺陷；设置面板补上模型查找入口、模型查找结果不再截断、
+> 思考强度行的模型 ID 不再被截断。
 >
-> 本次为 v2.7.3 之后的补丁小版本，含 **3 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；
-> #127 [@ezjbc](https://github.com/ezjbc)）与 2 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)；
-> #117 [@fmdxx1991](https://github.com/fmdxx1991)）。**合并期额外修出 3 条跨切面缺陷**
-> （小浣熊 JWT uid 提取漏改两处、降级文案与死代码、oczen 匿名车道与伪装头），详见下文。
+> 本次为 v2.7.3 之后的补丁小版本，含 **6 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；
+> #127/#130/#131/#132 [@ezjbc](https://github.com/ezjbc)；#128 [@fmdxx1991](https://github.com/fmdxx1991)）
+> 与 2 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)；#117 [@fmdxx1991](https://github.com/fmdxx1991)）。
+> **合并期额外修出 3 条跨切面缺陷**（小浣熊 JWT uid 提取漏改两处、降级文案与死代码、
+> oczen 匿名车道与伪装头），详见下文。
 
 ---
 
@@ -2087,6 +2089,22 @@ R54 的降级链在生产里**只救了一半**：主模型所在渠道被 pool 
 - 补回缺失的 `</div>`，并新增 3 条静态断言防回退（`<div>` 开闭配平 / `settingsOverlay`
   有匹配闭合 / `adminLoginOverlay` 位于 `settingsOverlay` 之外）。
 
+## 🎛 面板易用性打磨（PR #130 / #131 / #132，[@ezjbc](https://github.com/ezjbc)）
+
+三处纯前端改进，都不改接口与既有 DOM 结构，且各补了静态断言防回退：
+
+- **设置面板补上模型查找入口（#131）**：「模型降级链」与「思考强度」两块都要填
+  `channel/model` 完整 ID，此前只能关掉设置弹层、跳回首页查、再手工抄回来。现两处标题右侧各加
+  「🔍 查询模型」按钮，复用首页同一个查找弹层。**审查跟进修出真实缺陷**：按钮同时带 `.icon-btn`
+  （`width:30px` 纯图标尺寸），只覆盖 `height` 不覆盖 `width` 会让 68px 标签挣出 30px 边框盒、
+  压到相邻内容；已补 `width:auto` 并加断言（原先只校验选择器存在，对本缺陷会假绿）。
+- **模型查找结果不再截断（#130）**：原 `MODEL_SEARCH_MAX = 12` 让结果只渲染前 12 条，
+  渠道多或前缀相似时想找的模型看不到。现结果全量渲染，超出对话框高度的部分由 `.ms-list`
+  纵向滚动（对话框尺寸不变）；`min-height:0` 是让 flex 子项可滚动的前提，已在注释标明。
+- **思考强度行模型 ID 不再被截断（#132）**：`renderEffList` 的 ID 列用了 `.lbl.wide`（定宽
+  `90px`），同时给定宽与 `max-width` 时取较小值 ⇒ 内联 `max-width:260px` 从未生效。改为
+  `width:auto;max-width:340px`，短 ID 自适应、长 ID 在 340px 处省略。
+
 ## 🔓 OpenCodeZen 匿名车道与伪装头跟进上游闸门（R69，issue #117）
 
 issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵**称上游 2026-10-14 起有三道形状闸门。
@@ -2123,6 +2141,15 @@ issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵
 - AGENTS.md：新增 **R67（小浣熊迁站）**、**R68（监听失败终止）**、**R69（oczen 车道与伪装头）**，
   R54 触发判据同步扩展，R44 注明「入口与 cookie 名已更新，见 R67」；OpenCodeZen 渠道说明改为四道闸门；
   决议索引更新为 R1–R69。
+- **PR #128 的 oczen 核心未采纳（本仓实现更优）**：PR #128 与本仓已落地的 R69 同向，但其核心相对本仓
+  是退化版——① 把 `DefaultBase` 一刀切改成 `/inference/v1`，**丢掉键控车道**（本仓 `base()` 按凭证
+  分流：匿名 → `AnonymousBase`(/inference)，自备 `sk-…` key → `DefaultBase`(/zen)，与参考实现
+  `Upstream.Zen` / `Upstream.Anonymous` 双字段一致）；② **漏发 `x-opencode-session-id`**（参考实现要求
+  两个 session 头同值）。故 oczen 三文件与 AGENTS.md 保留本仓版本，仅采纳其文档/夹具/重复行等净残差：
+  `DEVELOPMENT.md`（端点按车道分流 + 闸门清单补 `-session-id`）、`README.md`（systemone 示例端点）、
+  `internal/provider/provider.go` 注释、`internal/devdump/devdump_on_test.go` 夹具、
+  `internal/oczen/live_test.go` 注释、`cmd/wild-work/web/app.js`（删 `openSettings` 里重复两遍的
+  `editCustomChannels`/`renderCustomChList`）。
 - 回归：`internal/login_raccoon`、`internal/raccoon`（`TestJWTUID` / 新版 OIDC 自愈）、
   `internal/app`（uid 单点来源静态锁）、`internal/server`（降级链 13 例）、
   `internal/oczen`（车道分流 / 伪装头形状 / project 派生 + 实盘 live）、
@@ -2133,6 +2160,6 @@ issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵
 | 贡献者 | 内容 |
 |--------|------|
 | [@xxhhlk](https://github.com/xxhhlk) | #124 小浣熊登录跟进上游迁站、#126 监听失败终止进程 |
-| [@ezjbc](https://github.com/ezjbc) | #127 整渠道全灭时跨渠道模型降级（R54 触发判据扩展） |
+| [@ezjbc](https://github.com/ezjbc) | #127 整渠道全灭时跨渠道模型降级（R54 触发判据扩展）；#130/#131/#132 面板查找与模型 ID 显示打磨 |
 | [@sept13-yu](https://github.com/sept13-yu) | issue #125 管理面板登录层不可见（定位到缺失的 `</div>`） |
-| [@fmdxx1991](https://github.com/fmdxx1991) | issue #117 OpenCodeZen 恒 403（附逐项消元矩阵，定位到端点与两个伪装头闸门） |
+| [@fmdxx1991](https://github.com/fmdxx1991) | issue #117 与 #128 OpenCodeZen 恒 403（附逐项消元矩阵，定位到端点与两个伪装头闸门） |
