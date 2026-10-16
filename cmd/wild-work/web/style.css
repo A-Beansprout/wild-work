@@ -286,8 +286,8 @@ body {
   vertical-align: middle; margin-left: 4px; padding: 0; line-height: 1;
 }
 
-/* 模型查找对话框：紧凑固定尺寸（不随结果跳变/变高，避免位置困扰）。
-   结果上限 12 条（见 app.js MODEL_SEARCH_MAX），故列表高度按上限预留即可。 */
+/* 模型查找对话框：紧凑固定尺寸（对话框本身不随结果跳变/变高，避免位置困扰）。
+   结果全量渲染，超出对话框高度的部分由 .ms-list 纵向滚动查看（不再截断）。 */
 .modal.modal-search {
   width: 460px; max-width: 94vw;
   height: 460px; max-height: 86vh;
@@ -295,7 +295,8 @@ body {
 }
 .modal-search .modal-title { margin-bottom: 10px; }
 .modal-search #modelSearchInput { width: 100%; box-sizing: border-box; margin-bottom: 8px; flex: none; }
-.ms-list { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+/* overflow-y:auto + min-height:0：flex 子项默认 min-height:auto 会撑破容器而不滚动，必须显式归零 */
+.ms-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .ms-row {
   display: flex; align-items: center; gap: 8px;
   padding: 5px 8px; border-radius: 6px; cursor: pointer;

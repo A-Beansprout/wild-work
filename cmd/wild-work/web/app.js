@@ -126,7 +126,6 @@ async function refreshFees() {
 // ---------- 模型查找（纯前端：从最近一次 /api/fees 结果里按关键字过滤） ----------
 // lastFees 最近一次费率接口响应（loadFees/refreshFees 填充）；查找面板读它取全渠道模型。
 let lastFees = null;
-const MODEL_SEARCH_MAX = 12; // 结果上限：超出只提示、不纵向滚动，保证对话框固定高度
 
 // collectAllModels 展平全渠道模型，附带裸名/完整 ID（完整 ID = 渠道/模型，即客户端该填的名字）。
 function collectAllModels() {
@@ -154,18 +153,17 @@ function openModelSearch() {
 }
 function closeModelSearch() { $("modelSearchOverlay").classList.add("hidden"); }
 
-// renderModelSearch 按关键字过滤全渠道模型并渲染（固定高度、限量、超出提示）。
+// renderModelSearch 按关键字过滤全渠道模型并渲染（对话框固定高度，结果在 .ms-list 内滚动）。
 // 关键字匹配完整 ID 或裸名（大小写不敏感）——两处都包含渠道名，故搜渠道亦可。
 function renderModelSearch(q) {
   const kw = String(q || "").trim().toLowerCase();
   const all = collectAllModels();
   const hit = kw ? all.filter((x) => x.full.toLowerCase().includes(kw) || x.short.toLowerCase().includes(kw)) : all;
-  const shown = hit.slice(0, MODEL_SEARCH_MAX);
   const box = $("modelSearchList");
-  if (!shown.length) {
+  if (!hit.length) {
     box.innerHTML = `<div class="ms-empty">${all.length ? "无匹配模型" : "费率数据尚未加载，请点「刷新」后再试"}</div>`;
   } else {
-    box.innerHTML = shown.map(({ ch, m, short, full }) => {
+    box.innerHTML = hit.map(({ ch, m, short, full }) => {
       const caps = [m.supports_images ? "👁" : "", m.supports_reasoning ? "🧠" : ""].join("");
       // 档位小字（issue #96）：上游声明才显示
       const eff = (m.reasoning_efforts && m.reasoning_efforts.length)
@@ -181,14 +179,9 @@ function renderModelSearch(q) {
         + `</div>`;
     }).join("");
   }
-  // 底部提示：命中数 / 未显示数（结果超上限时明确告知，用户可细化关键字）。
-  const hidden = hit.length - shown.length;
+  // 底部提示：命中数（结果全量渲染，列表本身可滚动，故不再提示「未显示」）。
   $("modelSearchFoot").textContent = !all.length ? ""
-    : (hit.length === 0 ? "无匹配"
-      : (hidden > 0
-        ? (kw ? `命中 ${hit.length} 个，仅显示前 ${shown.length} 个，还有 ${hidden} 个未显示，请细化关键字`
-              : `共 ${hit.length} 个模型，仅显示前 ${shown.length} 个，输入关键字可缩小范围`)
-        : `共 ${hit.length} 个匹配`));
+    : (hit.length === 0 ? "无匹配" : `共 ${hit.length} 个匹配`);
 }
 
 // ---------- 积分明细浮窗 ----------

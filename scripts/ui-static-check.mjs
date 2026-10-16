@@ -96,7 +96,8 @@ const patched =
       { model: "deepseek-v4", priced: false, rate: 0, free: false, has_context: false },
       { model: "muse-free", priced: true, rate: 0, free: true, has_context: true, context_window: 128000 },
     ] },
-    // 溢出场景：另 12 个 qwen* 模型，与 qodercn/qwen3.8-flash 合并共 13 条命中 > 上限 12
+    // 溢出场景：另 12 个 qwen* 模型，与 qodercn/qwen3.8-flash 合并共 13 条命中，
+    // 用于验证「命中数超过旧上限 12」时仍全量渲染（结果不再截断，改由列表滚动展示）
     { channel: "loomy", models: Array.from({ length: 12 }, (_, i) =>
       ({ model: `qwen-bulk-${i}`, priced: true, rate: 0.1, free: false, has_context: false })) },
     // 上游 ID 自带命名空间的渠道（cline 免费档）：完整 ID 取服务端给的 id
@@ -143,8 +144,8 @@ check("汇总可用 = 2050+2686 = 4736", sum.includes("4,736"), sum.slice(0, 160
 check("汇总临期 = 100", sum.includes("临期100"));
 check("汇总含合计", sum.includes("合计"));
 
-// ---- 场景 2.5：模型查找面板（纯前端过滤，固定高度/限量/超出提示） ----
-// 假缓存共 17 个模型：qodercn 2 + workbuddy 2 + loomy 12 + cline 1（含 13 个 qwen* 用于溢出断言）
+// ---- 场景 2.5：模型查找面板（纯前端过滤，全量渲染 + 列表滚动） ----
+// 假缓存共 17 个模型：qodercn 2 + workbuddy 2 + loomy 12 + cline 1（含 13 个 qwen* 用于滚动断言）
 check("collectAllModels 展平全渠道 17 个模型", T.collectAllModels().length === 17, `实际 ${T.collectAllModels().length}`);
 check("collectAllModels 完整 ID = 渠道/裸名", T.collectAllModels()[0].full === "qodercn/qwen3.8-flash");
 // 上游 ID 自带命名空间（cline-free/*）时完整 ID = 上游 ID 原样（服务端 m.id 同源），
@@ -162,17 +163,17 @@ check("档位 title 含默认档", msHtml.includes("默认 high"));
 check("底部提示共 N 个匹配", /共 1 个匹配/.test(document.getElementById("modelSearchFoot").textContent));
 T.renderModelSearch("");
 msHtml = document.getElementById("modelSearchList").innerHTML;
-check("空关键字受上限约束只列 12 条", (msHtml.match(/class="ms-row"/g) || []).length === 12, `实际 ${(msHtml.match(/class="ms-row"/g) || []).length}`);
-check("空关键字提示可输关键字缩小范围", /输入关键字可缩小范围/.test(document.getElementById("modelSearchFoot").textContent), document.getElementById("modelSearchFoot").textContent);
+check("空关键字全量列出 17 条（不再截断）", (msHtml.match(/class="ms-row"/g) || []).length === 17, `实际 ${(msHtml.match(/class="ms-row"/g) || []).length}`);
+check("空关键字提示共 N 个匹配", /共 17 个匹配/.test(document.getElementById("modelSearchFoot").textContent), document.getElementById("modelSearchFoot").textContent);
 check("免费模型显示 Free", msHtml.includes("Free"));
 check("未定价模型显示 unknown", msHtml.includes("unknown"));
 T.renderModelSearch("zzz-none");
 check("无匹配时提示无匹配", /无匹配/.test(document.getElementById("modelSearchList").innerHTML));
-// 限量：13 个 qwen* 命中 > 上限 12 → 只渲染 12 条，底部提示还有未显示
+// 全量：13 个 qwen* 命中全部渲染（列表可滚动查看，不再截断到 12 条）
 T.renderModelSearch("qwen");
 msHtml = document.getElementById("modelSearchList").innerHTML;
-check("超上限时只渲染 12 条", (msHtml.match(/class="ms-row"/g) || []).length === 12, `实际 ${(msHtml.match(/class="ms-row"/g) || []).length}`);
-check("超上限时底部提示未显示数量", /还有 1 个未显示/.test(document.getElementById("modelSearchFoot").textContent), document.getElementById("modelSearchFoot").textContent);
+check("超 12 条时全量渲染 13 条", (msHtml.match(/class="ms-row"/g) || []).length === 13, `实际 ${(msHtml.match(/class="ms-row"/g) || []).length}`);
+check("命中数超出时底部提示共 N 个匹配", /共 13 个匹配/.test(document.getElementById("modelSearchFoot").textContent), document.getElementById("modelSearchFoot").textContent);
 
 // ---- 场景 2.7：费率表思考档位标记（issue #96，与 /v1/models + /api/fees 同源） ----
 T.renderFees({ channels: [
