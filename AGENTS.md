@@ -312,7 +312,16 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 **接线点只有一个**：`cmd/wild-work/transport.go` 的 `wrapDumps`（R57 后唯一统一改 Transport 的地方；
 启动时一次性包住全部渠道 client），故各渠道包**零改动**；漏项由
 `cmd/wild-work/transport_test.go` 静态锁死。文件落 `$WILDWORK_DUMP_DIR/<channel>/*.http`，
-头部带 `# usage=` 速览行（SSE 取**末帧**）。
+尾部带 `# duration=… usage=…` 汇总行（SSE 取**末帧**）。
+
+> ⚠️ **落盘必须 tee，不得 `io.ReadAll(resp.Body)`**：后者会把整个响应缓冲到底
+> 才交给调用方，对 SSE 流式响应等于「上游流完之后客户端才一次性收到全部内容」——
+> 表现为**对话时正文突然整段出现**（常开 `WILDWORK_DUMP_DIR` 时必现）。现实现用
+> `teeBody` + `respRecorder`：响应体原样逐帧转发（即时 flush 不受影响），落盘走 64 KiB
+> 缓冲的独立写入（**延迟写，非逐字节写盘**）；内存只驻留最近 `tailKeep` 字节用于尾部与
+> usage 速览，且汇总口径仍与旧 `truncateBody` 一致（前 `bodyCap` + 后 `tailKeep`）。
+> 回归测试 `internal/devdump/devdump_on_test.go`：`TestDumpIsStreamingNotBuffered`
+> （首帧到达即落盘头、不等流结束）+ `TestDumpConcurrentRecorders`（并发不串号/不丢帧）。
 
 ```bash
 export WILDWORK_DUMP_DIR="$PWD/temp/dump"
