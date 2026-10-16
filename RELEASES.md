@@ -2030,9 +2030,9 @@ Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对�
 > **管理面板登录层不可见**的 HTML 结构缺陷。
 >
 > 本次为 v2.7.3 之后的补丁小版本，含 **3 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；
-> #127 [@ezjbc](https://github.com/ezjbc)）与 1 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)）。
-> **合并期额外修出 2 条跨切面缺陷**（小浣熊 JWT uid 提取漏改两处、降级文案与死代码），
-> 详见下文。
+> #127 [@ezjbc](https://github.com/ezjbc)）与 2 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)；
+> #117 [@fmdxx1991](https://github.com/fmdxx1991)）。**合并期额外修出 3 条跨切面缺陷**
+> （小浣熊 JWT uid 提取漏改两处、降级文案与死代码、oczen 匿名车道与伪装头），详见下文。
 
 ---
 
@@ -2087,6 +2087,25 @@ R54 的降级链在生产里**只救了一半**：主模型所在渠道被 pool 
 - 补回缺失的 `</div>`，并新增 3 条静态断言防回退（`<div>` 开闭配平 / `settingsOverlay`
   有匹配闭合 / `adminLoginOverlay` 位于 `settingsOverlay` 之外）。
 
+## 🔓 OpenCodeZen 匿名车道与伪装头跟进上游闸门（R69，issue #117）
+
+issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵**称上游 2026-10-14 起有三道形状闸门。
+经核实，其引用的参考实现注释**确实存在且当前有效**（opencode2api 明确记载该三处变更），
+故按参考实现对齐：
+
+- **匿名车道改走 `/inference/v1`**（新增 `AnonymousBase`，`base()` 按凭证分流：匿名 → `/inference`，
+  自备 `sk-…` key → `/zen`）。上游把 **keyless 推理**从 `/zen` 迁到了独立入口，两条车道基址已分离。
+- **不再发 `x-opencode-request`**：该关联头一旦出现即判非官方客户端 ⇒ 403。
+- **`x-opencode-project` 改裸 40 位小写 hex**：`prj_` 前缀的规范 id 会被拒（值本身不校验，只校验形状），
+  由 session 经 sha256 派生 ⇒ 同一会话稳定映射同一 project（保住 prompt cache 亲和）。
+- 顺带补发参考实现要求、本仓此前**缺失**的 `x-opencode-session-id`（与 `x-opencode-session` 同值）。
+
+**如实披露（不是「已复现」）**：本仓在 CN 直连与 JP 代理出口下，出厂形状与逐项变体共 **56 次**
+匿名调用**全部 200**（含 `zen/v1` + `prj_` + `x-opencode-request`），同时**负对照有效**
+（去掉 `bash`/`read` 桩工具 ⇒ 403），证明探针确能观测闸门。故判断为**上游按出口/后端金丝雀下发**，
+而非闸门不存在。换到 `/inference` 在两种情形下都不会更差（两基址的 `GET /models` 完全相同、均 200），
+故跟随参考实现；**若仍有 403，请附日志里的上游原文 body。**
+
 ## 🔧 合并期修出的跨切面缺陷
 
 1. **小浣熊 JWT uid 提取漏改两处（R67 补正）**：上游迁站后 JWT 换成标准 OIDC，
@@ -2101,10 +2120,12 @@ R54 的降级链在生产里**只救了一半**：主模型所在渠道被 pool 
 
 ## 📝 文档与决议整合
 
-- AGENTS.md：新增 **R67（小浣熊迁站）**、**R68（监听失败终止）**，R54 触发判据同步扩展，
-  R44 注明「入口与 cookie 名已更新，见 R67」；README 决议索引更新为 R1–R68。
+- AGENTS.md：新增 **R67（小浣熊迁站）**、**R68（监听失败终止）**、**R69（oczen 车道与伪装头）**，
+  R54 触发判据同步扩展，R44 注明「入口与 cookie 名已更新，见 R67」；OpenCodeZen 渠道说明改为四道闸门；
+  决议索引更新为 R1–R69。
 - 回归：`internal/login_raccoon`、`internal/raccoon`（`TestJWTUID` / 新版 OIDC 自愈）、
   `internal/app`（uid 单点来源静态锁）、`internal/server`（降级链 13 例）、
+  `internal/oczen`（车道分流 / 伪装头形状 / project 派生 + 实盘 live）、
   `cmd/wild-work/listen_fail_test.go`、`scripts/ui-static-check.mjs`。
 
 ## 🙏 致谢
@@ -2114,3 +2135,4 @@ R54 的降级链在生产里**只救了一半**：主模型所在渠道被 pool 
 | [@xxhhlk](https://github.com/xxhhlk) | #124 小浣熊登录跟进上游迁站、#126 监听失败终止进程 |
 | [@ezjbc](https://github.com/ezjbc) | #127 整渠道全灭时跨渠道模型降级（R54 触发判据扩展） |
 | [@sept13-yu](https://github.com/sept13-yu) | issue #125 管理面板登录层不可见（定位到缺失的 `</div>`） |
+| [@fmdxx1991](https://github.com/fmdxx1991) | issue #117 OpenCodeZen 恒 403（附逐项消元矩阵，定位到端点与两个伪装头闸门） |

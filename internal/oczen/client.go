@@ -63,7 +63,10 @@ func New() *Client {
 		IdleConnTimeout:       30 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second,
 	}
-	return &Client{HTTP: &http.Client{Timeout: requestTimeout, Transport: tr}, Base: DefaultBase,
+	// 刻意**不**设 Base：让它留空，由 base() 按凭证车道选择
+	// （匿名 → AnonymousBase，自备 key → DefaultBase）。设成 DefaultBase 会把匿名车道
+	// 钉在 /zen 上，正是 issue #117 的恒 403 形态（R69）。
+	return &Client{HTTP: &http.Client{Timeout: requestTimeout, Transport: tr},
 		StreamHTTP:  &http.Client{Transport: tr}, // 共用 Transport，不设 Timeout
 		IdleTimeout: idle.DefaultTimeout,         // 流中空闲监控兜底（见 internal/idle）
 	}
@@ -76,11 +79,23 @@ func NewWithBase(base string) *Client {
 	return c
 }
 
+// base 返回当前出站基址：**按车道分流**。
+//
+// 匿名（无 key）走 AnonymousBase(/inference)，自备 sk-… key 走 DefaultBase(/zen)：
+// 上游 2026-10-14 把 keyless 推理迁到了独立入口，两条车道基址不再相同。
+// 显式 c.Base（测试注入 NewWithBase）仍优先，两种车道共用同一 httptest 假上游。
 func (c *Client) base() string {
-	if c.Base == "" {
+	if c.Base != "" {
+		return c.Base
+	}
+	// apiKey 由面板热更新（SetAPIKey 持写锁），故取值也须持读锁，否则与保存操作并发即数据竞争。
+	c.mu.RLock()
+	keyed := c.apiKey != ""
+	c.mu.RUnlock()
+	if keyed {
 		return DefaultBase
 	}
-	return c.Base
+	return AnonymousBase
 }
 
 // AnonymousAuth 构造匿名虚拟账号。唯一合法账号，由 main 装配时注入 pool。
@@ -273,18 +288,38 @@ func (c *Client) SetAPIKey(key string) {
 }
 
 // headered 为上游请求注入 OpenCode CLI 伪装头（含规范会话头）。
+//
+// 头集与官方客户端镜像（2026-10-14 起上游收紧）：
+//   - **不发 `x-opencode-request`**：该关联头一旦出现即判非官方客户端 ⇒ 403；
+//     （参考实现 opencode2api 注释原文："The x-opencode-request correlation
+//     header ... rejected with 403 since 2026-10-14, so neither is forwarded"）
+//   - `x-opencode-project` 必须是**裸 40 位小写 hex**（官方 CLI 自身形态）；
+//     `prj_` 前缀的规范 id 会被拒，值本身不校验只校验形状。
+//   - 会话头四个都要带：`x-opencode-session` + **`x-opencode-session-id`**
+//     + `x-session-affinity` + `X-Session-Id`，且同值（缺 `-id` 变体会被拒）。
 func (c *Client) headered(req *http.Request, session string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Authorization", "Bearer "+c.authKey())
 	req.Header.Set("x-opencode-client", "cli")
+	// 会话头族：上游要求「两个 session 头携带同一 descending id」，官方客户端
+	// 同时发 -session 与 -session-id 两种拼写，故四个都发同一值。
 	req.Header.Set("x-opencode-session", session)
-	// OpenCode 1.18.x 的亲和头族，缺一会降低被识别为官方客户端的概率
+	req.Header.Set("x-opencode-session-id", session)
 	req.Header.Set("x-session-affinity", session)
 	req.Header.Set("X-Session-Id", session)
-	req.Header.Set("x-opencode-request", randomID("req", 16))
-	req.Header.Set("x-opencode-project", randomID("prj", 12))
+	// project 由 session 确定性派生裸 40 位 hex：形状合规，且同一会话恒定映射
+	// 到同一 project（保住上游 prompt cache 亲和）。
+	req.Header.Set("x-opencode-project", clientProjectID(session))
+}
+
+// clientProjectID 把会话标识派生成官方 CLI 那种**裸 40 位小写 hex**的 project id。
+// 上游只校验形状（非 `prj_` 前缀的 40 位 hex），值本身不校验；用 sha256 派生
+// 保证同一会话稳定映射到同一 project（prompt cache 亲和）。
+func clientProjectID(session string) string {
+	sum := sha256.Sum256([]byte("opencode-project\x00" + session))
+	return hex.EncodeToString(sum[:20])
 }
 
 // ---------------------------------------------------------------------------
