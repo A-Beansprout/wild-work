@@ -14,7 +14,7 @@ import (
 	"wild-work/internal/provider"
 )
 
-// 推理预算常量（对齐 officeace2api/config.mjs）：
+// 推理预算常量（对齐 officeace2api/src/config.mjs）：
 // 上游把 max_tokens 当成「推理 + 正文」的总预算，推理模型的思维链会先把预算吃光 ⇒ 正文空。
 const (
 	tinyMaxTokens = 16     // 小于此值原样透传
