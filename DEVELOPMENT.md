@@ -1,7 +1,8 @@
 # wild-work 开发者文档（面向 AI Agent）
 
 > 本文件为**代码维护者（含 AI Agent）**而写，供新 Agent 快速接手二次开发。
-> 普通用户请看 [README.md](README.md)，项目决议见 [AGENTS.md](AGENTS.md)，交接记录见 [HANDOFF.md](HANDOFF.md)。
+> 普通用户请看 [README.md](README.md)，项目纪律与决议索引见 [AGENTS.md](AGENTS.md)，
+> 决议全文见 [docs/决议项.md](docs/决议项.md)，渠道细节见 [docs/渠道接入备忘.md](docs/渠道接入备忘.md)。
 
 ## 0. 项目速览
 
