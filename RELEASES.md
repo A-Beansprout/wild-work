@@ -2022,21 +2022,44 @@ Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对�
 
 ---
 
-# wild-work v2.7.4 — 小浣熊登录跟进上游迁站 + 监听失败终止 + 跨渠道降级 + 面板查找易用性
+# wild-work v2.8.0 — 新增华为云果办 OfficeAce 渠道 + 小浣熊迁站适配 + 跨渠道降级 + 面板易用性
 
-> 发布主题：**上游改版适配与三处「静默失效」修复 + 面板易用性打磨**。小浣熊登录跟进上游迁站
+> 发布主题：**新增第十四条渠道（华为云果办 OfficeAce）+ 上游改版适配 + 四处「静默失效」修复**。
+> 新增 **OfficeAce（`officeace/*`，华为云 AgentArts 模型网关）**——支持本机客户端导入与自助
+> OAuth 登录两条添加路径、积分/签到、临时凭据自动续期；小浣熊登录跟进上游迁站
 > （入口与凭据 cookie 名都变了，旧实现已完全失效）；启动时监听失败不再静默留在后台
 > 当僵尸实例；模型降级链在「整渠道全灭」时也能跨渠道顶上；另修一处会让
 > **管理面板登录层不可见**的 HTML 结构缺陷；设置面板补上模型查找入口、模型查找结果不再截断、
 > 思考强度行的模型 ID 不再被截断。
 >
-> 本次为 v2.7.3 之后的补丁小版本，含 **6 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；
-> #127/#130/#131/#132 [@ezjbc](https://github.com/ezjbc)；#128 [@fmdxx1991](https://github.com/fmdxx1991)）
+> 本次为 v2.7.3 之后的功能版本（跳过未发布的 v2.7.4 编号，把该轮修复一并归入），含
+> **7 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；#127/#130/#131/#132 [@ezjbc](https://github.com/ezjbc)；
+> #122 [@zkj123](https://github.com/zkj123)；#128 [@fmdxx1991](https://github.com/fmdxx1991)）
 > 与 2 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)；#117 [@fmdxx1991](https://github.com/fmdxx1991)）。
-> **合并期额外修出 3 条跨切面缺陷**（小浣熊 JWT uid 提取漏改两处、降级文案与死代码、
-> oczen 匿名车道与伪装头），详见下文。
+> **合并期额外修出 7 条跨切面缺陷**（小浣熊 JWT uid 提取漏改两处、降级文案与死代码、
+> oczen 匿名车道与伪装头、OfficeAce 的 error 帧误报/非流式吞错/Extra map 竞态/导入丢 refresh_token），详见下文。
 
 ---
+
+## 🎉 新渠道：华为云果办 OfficeAce（`officeace/*`，PR #122，[@zkj123](https://github.com/zkj123)）
+
+把**华为云果办**（AgentArts 模型网关，本身 OpenAI 兼容）聚合进本工具，可多账号池化调度、
+统一记流水与运行统计。协议参考开源项目 [Q-shuang-dot/officeace2api](https://github.com/Q-shuang-dot/officeace2api)（MIT）。
+
+- **对话**：`officeace/<model>` 路由；流式/非流式（恒以 `stream:true` 打上游，非流式本地聚合）；
+  推理模型自适应补足 `max_tokens` 预算（思维链吃光预算会让正文为空），`glm-5.3` 系自动剥离
+  其不认的 `thinking` 参数、且**保留 `stream_options.include_usage`**（否则该模型 token 流水恒 0）。
+- **账号来源（两路）**：① 面板「从客户端导入」读本机已登录的 OfficeAce 桌面端文件
+  （`models.json` + 加密档案，后者经 DPAPI/AES-256-GCM 解密取临时 AK/SK，仅 Windows）；
+  ② 面板「浏览器登录」走自助 OAuth（华为云授权码 + PKCE + DPoP，跨平台，无需桌面端）。
+- **积分/签到**：控制面 V4/V11 华为签名查询套餐与奖励积分；每日签到走 `bonus/claim`。
+- **续期**：`refresh_token` 一次性轮换（单账号单飞 + 死名单防重放），落盘持久化。
+- **模型列表**：`/v1/models` 以华为网关动态目录为准；拉取失败回退内置静态表。
+- **能力字段口径（R49）**：上游目录只返回模型 id、无任何能力声明，故 `SupportsTools` /
+  `SupportsReasoning` 一律**不编造**（保持未知）；思考档位面同样不编造。
+- **已知限制（如实披露）**：合并时**无真实华为账号端到端实盘验证**——首次真实登录/续期/签到
+  如遇上游字段与预期不符，需按实际响应微调；DPAPI 解密仅 Windows 生效，其它平台若不走自助登录
+  则积分/签到降级（对话不受影响，网关 Basic 凭据不过期）。
 
 ## 🦝 小浣熊登录跟进上游迁站（R67，PR #124）
 
@@ -2135,6 +2158,24 @@ issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵
 2. **降级链的 `runtimeCapacity` 死代码与过期文案**：PR #127 删掉提前返回后，`runtimeCapacity`
   的 `hasHealthy` 返回值已无人使用，折叠为单一 `modelHasCapacity`；面板/统计里写死「主模型全冷」
   的文案同步改为覆盖「整渠道全灭」。
+3. **OfficeAce 流内 error 帧误报（合并期实证）**：`errorSniffer` 原用
+  `strings.Contains(line, "error")` 判据——正常回答正文里只要出现 `error` 字样（模型写代码/
+  解释报错）就被当成错误帧 ⇒ 产出 `StreamError` ⇒ `statusOfPayload` 默认 502 ⇒ 归 `ErrServer`
+  （Rotatable）⇒ handler 累计 `errCount` 后**冷却健康账号**。修为「必须能解析成 JSON 且顶层存在
+  `error` 键」。
+4. **OfficeAce 非流式路径吞掉内嵌错误**：`Aggregate` 原不做 error 嗅探，上游 200 + 流内 error 帧
+  被 `upstream.Aggregate` 当成「成功空回答」吞掉（实测 `err=nil`）——客户端看到空内容、账号不冷却
+  （与 R60 修 qwenwork 的正是同一形态，本渠道漏了非流式出口）。现与 `Stream` 同款嗅探。
+5. **OfficeAce `Extra` map 并发读写致命错误**：`a.Extra` 是 map，`refreshToken` 的 `addDead`
+  无锁就地写、`accountFromAuth` 无锁读 ⇒ Go `fatal error: concurrent map read and map write`
+  （**不可 recover，直接打死进程**，实测复现）。修为 `accountFromAuth` 持 `RLock`、`addDead` 持 `Lock`。
+6. **OfficeAce「从客户端导入」丢 refresh_token**：`Account.Export()` 原缺 `RefreshToken` 字段，
+  而导入路径用它落盘 ⇒ 导入的账号只有 ~2h 临时凭据，之后积分/签到**永久无法续期**
+  （对话走不过期的网关凭据，故极隐蔽）。现补字段并在导入处落盘 + 对无 refresh_token 的账号给出提示。
+7. **OfficeAce 能力字段不编造（R49）**：`fetchModels`/`StaticModels` 原一律置
+  `SupportsTools/SupportsReasoning = true`（上游目录只回 id，无任何声明）⇒ 属编造。现保持零值（未知）。
+  另：401/403 从 `ErrSessionDead`（会 `pool.Disable` 永久禁用）改归 `ErrAccountFault`（软冷却可自愈），
+  `reloadAccounts` 补上 OfficeAce 分支（否则 OAuth/导入落盘后账号要等重启才进池，R34/R41 家族）。
 
 ## 📝 文档与决议整合
 
@@ -2159,6 +2200,7 @@ issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵
 
 | 贡献者 | 内容 |
 |--------|------|
+| [@zkj123](https://github.com/zkj123) | #122 新增华为云果办 OfficeAce 渠道（对话/积分/签到/OAuth 登录/DPAPI） |
 | [@xxhhlk](https://github.com/xxhhlk) | #124 小浣熊登录跟进上游迁站、#126 监听失败终止进程 |
 | [@ezjbc](https://github.com/ezjbc) | #127 整渠道全灭时跨渠道模型降级（R54 触发判据扩展）；#130/#131/#132 面板查找与模型 ID 显示打磨 |
 | [@sept13-yu](https://github.com/sept13-yu) | issue #125 管理面板登录层不可见（定位到缺失的 `</div>`） |

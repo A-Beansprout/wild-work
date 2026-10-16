@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"wild-work/internal/monkeycode"
+	"wild-work/internal/officeace"
 	"wild-work/internal/provider"
 	"wild-work/internal/raccoon"
 )
@@ -66,6 +67,8 @@ type authSection struct {
 	ConsoleCookie string `json:"consoleCookie"`
 	// BaizhiCookie 只在 MonkeyCode 凭据里非空（百智云会话 Cookie，控制台会话的上游来源）
 	BaizhiCookie string `json:"baizhiCookie"`
+	// Extra 渠道扩展凭据袋（officeace 用；其余渠道空）
+	Extra map[string]string `json:"extra,omitempty"`
 }
 
 type accountSection struct {
@@ -78,12 +81,12 @@ type accountSection struct {
 //
 // 跨平台口径（issue #75）：不在此处做整体 Windows 门禁——三个导入渠道的
 // 路径探测各自尽力而为、找不到客户端凭据时返回明确错误。
-//  - Raccoon 用 os.UserHomeDir() + BOX_AGENT_CONFIG_DIR，天然跨平台
-//    （macOS/Linux 同样有官方客户端）；
-//  - Loomy / MonkeyCode 的路径候选以 POSIX/Win 通用环境变量为主，
-//    客户端配置落在标准目录即可命中，非 Windows 上找不到时给出明确报错。
-//  注：真正仅 Windows 的是「浏览器授权登录」（raccoon 依赖 HKCU 的
-//  office-raccoon:// 协议注册，见 protocol_windows.go）。
+//   - Raccoon 用 os.UserHomeDir() + BOX_AGENT_CONFIG_DIR，天然跨平台
+//     （macOS/Linux 同样有官方客户端）；
+//   - Loomy / MonkeyCode 的路径候选以 POSIX/Win 通用环境变量为主，
+//     客户端配置落在标准目录即可命中，非 Windows 上找不到时给出明确报错。
+//     注：真正仅 Windows 的是「浏览器授权登录」（raccoon 依赖 HKCU 的
+//     office-raccoon:// 协议注册，见 protocol_windows.go）。
 func (a *App) ImportLocalCredentials(channel string) (*ImportLocalResult, error) {
 	switch provider.Kind(strings.TrimSpace(channel)) {
 	case provider.MonkeyCode:
@@ -92,6 +95,8 @@ func (a *App) ImportLocalCredentials(channel string) (*ImportLocalResult, error)
 		return a.importRaccoon()
 	case provider.Loomy:
 		return a.importLoomy()
+	case provider.OfficeAce:
+		return a.importOfficeAce()
 	}
 	return nil, fmt.Errorf("渠道 %q 不支持本地导入（该渠道请用面板的登录按钮）", channel)
 }
@@ -425,6 +430,57 @@ func loomyClientSessionPath() (string, error) {
 		return "", errors.New("未找到 Loomy 客户端目录（C:\\Users\\Public\\Loomy 或 ~/Library/Application Support/loomy 不存在）：请先安装并登录 Loomy 客户端")
 	}
 	return "", fmt.Errorf("未找到 Loomy 会话文件（已尝试 %d 个路径）：请先在客户端完成登录", len(cands))
+}
+
+// importOfficeAce 扫描本机已登录的 OfficeAce 桌面端文件，发现华为云果办网关凭据。
+//
+// 与其它导入渠道不同，本渠道一个桌面端可能挂多个华为账号（多份 routing_state/users/<uid>），
+// 因此逐账号导入。网关凭据（Basic AK/SK）只是对话入口；积分/签到所需的临时凭据需后续续期获取。
+func (a *App) importOfficeAce() (*ImportLocalResult, error) {
+	accs, err := officeace.Discover(nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(accs) == 0 {
+		return nil, fmt.Errorf("未找到本机 OfficeAce 客户端凭据：请先安装并登录 OfficeAce 桌面端，且至少发起过一次对话")
+	}
+	firstUID, firstFile := "", ""
+	withRT := 0
+	for _, acc := range accs {
+		ex := acc.Export()
+		if ex.RefreshToken != "" {
+			withRT++
+		}
+		doc := authDoc{
+			Auth: authSection{
+				AccessToken: ex.AccessToken,
+				// refresh_token 必须落盘（否则 ~2h 后临时凭据到期，积分/签到永久无法续期，
+				// 而对话不受影响 ⇒ 极隐蔽）。缺它时为空串，面板会以「无临时凭据」提示。
+				RefreshToken: ex.RefreshToken,
+				// 网关 Basic 凭据不过期；续期是临时凭据的事，故这里用远期到期避免误触刷新。
+				ExpiresAt: time.Now().AddDate(50, 0, 0).Unix(),
+				ApiHost:   ex.ApiHost,
+				Extra:     ex.Extra,
+			},
+			Account: accountSection{UID: ex.UID, Nickname: ex.Nickname},
+		}
+		file, err := a.writeAuthFile("officeace", ex.UID, doc)
+		if err != nil {
+			return nil, err
+		}
+		if firstUID == "" {
+			firstUID, firstFile = ex.UID, filepath.Base(file)
+		}
+	}
+	a.reloadAccounts()
+	a.afterAccountAdded(provider.OfficeAce)
+	note := fmt.Sprintf("已导入 %d 个 OfficeAce 账号", len(accs))
+	if withRT < len(accs) {
+		// 无 refresh_token 的账号只能对话，积分/签到会退化成「无临时凭据」（需在本工具重新登录）。
+		note += fmt.Sprintf("（其中 %d 个未取得 refresh_token，积分/签到需在本工具重新登录一次）", len(accs)-withRT)
+	}
+	note += "；每日签到的临时凭据约 2 小时有效，wild-work 会自动续期"
+	return &ImportLocalResult{Channel: "officeace", UID: firstUID, File: firstFile, Note: note}, nil
 }
 
 // writeAuthFile 原子写 auth 文件（tmp + rename，0600），文件名前缀即渠道 Kind。

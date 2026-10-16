@@ -172,6 +172,38 @@ CN 凭据在国际端点 401（双向隔离），两渠道凭据文件前缀 `qo
 上游不可达时回静态清单（`internal/oczen/free.go`）。定价恒为 `Rate=0, Explicit=true`。
 model 字段回填：`Aggregate` 直接改字段；`Stream` 用 `modelRewriter` 逐行替换。
 
+### OfficeAce（officeace，华为云果办）
+
+| 用途 | 端点 | 鉴权 |
+|------|------|------|
+| 对话 | `POST {base}/chat/completions`（网关 OpenAI 兼容，不带 `/v1`） | `Authorization: Basic base64(AK:SK)`（**不过期**） |
+| 模型列表 | `GET {base}/models` | 同上 |
+| 积分/订阅 | `GET {gateway}/v1/subscription` | **V11-HMAC-SHA256**（临时 AK/SK + security_token + project_id） |
+| 每日签到 | `POST {gateway}/v1/subscription/bonus/claim`（body `{}`） | 同上 |
+| 网关发现 | `GET {agentarts}/v1/claw/client-permission-validate` | **V4-HMAC-SHA256**（SDK-HMAC-SHA256） |
+| 续期 | `POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens` | DPoP proof（ES256）+ `refresh_token` |
+
+> **双层凭据**（R70）：网关 Basic 凭据不过期（对话用，落 `accessToken`）；临时 AK/SK 约 2h
+> （控制面签名用，落 `Auth.Extra`）由 `refresh_token` 经 DPoP 换得。refresh_token 是**一次性**的
+> （重放报 STS5.1806）⇒ 单账号单飞 + 死名单，**必顶落盘**（不变量 20）。
+
+**两条添加路径**：① 本机桌面端文件导入（`models.json` + DPAPI/AES-256-GCM 加密档案，
+仅 Windows 可解密）；② 面板自助 OAuth（华为云授权码 + PKCE + DPoP，跨平台）。
+
+**对话改写（`rewriteBody`）**：恒 `stream:true`；`glm-5.3` 系剥 `thinking`/`enable_thinking`/
+`reasoning_effort`（**但不剥 `stream_options`** —— 它是 `include_usage` 载体，剥了 token 流水恒 0，
+故注入顺序是「先剥后注入」）；推理模型补足 `max_tokens` 预算（上游把 max_tokens 当推理+正文总预算，
+思维链会先吃光 ⇒ 正文空；qwen3 系视为非推理，不篡改用户显式值）；temperature/top_p 夹取。
+
+**流内 error 帧（R40）**：上游可能在 HTTP 200 + 流内 error 帧返回业务错误（如 `81111` 限流）。
+`Stream` 与 `Aggregate` **两条出口都挂 `errorSniffer`**（解析 JSON 且顶层有 `error` 键才算，
+不可用 `strings.Contains`），命中即返回实现 `StreamErrorClassifier` 的 `*StreamError` 供 handler 冷却。
+
+**能力字段（R49）**：上游 `/models` 只回 id、无任何能力声明 ⇒ `SupportsTools`/`SupportsReasoning`
+一律保持零值（不编造）；无静态档位面。
+
+**已知限制**：合并时无真实华为账号端到端实盘验证；DPAPI 解密仅 Windows。
+
 ## 4. 渠道扩展点
 
 新增渠道一般只需三步：
