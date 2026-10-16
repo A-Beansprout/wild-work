@@ -2022,22 +2022,29 @@ Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对�
 
 ---
 
-# wild-work v2.8.0 — 新增华为云果办 OfficeAce 渠道 + 小浣熊迁站适配 + 跨渠道降级 + 面板易用性
+# wild-work v2.8.0 — 新增华为云果办 OfficeAce 渠道 + WorkBuddyAI 渠道校验修复 + 小浣熊迁站适配 + 跨渠道降级 + 面板易用性
 
-> 发布主题：**新增第十四条渠道（华为云果办 OfficeAce）+ 上游改版适配 + 四处「静默失效」修复**。
+> 发布主题：**新增第十四条渠道（华为云果办 OfficeAce）+ 上游改版/风控适配 + 四处「静默失效」修复**。
 > 新增 **OfficeAce（`officeace/*`，华为云 AgentArts 模型网关）**——支持本机客户端导入与自助
-> OAuth 登录两条添加路径、积分/签到、临时凭据自动续期；小浣熊登录跟进上游迁站
-> （入口与凭据 cookie 名都变了，旧实现已完全失效）；启动时监听失败不再静默留在后台
+> OAuth 登录两条添加路径、积分/签到、临时凭据自动续期；**修国际版 workbuddyai 全模型
+> `400 code=11-128` 不可用**（上游新增渠道校验，点名缺 `X-Conversation-ID`）；小浣熊登录
+> 跟进上游迁站（入口与凭据 cookie 名都变了，旧实现已完全失效）；启动时监听失败不再静默留在后台
 > 当僵尸实例；模型降级链在「整渠道全灭」时也能跨渠道顶上；另修一处会让
 > **管理面板登录层不可见**的 HTML 结构缺陷；设置面板补上模型查找入口、模型查找结果不再截断、
 > 思考强度行的模型 ID 不再被截断。
 >
 > 本次为 v2.7.3 之后的功能版本（跳过未发布的 v2.7.4 编号，把该轮修复一并归入），含
-> **7 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；#127/#130/#131/#132 [@ezjbc](https://github.com/ezjbc)；
-> #122 [@zkj123](https://github.com/zkj123)；#128 [@fmdxx1991](https://github.com/fmdxx1991)）
-> 与 2 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)；#117 [@fmdxx1991](https://github.com/fmdxx1991)）。
+> **8 个社区 PR**（#124/#126 [@xxhhlk](https://github.com/xxhhlk)；#127/#130/#131/#132 [@ezjbc](https://github.com/ezjbc)；
+> #122 [@zkj123](https://github.com/zkj123)；#128 [@fmdxx1991](https://github.com/fmdxx1991)；
+> #135 [@jianzhangg](https://github.com/jianzhangg)）
+> 与 3 个 issue（#125 [@sept13-yu](https://github.com/sept13-yu)；#117 [@fmdxx1991](https://github.com/fmdxx1991)；
+> #133 [@danshui93](https://github.com/danshui93)）。
 > **合并期额外修出 7 条跨切面缺陷**（小浣熊 JWT uid 提取漏改两处、降级文案与死代码、
 > oczen 匿名车道与伪装头、OfficeAce 的 error 帧误报/非流式吞错/Extra map 竞态/导入丢 refresh_token），详见下文。
+>
+> **⚠️ 本版于当日重发**：初版 v2.8.0 发布后 1 小时，国际版上游开始按账号灰度拦截
+> **缺 `X-Conversation-ID` 的对话请求**（`400 code=11-128`），workbuddyai 全模型不可用；
+> 修复（PR #135）合并后本 tag 重指向新提交并重新构建全部产物。已下载初版的用户请重新下载。
 
 ---
 
@@ -2060,6 +2067,34 @@ Cline 上游免费池的 ID 自带命名空间（`cline-free/*`），此前对�
 - **已知限制（如实披露）**：合并时**无真实华为账号端到端实盘验证**——首次真实登录/续期/签到
   如遇上游字段与预期不符，需按实际响应微调；DPAPI 解密仅 Windows 生效，其它平台若不走自助登录
   则积分/签到降级（对话不受影响，网关 Basic 凭据不过期）。
+
+## 🛡 WorkBuddyAI 对话补会话头族，修上游渠道校验（R71，PR #135，issue #133）
+
+2026-10-16 上午起，**国际版 workbuddyai 全模型**恒返回
+`400 code=11-128 "conversation id missing"`，响应体里明写「这次调用没通过渠道校验，
+可能不是官方客户端发出的」；**国内版 workbuddy 同时刻完全正常**。上游按账号灰度推进
+（生产池实测约 22% 账号先中招），故表现为「同一时刻有人能用、有人全挂」。
+
+- **根因**：上游国际版新增渠道校验，校验对象是**请求头里的会话头族**（实测只在 body 里
+  加 `conversationId` **无效**）。本仓 `chatHeaders` 此前已带
+  `X-Conversation-Request-ID` / `-Message-ID` / `X-Request-ID` / `X-Root-Request-ID` 四件，
+  **唯独缺 `X-Conversation-ID`** —— 恰是上游点名的那个字段。
+- **修法**：补 `X-Conversation-ID`（随机 UUIDv4、带连字符，每次请求现生成），
+  既有四件头保持原貌不动。**不改 body**（实测无效），**不碰国内版**（上游无此校验）。
+- **证据**：三个独立项目交叉验证 —— ardeyouxipianyi/workbuddy2api-hub#380（对官方客户端
+  5.8.4 静态解包 + mitmproxy 抓包约 350 条核验会话头族形态）、CangShui/workbuddy-gateway#20
+  的 A/B 实验（同凭据同 body 直连，缺会话头族恒 400、带齐恒 200）、ithtelab/workbuddy-manager#193
+  （生产池补头后逐号全绿）。
+- **本仓独立复现与验证**：三账号直连上游做消元矩阵 —— 被封账号「无头 / 只补
+  `X-Conversation-ID` / 只带原四件头」三种形态**全部 400**，**五件齐全才 200**；
+  未封账号任何形态均 200。端到端跑 master 与修复版两份二进制：master 对 `deepseek-v4.1-flash`
+  / `glm-5.3` 恒 400，修复版对 `deepseek-v4.1-flash` / `glm-5.3` / `kimi-k3` 均正常出流。
+- **顺带实证的两条**（PR 描述未覆盖，已记入 R71）：① 上游校验的是**头族齐全**而非单点，
+  只补 `X-Conversation-ID` 仍被拒；② `X-Conversation-ID` 的**取值形态不被校验** ——
+  UUIDv4、32 位 hex、甚至裸串 `xyz` 都通过，重复使用同一 id 也稳定 200，故「每请求现生成」
+  与「稳定派生」在功能上等价。
+- **已知限制**：上游为抽样/灰度校验，补头后短期不再出现不等于绝对修好（可能还有其他校验维度）；
+  若后续仍偶发 11-128，需抓失败样本重新定位。
 
 ## 🦝 小浣熊登录跟进上游迁站（R67，PR #124）
 
@@ -2205,3 +2240,5 @@ issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵
 | [@ezjbc](https://github.com/ezjbc) | #127 整渠道全灭时跨渠道模型降级（R54 触发判据扩展）；#130/#131/#132 面板查找与模型 ID 显示打磨 |
 | [@sept13-yu](https://github.com/sept13-yu) | issue #125 管理面板登录层不可见（定位到缺失的 `</div>`） |
 | [@fmdxx1991](https://github.com/fmdxx1991) | issue #117 与 #128 OpenCodeZen 恒 403（附逐项消元矩阵，定位到端点与两个伪装头闸门） |
+| [@jianzhangg](https://github.com/jianzhangg) | #135 WorkBuddyAI 对话补 `X-Conversation-ID`（修上游渠道校验 11-128，附 5.8.4 抓包口径） |
+| [@danshui93](https://github.com/danshui93) | issue #133 国际版全模型 400 `11-128`（首个现场报告 + 指出国内版不受影响） |
