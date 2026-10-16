@@ -432,7 +432,12 @@ const chClass = (k) => CH_CLASS[k] || "custom";
 // 千问办公无签到活动；MonkeyCode 无签到端点；Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
 // 小浣熊已实现签到（setting_info 触发每日积分落账，见 internal/raccoon/checkin.go），支持手动按钮。
 const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "loomy", "oczen", "cline"]);
-const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
+const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g) || isCustomGroup(g); // 自定义渠道无签到活动（R66）
+// isCustomGroup 该分组是否为用户自定义 OpenAI 兼容渠道（R66）。
+// 以 state.custom_channels（后端 /api/state 下发，保存即热更新）为准，勿在前端另维护一份。
+const isCustomGroup = (g) => !!(state && (state.custom_channels || []).some((c) => c && c.name === g));
+// hasNoCredits 该分组是否无积分概念：内建 NA 名单 ∪ 动态自定义渠道。与后端 creditsNAKind 同口径。
+const hasNoCredits = (g) => NO_CREDITS_BUILTIN.has(g) || isCustomGroup(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
 const IMPORT_LOCAL_CHANNELS = new Set(["monkeycode", "raccoon", "loomy", "officeace"]);
 const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
@@ -449,7 +454,9 @@ const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持", cline: "无签到" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
-const NO_CREDITS = new Set(["oczen", "cline"]);
+// 内建名单只有 oczen/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
+// 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
+const NO_CREDITS_BUILTIN = new Set(["oczen", "cline"]);
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
@@ -460,7 +467,7 @@ const NO_CREDITS = new Set(["oczen", "cline"]);
 // 此时不把旧值当真值，改显示「待刷新」；自动刷新首刷成功后即变回真实拆分。
 function creditsText(a) {
   if (a.credits_na) {
-    return `<span class="credit-na" title="匿名通道无积分概念">不适用</span>`;
+    return `<span class="credit-na" title="该渠道无积分概念">不适用</span>`;
   }
   if (a.credits_stale) {
     return `<span class="credit-stale" title="余额口径已过期（旧版本状态文件），正在自动刷新…">待刷新</span>`;
@@ -623,24 +630,28 @@ function renderAccounts() {
       ? `<span class="icon-op off" title="${esc(noCheckinTitle)}" onclick="return false">✓</span>`
       : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">✓</span>`;
 
-    // 匿名渠道（无积分/无签到）：只保留「不可操作」的静态指示，
-    // 不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
-    const noCredits = NO_CREDITS.has(a.group);
+    // 无积分账号分两类，处理不同：
+    // - oczen/cline（固定账号）：只保留「不可操作」的静态指示，
+    //   不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
+    // - 自定义渠道（R66）：无积分/无签到，但账号可在设置里停用/删除，
+    //   故保留停用/删除/改名入口，只去掉签到/刷新积分两个无意义按钮。
+    const noCredits = hasNoCredits(a.group);
+    const fixedAcct = noCredits && !isCustomGroup(a.group);
     // 问号图标：hover 展示 oczen 通道说明（免费反代范围/私有 Key/代理三项）。
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
     const oczenHelp = `<span class="icon-op help" title="关于 OpenCodeZen 通道：&#10;1. 本工具仅反代其免费模型（绕过官方客户端限制）；付费账号可直接使用官方端点，无需经此通道&#10;2. 在 OpenCodeZen 获取的 API-Key 可在设置中配置，避免匿名账号共享限额超限&#10;3. 地域受限的免费模型（如 muse-spark 系）会经「备用上游通道」自动重发（设置里配置代理地址；未配置则原文透传 403）">?</span>`;
-    const ops = noCredits
+    const ops = fixedAcct
       ? `${oczenHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
-          <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>
+          ${noCredits ? "" : `<span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>`}
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
-          <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">✕</span>`;
+          <span class="icon-op danger" title="${isCustomGroup(a.group) ? esc("删除账号（自定义渠道将移除整个渠道配置）") : "删除账号"}" onclick="removeAcct('${a.uid}')">✕</span>`;
     // 显示名：点击直接弹出改名框（匿名渠道不可改，降级为普通文本）。
     // oczen 特例：渠道名已由 badge 承担，名字按凭证形态显示「匿名/私有Key」。
     const isOczen = a.group === "oczen";
     const oczenName = (state.oczen_api_key || "") ? "私有Key" : "匿名";
-    const nameHtml = noCredits
+    const nameHtml = fixedAcct
       ? `<span class="acct-name">${esc(isOczen ? oczenName : (a.nickname || shortUid(a.uid)))}</span>`
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
@@ -989,7 +1000,10 @@ async function refreshAll() {
   try {
     const r = await api("/api/account/refresh_all", {});
     detailCache = {}; // 顶层已全部更新，全部明细缓存作废
-    toast(r.busy ? "已有刷新任务进行中" : `积分刷新完成：成功 ${r.ok} / 失败 ${r.failed}`);
+    // 无积分概念的渠道（oczen/cline/自定义）后端不参与统计，无需前端再补偿数
+    toast(r.busy ? "已有刷新任务进行中"
+      : r.failed > 0 ? `积分刷新完成：成功 ${r.ok} / 失败 ${r.failed}`
+      : `积分刷新完成：全部成功（${r.ok} 个）`);
     loadState();
   } catch (e) { toast(e.message); } finally {
     $("btnRefreshAll").disabled = false;
@@ -1086,7 +1100,9 @@ function promptLogin(channel) {
     return;
   }
   $("lcTitle").textContent = "添加 " + name + " 账号";
-  $("lcMsg").textContent = noExplicitCheckin(channel)
+  // 此处只会收到内建渠道名（自定义渠道走设置弹层，不经 promptLogin），
+  // 故直接查内建名单，不走动态判定的 noExplicitCheckin()。
+  $("lcMsg").textContent = NO_EXPLICIT_CHECKIN.has(channel)
     ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。${NO_CHECKIN_LOGIN_HINT[channel] || ""}`
     : `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。`;
   $("btnLoginConfirm").textContent = "登录" + name;

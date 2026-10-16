@@ -99,7 +99,7 @@
 | R63 | 思考强度映射是「出站注入」，与 R49「只透传声明」互补 |
 | R64 | 面板「测试」类探针必须与真实请求**同源**取用备用通道，并如实回传实际出口 |
 | R65 | 小浣熊「每日积分」是惰性落账，签到 = 调一次 `setting_info`；判据用 `point_grant_popups` |
-| R66 | 自定义 OpenAI 兼容渠道（`custom_channels`）：面板配置即接入，统一流水/统计/路由 |
+| R66 | 自定义 OpenAI 兼容渠道（`custom_channels`）：面板配置即接入，统一流水/统计/路由；**无积分概念**，全面退出积分体系（v2.8.1：RefreshAll 跳过、单账号刷新/明细明确报「不适用」、前端动态判定隐藏无意义按钮） |
 | R68 | **启动时 HTTP 监听失败必须终止进程**（不得只记日志继续跑） |
 | R69 | oczen 匿名车道走 `/inference/v1`；不发 `x-opencode-request`；`x-opencode-project` 用裸 40 位 hex |
 | R70 | 华为云果办 OfficeAce：双层凭据（网关 Basic 不过期 + 临时 AK/SK ~2h 需 refresh 续期） |
