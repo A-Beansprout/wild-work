@@ -4,6 +4,7 @@ package workbuddyai
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -85,6 +86,15 @@ func commonHeaders(req *http.Request) {
 
 // chatHeaders 对话专有头：Authorization 族 + X-No-* 缺省约定。
 // 安全红线：绝不携带 X-Refresh-Token。
+//
+// 会话头族（X-Conversation-*）是上游渠道校验的对象：2026-10-16 起国际版新增
+// 抽样校验，缺会话头族的请求被判「非官方客户端」，返回 400 code=11128
+// "conversation id missing"（displayTips 明示"没通过渠道校验"）。
+// 定位与 A/B 实证（同凭据同 body 只差三个头：缺 X-Conversation-* 恒 400、
+// 带齐恒 200）见 ardeyouxipianyi/workbuddy2api-hub#380（修复 PR #381，对
+// 官方客户端 5.8.4 抓包核验）、CangShui/workbuddy-gateway#20、
+// ithtelab/workbuddy-manager#193。实测只在 body 加 conversationId 无效，
+// 头族才是校验对象（#193）。
 func chatHeaders(req *http.Request, a *auth.Auth) {
 	commonHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
@@ -101,7 +111,10 @@ func chatHeaders(req *http.Request, a *auth.Auth) {
 	}
 	req.Header.Set("X-Domain", wbaiDomain)
 	injectAttributionWBAI(req)
-	// 会话头族
+	// 会话头族。X-Conversation-ID 在官方客户端抓包里是带连字符的 UUID
+	// （v4/v7 均被接受，版本号不参与校验）；其余四个此前已带（32 位 hex），
+	// 形态保持不变。每次请求现生成（对齐 #381 合并版行为，不引入跨请求状态）。
+	req.Header.Set("X-Conversation-ID", conversationIDWBAI())
 	mid := newMessageIDWBAI()
 	req.Header.Set("X-Conversation-Request-ID", mid)
 	req.Header.Set("X-Conversation-Message-ID", mid)
@@ -125,6 +138,27 @@ func newMessageIDWBAI() string {
 		b[15-i] = byte(n >> ((7 - i) * 8))
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// conversationIDWBAI 生成 X-Conversation-ID 的值：随机 UUIDv4（带连字符，
+// 8-4-4-4-12 小写 hex）。官方客户端抓包显示 conversation id 就是这个形态，
+// v4/v7 均被上游接受（#381 实测版本号不参与校验），取实现最简的 v4。
+// 与 newMessageIDWBAI 的 32 位 hex 刻意不同形——两种形态在抓包里并存，
+// 分别对应消息类与会话类 ID，保持各自原貌最不惹眼。
+func conversationIDWBAI() string {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		// crypto/rand 失败时退回时间戳派生（与 newMessageIDWBAI 同源思路），
+		// 仍满足「带连字符 UUID」的形态校验。
+		n := time.Now().UnixNano()
+		for i := 0; i < 8; i++ {
+			b[i] = byte(n >> (i * 8))
+			b[15-i] = byte(n >> ((7 - i) * 8))
+		}
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // billingHeaders 余额 / 签到接口头。
