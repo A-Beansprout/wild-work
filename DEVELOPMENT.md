@@ -141,18 +141,32 @@ CN 凭据在国际端点 401（双向隔离），两渠道凭据文件前缀 `qo
 
 | 用途 | 端点 | 鉴权 |
 |------|------|------|
-| 聊天 | `POST https://opencode.ai/zen/v1/chat/completions` | `Bearer public`（字面量，匿名） |
-| 模型列表 | `GET https://opencode.ai/zen/v1/models` | 同上 |
+| 聊天（匿名） | `POST https://opencode.ai/inference/v1/chat/completions` | `Bearer public`（字面量，匿名） |
+| 聊天（自备 key） | `POST https://opencode.ai/zen/v1/chat/completions` | `Bearer sk-…` |
+| 模型列表 | 同车道基址 + `/models` | 同上 |
+
+> **基址按凭证车道分流**（`Client.base()`）：匿名（无 key）走 `AnonymousBase`(`/inference`)，
+> 自备 `sk-…` key 走 `DefaultBase`(`/zen`)。上游把 **keyless 推理**从 `/zen` 迁到了独立入口，
+> 两条车道基址已分离。匿名打到 `/zen` 会恒回 403 FreeTierError，而两个基址的
+> `GET /models` 完全相同（均 200、7212 字节），差异只在推理入口。opencode2api 的 anonymous
+> 车道走的也是 `/inference`（其 `internal/config/config.go` 的 `Upstream.Anonymous`）。
 
 **无刷新/无余额/无签到**：匿名凭证是常量，`RefreshToken` 为空实现，`UserResource*` 恒 0，
 `DailyCheckin` 返回「无签到活动」（调度器配置为 `CheckinMinutes/KeepaliveHours` 均 nil，不会调用）。
 
-三道闸门（缺一即 403 FreeTierError，详见渠道备忘）：
-1. `x-opencode-session` 必须是 `ses_<12位小写hex><14位Base62>`（由对话首轮哈希稳定派生）；
+免费档请求形状闸门（缺一即 403 FreeTierError，详见渠道备忘与 R69）：
+1. 会话头须是 `ses_<12位小写hex><14位Base62>`（由对话首轮哈希稳定派生），且
+   `x-opencode-session` 与 `x-opencode-session-id` **两个头携带同一值**（官方客户端同时发两种拼写）；
 2. 请求体必须 `stream:true` 且 `tools` 内同含 `bash`/`read` function（缺则注入桩工具；
    客户端无工具时同时置 `tool_choice:"none"`，有工具时保留其 `tool_choice`）；
 3. 伪装头齐套：`User-Agent: opencode/1.18.x`、`x-opencode-client: cli`、
-   `x-session-affinity`/`X-Session-Id`（同会话值）、`x-opencode-request`、`x-opencode-project`。
+   `x-session-affinity`/`X-Session-Id`（同会话值）、`x-opencode-project`。
+   - **不得发 `x-opencode-request`**：上游 2026-10-14 起一旦见到该头即回 403。
+   - `x-opencode-project` 必须是**裸 40 位小写 hex**（官方 CLI 自身的形态）：`prj_` 前缀的
+     规范 id 会被拒 403；值本身不校验，只校验形状。本工具由会话标识 sha256 派生，
+     保证同一会话稳定映射（prompt cache 亲和）。
+   - `bash`/`read` 两个桩工具是正确的，**不要**换成官方 5 工具集
+     （`shell`/`edit`/`glob`/`grep`/`read` 实测 403，无 tools 同样 403）。
 
 模型暴露：只保留 ID 含 `free` 或恰为 `big-pickle` 的模型（地域受限的也保留）；
 上游不可达时回静态清单（`internal/oczen/free.go`）。定价恒为 `Rate=0, Explicit=true`。
