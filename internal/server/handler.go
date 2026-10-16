@@ -704,6 +704,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					transparentError(w, status, respBody)
 					return
 				}
+			case provider.ErrClient:
+				// 请求内容/形态类 4xx（如 workbuddy 11148 工具调用与结果不配对）：
+				// 错误跟着请求体走，换号必然同样拒收——不累计错误计数。否则一个
+				// 坏会话的客户端重试风暴会在几分钟内把全池账号记满冷却（阈值默认 3），
+				// 面板呈现「渠道自己挂了」假象，且诱发无意义的模型降级链触发。
+				// 仅轮转以兼容「同模型不同账号权益差异」场景；候选耗尽后透传最后
+				// 错误（与上游分类器注释「BadParams：不罚号但仍轮转」对齐）。
 			case provider.ErrServer:
 				if rt.NoCooldownOnServerError {
 					// 该渠道声明 5xx 为上游网关抖动（账号本身健康），
