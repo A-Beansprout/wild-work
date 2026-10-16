@@ -427,6 +427,16 @@ const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traewor
 const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", cline: "cline", officeace: "officeace" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
+// chColor 渠道识别色（图表 series 用）：读 :root 的 --ch-<class> 变量，
+// 与徽章/费率表头/按钮同一变量源，改 style.css 一处全局生效。
+const _chColorCache = {};
+function chColor(k) {
+  const cls = CH_CLASS[k] || "custom";
+  if (_chColorCache[cls]) return _chColorCache[cls];
+  let v = "";
+  try { v = getComputedStyle(document.documentElement).getPropertyValue(`--ch-${cls}`).trim(); } catch (e) { /* 非���览器环境忽略 */ }
+  return (_chColorCache[cls] = v || "#6366f1");
+}
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
 // 千问办公无签到活动；MonkeyCode 无签到端点；Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
@@ -2535,15 +2545,32 @@ function renderUsageChart(st) {
   if (!usageChart) return;
   const byDay = (st.token.by_day || []);
   const dates = byDay.map((d) => d.date);
-  // 渠道系列：取所有出现过的渠道并集
+  // 渠道系列：取所有出现过的渠道并集，按区间总量降序（主力渠道排在图例最前）
+  const totalOf = {};
   const chans = [...new Set(byDay.flatMap((d) => Object.keys(d.by_channel || {})))];
+  for (const d of byDay) for (const [ch, v] of Object.entries(d.by_channel || {})) totalOf[ch] = (totalOf[ch] || 0) + v;
+  chans.sort((a, b) => (totalOf[b] || 0) - (totalOf[a] || 0));
   const series = chans.map((ch) => ({
     name: CH_NAMES[ch] || ch, type: "line", smooth: true,
+    itemStyle: { color: chColor(ch) }, lineStyle: { color: chColor(ch) },
     data: byDay.map((d) => d.by_channel[ch] || 0),
   }));
   usageChart.setOption({
-    tooltip: { trigger: "axis" },
-    legend: { data: series.map((s) => s.name) },
+    color: chans.map((ch) => chColor(ch)),
+    tooltip: {
+      trigger: "axis",
+      // 全 0 的时刻点不弹悬浮（避免清晨无用量时一片 0 刷屏）；
+      // 有数据时也过滤掉 0 值系列，只看当下真正在跑的渠道。
+      formatter: (params) => {
+        const list = params.filter((p) => p.value > 0);
+        if (!list.length) return "";
+        const head = `<div style="font-weight:600;margin-bottom:4px">${esc(params[0].axisValue)}</div>`;
+        return head + list.map((p) =>
+          `<div>${p.marker}${esc(p.seriesName)}：${fmtTokensFull(p.value)}</div>`).join("");
+      },
+    },
+    legend: { type: "scroll", data: series.map((s) => s.name),
+      tooltip: { show: true } },
     grid: { left: 50, right: 20, top: 36, bottom: 28 },
     xAxis: { type: "category", data: dates },
     yAxis: { type: "value", axisLabel: { formatter: (v) => fmtTokensFull(v) } },
@@ -2579,11 +2606,23 @@ function renderCreditChart(entries, names) {
   };
   const series = top10.map((uid) => ({
     name: `${chLabel(mainChOf(uid))} ${names[uid] || shortUid(uid)}`, type: "line", smooth: true,
+    itemStyle: { color: chColor(mainChOf(uid)) }, lineStyle: { color: chColor(mainChOf(uid)) },
     data: dates.map((d) => byAcct[uid][d] || 0),
   }));
   creditChart.setOption({
-    tooltip: { trigger: "axis", valueFormatter: (v) => fmtCredits(v) },
-    legend: { data: series.map((s) => s.name) },
+    color: top10.map((uid) => chColor(mainChOf(uid))),
+    tooltip: {
+      trigger: "axis", valueFormatter: (v) => fmtCredits(v),
+      formatter: (params) => {
+        const list = params.filter((p) => p.value > 0);
+        if (!list.length) return "";
+        const head = `<div style="font-weight:600;margin-bottom:4px">${esc(params[0].axisValue)}</div>`;
+        return head + list.map((p) =>
+          `<div>${p.marker}${esc(p.seriesName)}：${fmtCredits(p.value)}</div>`).join("");
+      },
+    },
+    legend: { type: "scroll", data: series.map((s) => s.name),
+      tooltip: { show: true } },
     grid: { left: 50, right: 20, top: 36, bottom: 28 },
     xAxis: { type: "category", data: dates },
     yAxis: { type: "value", axisLabel: { formatter: (v) => fmtCredits(v) } },
