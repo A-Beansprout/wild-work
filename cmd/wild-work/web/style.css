@@ -282,8 +282,9 @@ body {
 
 /* 模型查找入口：标题行内的放大镜按钮（比默认 icon-btn 小一号，避免抬胀标题行） */
 .panel-head h2 .search-btn {
-  width: 24px; height: 24px; font-size: 13px; border-radius: 6px;
-  vertical-align: middle; margin-left: 4px; padding: 0; line-height: 1;
+  width: auto; height: 24px; font-size: 13px; border-radius: 6px;
+  vertical-align: middle; margin-left: 4px; padding: 0 8px; line-height: 1;
+  white-space: nowrap; /* 文字入口（🔍 查询模型）不换行叠字 */
 }
 
 /* 模型查找对话框：紧凑固定尺寸（对话框本身不随结果跳变/变高，避免位置困扰）。
