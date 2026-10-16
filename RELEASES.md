@@ -2242,3 +2242,52 @@ issue #117 二次反馈「升级了还是恒 403」，并附**逐项消元矩阵
 | [@fmdxx1991](https://github.com/fmdxx1991) | issue #117 与 #128 OpenCodeZen 恒 403（附逐项消元矩阵，定位到端点与两个伪装头闸门） |
 | [@jianzhangg](https://github.com/jianzhangg) | #135 WorkBuddyAI 对话补 `X-Conversation-ID`（修上游渠道校验 11-128，附 5.8.4 抓包口径） |
 | [@danshui93](https://github.com/danshui93) | issue #133 国际版全模型 400 `11-128`（首个现场报告 + 指出国内版不受影响） |
+
+---
+
+# wild-work v2.8.1 — 自定义渠道积分噪音修复（无积分概念渠道全面退出积分体系）
+
+> 发布主题：**修「刷新积分」把自定义渠道误计为失败**的提示噪音（R66 收尾）。
+> 用户实测症状：面板点「刷新积分」恒报「成功 32 / 失败 4」，但全部真实账号都是绿的——
+> 失败的 4 条全是自定义渠道（cliproxy / sgproxy / stepfun / zhipu）的占位账号。
+
+## 🐛 修复内容
+
+自定义 OpenAI 兼容渠道（R66）本就无积分概念：凭据本体是**渠道级 api_key**（对话转发用），
+占位账号无 access/refresh token，上游也无任何余额端点（`UserResourceDetail` 恒返回空），
+面板积分区已正确显示「不适用」。但积分体系的三条路径漏了对齐：
+
+- **`RefreshAll`（批量刷新积分）**：不跳过自定义渠道，每个渠道必记一条
+  `no token` 假失败 → 面板 toast 报「失败 N」纯噪音。对齐 oczen 的处理：
+  `rt.Custom` 运行时直接 `continue`，不进统计（回归 `TestRefreshAllSkipsCustomChannels`）。
+- **`RefreshCredits`（单账号刷新）**：不拒绝会落入 `creditSnapshot`，把 pool 快照**写成 0**
+  （`UserResourceDetail` 恒空），让人误读成「额度已用光」。改为明确报
+  「<渠道> 为自定义渠道，无积分概念，不适用」（回归 `TestRefreshCreditsCustomChannelNA`）。
+- **`ResourceDetail`（积分明细弹层）**：同样恒返回空 items，前端弹出一张空白明细层。
+  改为明确报错（同上回归覆盖）。
+
+## 🎨 前端对齐（`web/app.js`）
+
+- `NO_CREDITS` / `NO_EXPLICIT_CHECKIN` 原为**静态内建名单**，自定义渠道名不在其中：
+  自定义账号卡片上有可点的「签到 / 刷新积分」按钮（点了后端必拒或写 0），
+  显示名也可点改名（后端必报「无凭证文件」）。改为**动态判定**：
+  `isCustomGroup()` 以后端 `/api/state` 下发的 `custom_channels` 为准（保存即热更新，
+  勿在前端另维护一份）；`hasNoCredits() = 内建 NA 名单 ∪ 自定义渠道`，与后端
+  `creditsNAKind` 同口径。
+- 无积分账号拆成两类分别处理：**oczen/cline（固定账号）**维持原样——只留静态指示、
+  不可停用/删除/改名；**自定义渠道账号**无积分/无签到，但保留停用/删除/改名入口
+  （后端本就支持：删除 = 移除整个渠道配置），仅去掉签到/刷新积分两个无意义按钮。
+- 「全部签到」的 skip 计数随之动态化（此前自定义账号既不在 results 里也不在 skip 里，
+  toast 合计数对不上）。
+- 「刷新积分」toast：失败为 0 时显示「全部成功（N 个）」，避免「成功 N / 失败 0」
+  的怪异句式；「不适用」tooltip 文案改为「该渠道无积分概念」（不再是匿名通道特指）。
+- `promptLogin` 的登录提示文案改回查内建名单（该处只可能收到内建渠道名）。
+
+## ✅ 验证
+
+- `go build ./... && go vet ./... && go test ./...` 全绿（35 包）；
+  新增 3 条回归测试（`internal/app/creditrefresh_test.go`）。
+- `scripts/ui-static-check.mjs` 通过；`node --check app.js` 语法通过。
+- 本地实测（macOS，带 4 个自定义渠道的真实配置）：`POST /api/account/refresh_all`
+  返回 `failed=0`，自定义渠道不再出现在 platforms；单账号刷新与明细均明确报「不适用」；
+  `/api/state` 中自定义账号 `credits_na=true` 不变。
