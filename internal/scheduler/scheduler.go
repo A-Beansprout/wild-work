@@ -607,6 +607,18 @@ func (s *Scheduler) dailyCheckin(a *auth.Auth, r *CheckinResult) (structured boo
 	if report.Msg != "" {
 		r.Msg = report.Msg
 	}
+	// 结构化渠道也可能在回执里给出权威发放额（如 WorkBuddy 的 CheckinReporter 实现，
+	// issue #147）：与 CheckinGranter 同口径记 earn——否则 issue #67 的「发放即消耗」
+	// 差分归零问题会在 reporter 路径上重现（同一渠道两条路径不能不一致）。
+	if report.Status == provider.CheckinClaimed && report.Amount > 0 && s.cfg.Ledger != nil {
+		note := "签到奖励"
+		if s.cfg.ActivitiesOnly {
+			note = "活跃保活奖励"
+		}
+		if s.cfg.Ledger.RecordCheckinEarn(s.name(), a.UID, report.Amount, r.Remain, note) {
+			log.Printf("checkin earn recorded platform=%s uid=%s amount=%d (来自结构化回执)", s.name(), a.UID, report.Amount)
+		}
+	}
 	return true, err
 }
 

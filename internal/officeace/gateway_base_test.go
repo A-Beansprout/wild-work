@@ -17,8 +17,10 @@ const (
 	testHostV2   = testHostNoV2 + "/v2"
 )
 
-// TestGatewayRootOfStripsDataNamespace 归一规则：只剥**尾部整段** `/v2`，其余原样。
-func TestGatewayRootOfStripsDataNamespace(t *testing.T) {
+// TestBareGatewayStripsDataNamespace 归一规则：只剥**尾部整段** `/v2`，其余原样。
+// （函数名 2026-10-17 随 upstream/master 合并对齐：本地 `bareGateway` 与上游 `bareGateway`
+// 是同一归一的两个名字，合并统一取上游名，见 quota.go 的说明。）
+func TestBareGatewayStripsDataNamespace(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{testHostV2, testHostNoV2},                     // 导入形态
 		{testHostV2 + "/", testHostNoV2},               // 尾部斜杠
@@ -32,8 +34,8 @@ func TestGatewayRootOfStripsDataNamespace(t *testing.T) {
 		{"  " + testHostV2 + "  ", testHostNoV2}, // 前后空白
 	}
 	for _, c := range cases {
-		if got := gatewayRootOf(c.in); got != c.want {
-			t.Errorf("gatewayRootOf(%q) = %q, want %q", c.in, got, c.want)
+		if got := bareGateway(c.in); got != c.want {
+			t.Errorf("bareGateway(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
@@ -54,7 +56,7 @@ func TestDataPlaneURLsAlwaysUseV2(t *testing.T) {
 }
 
 // TestControlPlaneBaseHasNoV2 控制面基址必须是网关根（且拼接后不含 /v2）。
-// 反向验证（已做）：去掉 gatewayBase 里的 gatewayRootOf，本用例对导入形态变红。
+// 反向验证（已做）：去掉 gatewayBase 里的 bareGateway，本用例对导入形态变红。
 func TestControlPlaneBaseHasNoV2(t *testing.T) {
 	c := New() // 仅构造 Transport，不发任何请求（BaseURL 非空时 gatewayBase 直接返回）
 	for _, base := range []string{testHostV2, testHostNoV2} {
@@ -76,16 +78,16 @@ func TestControlPlaneBaseHasNoV2(t *testing.T) {
 
 // TestDefaultGatewayIsRoot 兜底常量本身就应是根（无 /v2），否则控制面会多一层前缀。
 func TestDefaultGatewayIsRoot(t *testing.T) {
-	if gatewayRootOf(defaultGateway) != defaultGateway {
-		t.Errorf("defaultGateway 不是网关根：%q ⇒ %q", defaultGateway, gatewayRootOf(defaultGateway))
+	if bareGateway(defaultGateway) != defaultGateway {
+		t.Errorf("defaultGateway 不是网关根：%q ⇒ %q", defaultGateway, bareGateway(defaultGateway))
 	}
 }
 
-// TestGatewayRootOfDegenerateInput 退化输入不得产出空 base（2026-10-17 独立复核补充）。
+// TestBareGatewayDegenerateInput 退化输入不得产出空 base（2026-10-17 独立复核补充）。
 //
 // 反例：BaseURL 恰好是 `"/v2"` 时，旧写法剥完得到空串 ⇒ 控制面会拼出 `"/v1/subscription"`
 // 这种无主机地址。约定「宁可不剥，也不产出空 base」。
-func TestGatewayRootOfDegenerateInput(t *testing.T) {
+func TestBareGatewayDegenerateInput(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"/v2", "/v2"},   // 剥完为空 ⇒ 原样返回
 		{"/v2/", "/v2"},  // trimSlash 后同上
@@ -94,12 +96,12 @@ func TestGatewayRootOfDegenerateInput(t *testing.T) {
 		{testHostV2, testHostNoV2},
 	}
 	for _, c := range cases {
-		if got := gatewayRootOf(c.in); got != c.want {
-			t.Errorf("gatewayRootOf(%q) = %q, want %q", c.in, got, c.want)
+		if got := bareGateway(c.in); got != c.want {
+			t.Errorf("bareGateway(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 	// 退化输入下控制面 URL 也不得变成无主机地址
-	if u := trimSlash(gatewayRootOf("/v2")) + "/v1/subscription"; u != "/v2/v1/subscription" {
+	if u := trimSlash(bareGateway("/v2")) + "/v1/subscription"; u != "/v2/v1/subscription" {
 		t.Errorf("退化输入下控制面 URL 异常：%q", u)
 	}
 }

@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"wild-work/internal/platform"
 )
 
 // 自助 OAuth 登录：不依赖本机 OfficeAce 桌面端，自己跑完华为云授权码 + PKCE + DPoP。
@@ -196,7 +194,7 @@ func (s *LoginSession) run(authDir, state, verifier string, dpop *DPoPKey, onDon
 		AccountID:       accountID,
 		UserID:          userID,
 		Label:           tok.UserName,
-		BaseURL:         trimSlash(base),
+		BaseURL:         bareGateway(base),
 		Authorization:   "Basic " + base64.StdEncoding.EncodeToString([]byte(appKey+":"+appSecret)),
 		AccessKeyID:     tok.AccessKeyID,
 		SecretAccessKey: tok.SecretAccessKey,
@@ -221,9 +219,6 @@ func (s *LoginSession) run(authDir, state, verifier string, dpop *DPoPKey, onDon
 		onDone(s.result)
 	}
 }
-
-// OpenInBrowser 用系统默认浏览器打开授权 URL。
-func (s *LoginSession) OpenInBrowser() error { return platform.OpenURL(s.url) }
 
 // ---------------------------------------------------------------------------
 // 各步骤实现

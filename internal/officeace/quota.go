@@ -152,22 +152,23 @@ func (c *Client) fetchSubscription(ac *Account) (*subscription, error) {
 	return &sub, nil
 }
 
-// gatewayBase 解析账号专属网关的**根地址**（控制面用，恒无 `/v2`）。
-// 配置里没有就读 client-permission-validate。
+// gatewayBase 解析账号专属网关（**裸 host**）：配置里没有就读 client-permission-validate。
+// 返回前一律过 bareGateway：额度/签到端点直接拼 `/v1/subscription`，不得带 `/v2`（#152）。
 //
-// ⚠️ 返回值必须经 `gatewayRootOf` 归一：导入路径落盘的 BaseURL 自带 `/v2`
-// （桌面端 api_base 形态），直接拼 `/v1/subscription` 会变成 `{host}/v2/v1/subscription`
-// ⇒ 上游 404 APIG.0101。数据面另由 `Account.dataBase()` 补 `/v2`（见 account.go）。
+// 合并 upstream/master 的说明：本函数原用 `gatewayRootOf`，与上游 `bareGateway` 是同一归一的
+// 两个名字（上游 issue #152 独立修掉了同一处缺陷）。合并时统一取上游名 `bareGateway`，
+// 并把本地版更严的「退化输入不产出空 base / 大小写不敏感」守卫并进该函数（见 account.go）。
+// 数据面由 `Account.dataBase()` 反向补 `/v2`。
 func (c *Client) gatewayBase(ac *Account) (string, error) {
 	if ac.BaseURL != "" {
-		return gatewayRootOf(ac.BaseURL), nil
+		return bareGateway(ac.BaseURL), nil
 	}
 	// 无网关凭据时尝试用临时凭据问控制面。
 	base, _, err := c.clientPermissionValidate(ac)
 	if err != nil || base == "" {
-		return gatewayRootOf(defaultGateway), nil
+		return bareGateway(defaultGateway), nil
 	}
-	return gatewayRootOf(base), nil
+	return bareGateway(base), nil
 }
 
 // clientPermissionValidate 调 {agentartsBase}/v1/claw/client-permission-validate（V4 签名）。

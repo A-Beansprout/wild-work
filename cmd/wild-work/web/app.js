@@ -111,6 +111,11 @@ function fmtLeft(untilTs) {
   return `剩 ${Math.floor(m / 60)} 时 ${String(m % 60).padStart(2, "0")} 分`;
 }
 
+// shortKey 顶栏 API-Key 中间省略（同 shortUid 风格），完整值存 data-key 供复制。
+function shortKey(k) {
+  return k.length <= 24 ? k : k.slice(0, 6) + "…" + k.slice(-4);
+}
+
 // ---------- 全局状态 ----------
 let state = null;
 
@@ -165,6 +170,8 @@ function collectAllModels() {
 }
 
 function openModelSearch() {
+  // 弹层互斥：打开查找模型时收起设置（#134）
+  $("settingsOverlay").classList.add("hidden");
   $("modelSearchOverlay").classList.remove("hidden");
   const inp = $("modelSearchInput");
   inp.value = "";
@@ -202,6 +209,192 @@ function renderModelSearch(q) {
   // 底部提示：命中数（结果全量渲染，列表本身可滚动，故不再提示「未显示」）。
   $("modelSearchFoot").textContent = !all.length ? ""
     : (hit.length === 0 ? "无匹配" : `共 ${hit.length} 个匹配`);
+}
+
+// ---------- 配置区模糊搜索下拉（combobox）：模型ID / 思考档位输入框复用「查找模型」数据 ----------
+// attachModelPicker 把 <input> 升级为可搜索下拉：focus/input 渲染候选（数据源与「查找模型」
+// 弹层同源——lastFees 缓存展平，字段与文案对齐 renderModelSearch），↑↓ 高亮、Enter 选中、
+// Esc / 失焦 / 点击外部关闭；仍可自由手输（无匹配不强制选择，输入框即 combobox）。
+// opts.onPick(id)：选中回调（缺省=仅回填并关菜单）；
+// opts.enterAction(e)：菜单关闭时按回车的原行为（如「跳到下一个输入框 / 提交」）；
+// opts.stayOpen：多选模式——点选后不关菜单、清空输入、刷新候选（配合 excludeSet 连续多选）；
+// opts.multiAccum：累积多选——逗号分隔逐个追加，过滤关键字取末段、已累积段从候选隐藏；
+// opts.excludeSet()：返回需在候选中完全隐藏的模型集合（完整 ID 精确等值 -> true）。
+let pkOpenMenu = null;
+function pkClose() {
+  document.querySelectorAll(".pk-menu.open").forEach((m) => m.classList.remove("open"));
+  pkOpenMenu = null;
+}
+// 点击任意输入框/菜单之外的区域关闭当前下拉（capture 保证先于其他 mousedown 处理器）
+document.addEventListener("mousedown", (e) => {
+  if (!pkOpenMenu) return;
+  if (e.target.closest(".pk-wrap")) return;
+  pkClose();
+}, true);
+// pkHl 命中段高亮（先分段转义再拼 <mark>，与 .ms-list 的 mark 样式共用）
+function pkHl(text, kw) {
+  const k = String(kw || "").trim().toLowerCase();
+  if (!k) return esc(text);
+  const i = String(text).toLowerCase().indexOf(k);
+  if (i < 0) return esc(text);
+  return esc(text.slice(0, i)) + "<mark>" + esc(text.slice(i, i + k.length)) + "</mark>" + esc(text.slice(i + k.length));
+}
+// pkItemHTML 候选项两行富信息：行1 渠道徽标 + 完整 ID（命中段高亮）+ 价格；
+// 行2 上下文窗口（实测带 *）/ 能力图标 / 思考档位（含默认）——与 renderModelSearch 逐字对齐。
+function pkItemHTML(x, kw) {
+  const m = x.m;
+  const caps = (m.supports_images ? "👁" : "") + (m.supports_reasoning ? "🧠" : "");
+  const ctx = (m.has_context && m.context_window) ? `(${esc(fmtTokens(m.context_window))}${m.hand_measured ? "*" : ""})` : "";
+  const eff = (m.reasoning_efforts && m.reasoning_efforts.length)
+    ? esc(m.reasoning_efforts.join("·")) + (m.default_reasoning_effort ? `（默认 ${esc(m.default_reasoning_effort)}）` : "") : "";
+  const rate = m.free ? "Free" : (m.priced ? `x${(+m.rate).toFixed(2)}` : "unknown");
+  return `<div class="pk-item pk-rich" data-id="${esc(x.full)}" title="点击选用 ${esc(x.full)}">`
+    + `<div class="pk-line1"><span class="badge ${chClass(x.ch)}">${esc(chLabel(x.ch))}</span><span class="id">${pkHl(x.full, kw)}</span><span class="rate">${esc(rate)}</span></div>`
+    + `<div class="pk-line2">${ctx}${caps}${eff ? `<span class="pk-eff">${eff}</span>` : ""}</div></div>`;
+}
+function attachModelPicker(input, opts) {
+  opts = opts || {};
+  const wrap = input.closest(".pk-wrap");
+  if (!wrap) return;
+  let menu = wrap.querySelector(".pk-menu");
+  if (!menu) { menu = document.createElement("div"); menu.className = "pk-menu"; wrap.appendChild(menu); }
+  let hlIdx = -1;
+  function render() {
+    let kw, exclude;
+    const baseExcl = opts.excludeSet ? opts.excludeSet() : null;
+    if (opts.multiAccum) {
+      // 累积多选：过滤关键字取末段（最后一个逗号后），已累积段从候选隐藏（精确等值）；
+      // 同时合并 excludeSet（如主力模型ID全局排除），每次 render 实时取——主力列表变更即同步可选范围。
+      const parts = String(input.value || "").split(/[,，]/);
+      kw = (parts[parts.length - 1] || "").trim();
+      exclude = baseExcl ? { ...baseExcl } : {};
+      for (let k = 0; k < parts.length - 1; k++) { const seg = parts[k].trim(); if (seg) exclude[seg] = true; }
+    } else {
+      kw = input.value.trim();
+      exclude = baseExcl;
+    }
+    const kwl = kw.toLowerCase();
+    const all = collectAllModels();
+    const items = all.filter((x) => {
+      if (exclude && exclude[x.full]) return false;
+      if (!kwl) return true;
+      return x.full.toLowerCase().includes(kwl) || x.short.toLowerCase().includes(kwl);
+    });
+    hlIdx = -1;
+    menu.innerHTML = items.length
+      ? items.slice(0, 40).map((x) => pkItemHTML(x, kw)).join("")
+      : `<div class="pk-empty">${all.length ? "无匹配模型（可继续手动输入）" : "费率数据尚未加载，请点「刷新」后再试"}</div>`;
+    menu.classList.add("open");
+    pkOpenMenu = menu;
+  }
+  function pick(id) {
+    if (opts.stayOpen && !opts.multiAccum) {
+      // 多选（点选即追加）：回调追加后清空输入继续搜；onPick 可能重建 DOM（重渲染），先判连接
+      if (opts.onPick) opts.onPick(id);
+      if (!input.isConnected) return;
+      input.value = "";
+      render();
+      return;
+    }
+    if (opts.multiAccum) {
+      // 累积多选：选中项替换末段并补逗号，光标留在新末段继续搜索/输入
+      const parts = String(input.value || "").split(/[,，]/);
+      parts[parts.length - 1] = id;
+      input.value = parts.join(",") + ",";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      render();
+      return;
+    }
+    input.value = id;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    pkClose();
+    if (opts.onPick) opts.onPick(id); else input.focus();
+  }
+  function moveHl(d) {
+    const nodes = menu.querySelectorAll(".pk-item");
+    if (!nodes.length) return;
+    hlIdx = (hlIdx + d + nodes.length) % nodes.length;
+    nodes.forEach((n, k) => n.classList.toggle("pk-hl", k === hlIdx));
+    nodes[hlIdx].scrollIntoView({ block: "nearest" });
+  }
+  input.addEventListener("focus", render);
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => {
+    if (!menu.classList.contains("open")) { if (e.key === "Enter" && opts.enterAction) opts.enterAction(e); return; }
+    // 菜单开着时按键由下拉消化，stopPropagation 防触发 #fbList 上的 Enter 委托（如「回车追加备胎」）
+    if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); moveHl(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); moveHl(-1); }
+    else if (e.key === "Escape") { pkClose(); }
+    else if (e.key === "Enter") {
+      e.preventDefault(); e.stopPropagation();
+      const nodes = menu.querySelectorAll(".pk-item");
+      if (hlIdx >= 0 && nodes[hlIdx]) pick(nodes[hlIdx].dataset.id);
+      else if (nodes.length === 1) pick(nodes[0].dataset.id);
+      else { pkClose(); if (opts.enterAction) opts.enterAction(e); }
+    }
+  });
+  // 失焦即关（菜单项 mousedown 已 preventDefault，点菜单项不会先触发 blur）
+  input.addEventListener("blur", () => setTimeout(pkClose, 120));
+  menu.addEventListener("mousedown", (e) => e.preventDefault());
+  menu.addEventListener("click", (e) => {
+    const it = e.target.closest(".pk-item");
+    if (it) pick(it.dataset.id);
+  });
+}
+
+// 思考档位下拉（单选模糊搜索，交互与模型下拉一致；候选为常见档位，仍可自由输入）。
+// 渠道支持什么档位由渠道模型自己决定（后端哑管道不校验），故候选只是输入建议。
+const PK_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
+function attachEffortPicker(input, opts) {
+  opts = opts || {};
+  const wrap = input.closest(".pk-wrap");
+  if (!wrap) return;
+  let menu = wrap.querySelector(".pk-menu");
+  if (!menu) { menu = document.createElement("div"); menu.className = "pk-menu"; wrap.appendChild(menu); }
+  let hlIdx = -1;
+  function render() {
+    const kw = input.value.trim().toLowerCase();
+    const list = PK_EFFORTS.filter((t) => !kw || t.includes(kw));
+    hlIdx = -1;
+    menu.innerHTML = list.length
+      ? list.map((t) => `<div class="pk-item" data-id="${t}" title="点击选用 ${t}"><span class="id">${pkHl(t, kw)}</span><span class="pk-ch-tag">档位</span></div>`).join("")
+      : `<div class="pk-empty">无匹配档位（可自由输入）</div>`;
+    menu.classList.add("open");
+    pkOpenMenu = menu;
+  }
+  function pick(id) {
+    input.value = id;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    pkClose();
+    if (opts.onPick) opts.onPick(id); else input.focus();
+  }
+  function moveHl(d) {
+    const nodes = menu.querySelectorAll(".pk-item");
+    if (!nodes.length) return;
+    hlIdx = (hlIdx + d + nodes.length) % nodes.length;
+    nodes.forEach((n, k) => n.classList.toggle("pk-hl", k === hlIdx));
+  }
+  input.addEventListener("focus", render);
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => {
+    if (!menu.classList.contains("open")) { if (e.key === "Enter" && opts.enterAction) opts.enterAction(e); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); moveHl(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); moveHl(-1); }
+    else if (e.key === "Escape") { pkClose(); }
+    else if (e.key === "Enter") {
+      e.preventDefault(); e.stopPropagation();
+      const nodes = menu.querySelectorAll(".pk-item");
+      if (hlIdx >= 0 && nodes[hlIdx]) pick(nodes[hlIdx].dataset.id);
+      else if (nodes.length === 1) pick(nodes[0].dataset.id);
+      else { pkClose(); if (opts.enterAction) opts.enterAction(e); }
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(pkClose, 120));
+  menu.addEventListener("mousedown", (e) => e.preventDefault());
+  menu.addEventListener("click", (e) => {
+    const it = e.target.closest(".pk-item");
+    if (it) pick(it.dataset.id);
+  });
 }
 
 // ---------- 积分明细浮窗 ----------
@@ -492,7 +685,18 @@ function renderTopbar() {
     : "点击复制地址";
 
   const key = state.api_key;
-  $("apiKeyDisplay").querySelector(".val").textContent = key === "" ? "（无鉴权）" : key;
+  const keyEl = $("apiKeyDisplay");
+  const keyVal = keyEl.querySelector(".val");
+  if (key === "") {
+    keyVal.textContent = "（无鉴权）";
+    delete keyEl.dataset.key;
+    keyEl.title = "当前未设置 API-Key";
+  } else {
+    // 脱敏显示：中间省略，完整值存 data-key 供一键复制（防旁人瞟屏）
+    keyEl.dataset.key = key;
+    keyVal.textContent = shortKey(key);
+    keyEl.title = "完整 API-Key：" + key + "；点击复制；进入设置修改";
+  }
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
@@ -586,6 +790,8 @@ const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 内建名单只有 oczen/kilo/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
 // 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
 const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline"]);
+// 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
+const RELOGIN_CHANNELS = new Set(["workbuddy", "workbuddyai", "traework", "qoder", "qodercn", "qodercom", "qwenwork", "raccoon"]);
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
@@ -805,9 +1011,17 @@ function renderAccounts() {
     // kilo 的说明与 oczen 不同：没有私有 Key 可配，也没有备用通道重放。
     const kiloHelp = `<span class="icon-op help" title="关于 Kilo 免费池：&#10;1. 上游是 api.kilo.ai 网关的免费模型池，**不需要任何凭据**（无账号、无 Key）&#10;2. 只反代免费池（模型清单里 isFree=true 的那些）；请求付费模型会返回 PAID_MODEL_AUTH_REQUIRED&#10;3. 无签到、无积分，故没有「刷新积分」入口">?</span>`;
     const channelHelp = a.group === "kilo" ? kiloHelp : oczenHelp;
+    // 登录态失效（401/登录已失效）：徽标 + 一键重新登录（#134）。
+    const sessionDeadTag = a.session_dead
+      ? `<span class="tag bad" title="${esc(a.session_dead_reason || "登录态已失效，请重新登录")}">需重新登录</span>`
+      : "";
+    const reloginBtn = a.session_dead && RELOGIN_CHANNELS.has(a.group)
+      ? `<span class="icon-op" title="重新登录（跳转登录页换新凭据，成功后自动补签）" onclick="startLogin('${a.group}')">⟳</span>`
+      : "";
     const ops = fixedAcct
       ? `${channelHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
+          ${reloginBtn}
           ${noCredits ? "" : `<span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>`}
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
           <span class="icon-op danger" title="${isCustomGroup(a.group) ? esc("删除账号（自定义渠道将移除整个渠道配置）") : "删除账号"}" onclick="removeAcct('${a.uid}')">✕</span>`;
@@ -833,7 +1047,7 @@ function renderAccounts() {
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
         <div class="acct-credits${noCredits ? "" : " clickable"}" data-uid="${a.uid}"${noCredits ? "" : ` onclick="showCreditDetail(event,'${a.uid}')" title="点击查看积分明细（含分页）" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showCreditDetail(event,'${a.uid}')}"`}>${creditsText(a)}</div>
-        <div class="acct-checkin">${coolingTag}${checkinTag}</div>
+        <div class="acct-checkin">${coolingTag}${sessionDeadTag}${checkinTag}</div>
       </div>
     </div>`;
   }).join("");
@@ -1131,13 +1345,18 @@ function fmtTokensCompact(n) {
 }
 
 // ---------- 账号操作 ----------
+// 签到失败信息友好化：登录态失效形态（401 等）追加可操作指引（#134）。
+function friendlyCheckinMsg(m) {
+  return /401|unauthorized|登录已失效|登录已过期/i.test(m || "")
+    ? m + "（该账号登录已过期，点账号卡片右上角 ⟳ 重新登录）" : m;
+}
 async function checkin(uid) {
   try {
     const r = await api("/api/account/checkin", { uid });
     // 未达成且可重试（活动尚未创建/上游瞬时故障）：说明会在签到窗口内自动重试，
     // 避免用户看到「无可用签到活动」误以为失败。
     if (!r.ok && r.retryable) toast(`暂未领到：${r.msg}（10:00–12:00 窗口内会自动重试）`);
-    else toast(r.ok ? `签到成功：${r.msg}（剩余 ${r.remain}）` : `签到：${r.msg}`);
+    else toast(r.ok ? `签到成功：${r.msg}（剩余 ${r.remain}）` : `签到：${friendlyCheckinMsg(r.msg)}`);
     delete detailCache[uid]; // 签到改变余额，旧明细缓存会与新顶层打架
     loadState();
   } catch (e) { toast(e.message); }
@@ -1189,7 +1408,7 @@ async function checkinAll() {
     const total = (r.results || []).length + skip;
     const parts = [skip ? `成功 ${ok} / ${total}（${skip} 个无签到活动跳过）` : `成功 ${ok} / 共 ${total}`];
     if (pending) parts.push(`${pending} 个未领到将在窗口内自动重试`);
-    toast(`批量签到完成：${parts.join("；")}`);
+    toast(`批量签到完成：${parts.map(friendlyCheckinMsg).join("；")}`);
     loadState();
   } catch (e) { toast(e.message); } finally {
     $("btnCheckinAll").disabled = false;
@@ -1451,11 +1670,22 @@ async function startOfficeAceWebLogin() {
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = "添加 OfficeAce 账号";
-    $("loginMsg").textContent = "已在浏览器打开华为云授权页，请在其中登录并授权；完成后本工具会自动捕获凭据。"
-      + "若浏览器未自动打开，可点「复制链接」手动打开。";
+    $("loginMsg").textContent = "已在本设备新标签页打开华为云授权页，请在其中登录并授权；"
+      + "完成后本工具会自动捕获凭据（捕获走云端轮询，与在哪台设备打开无关）。"
+      + "若浏览器拦截了弹窗未打开，可点「复制链接」手动打开。";
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
     if (r.warning) toast(r.warning, 6000);
+    // 在用户当前设备打开授权页（与其它渠道一致）。
+    // 注意：带 noopener 时 window.open 的返回值**恒为 null**（MDN windowFeatures），
+    // 不能拿它判断是否被弹窗拦截（否则每次登录都误报「被拦截」）。故：先开、后断链——
+    // 不带 feature 打开才能拿到窗口句柄，随后手动置 opener=null 兼顾安全。
+    const w = window.open(url, "_blank");
+    if (w) {
+      try { w.opener = null; } catch (e) { /* 跨域时可能被拒，忽略 */ }
+    } else {
+      toast("浏览器拦截了弹窗，请点「复制链接」手动打开", 6000);
+    }
     startOfficeAcePoll();
   } catch (e) {
     toast(e.message);
@@ -1495,7 +1725,9 @@ function cancelOfficeAceLogin() {
 function copyUrl() {
   const url = $("btnCopyUrl").dataset.url;
   if (!url) { toast("暂无链接"); return; }
-  navigator.clipboard.writeText(url).then(() => toast("链接已复制")).catch(() => toast("复制失败，请手动复制"));
+  // 必须走 copyText：局域网 http:// 是非安全上下文，navigator.clipboard 被浏览器
+  // 直接禁用，需降级 execCommand（与顶栏 API-Key 复制同一 helper）。
+  copyText(url, "链接");
 }
 
 // 登录轮询
@@ -1651,6 +1883,14 @@ async function saveTimes(times) {
 }
 
 // ---------- 开机自启（设置弹层内，切换立即保存） ----------
+// ---------- 请求体摘要（诊断开关，设置弹层内，切换立即保存） ----------
+async function toggleBodyLog() {
+  try {
+    await api("/api/config/body_log", { on: $("chkBodyLog").checked });
+    toast("设置已保存");
+  } catch (e) { toast(e.message); loadState(); }
+}
+
 async function toggleAutostart() {
   try {
     await api("/api/config/autostart", { on: $("chkAutostart").checked });
@@ -1662,28 +1902,81 @@ async function toggleAutostart() {
 // fbRules 编辑态副本（openSettings 时从 state.model_fallback 深拷贝；保存成功后由 loadState 刷新）
 let fbRules = [];
 
-// renderFbList 渲染降级链编辑区：每条规则一行——左列上下两行（主模型可编辑输入框 +
-// 备胎添加框），右侧 → 备胎 chips ＋ | 🗑。左列定宽 300px：主模型 ID 超长时在输入框内
-// 横向滚动（不遮挡箭头与档位），右侧 chips 不再为行内添加框预留宽度。
-// 交互全部事件委托在 #fbList 上（data-del-rule / data-del-to / data-add-to / data-edit-idx）。
+// fbFromSet 汇总当前全部主力模型ID（跨规则）：备胎候选/追加/清洗统一从这里排除——
+// 同一 ID 不允许既是某规则主力又出现在任何备胎链。每次下拉 render 实时取，主力列表变更即同步可选范围。
+function fbFromSet() {
+  const s = {};
+  for (const r of fbRules) if (r.from) s[r.from] = true;
+  return s;
+}
+// fbSanitize 就地清洗 fbRules：从每条备胎链剔除任意规则的主力ID（含历史脏数据），返回剔除条数。
+// renderFbList 每轮渲染前先过一遍（所有编辑路径都经 renderFbList 重渲染，chip 索引始终与清洗后
+// 数组一致），保存前再兜底一次——渲染/比对/落盘共用同一份互斥干净数据。
+function fbSanitize() {
+  const fs = fbFromSet();
+  let dropped = 0;
+  for (const r of fbRules) {
+    const keep = r.to.filter((t) => !fs[t]);
+    dropped += r.to.length - keep.length;
+    r.to = keep;
+  }
+  return dropped;
+}
+
+// updateFbDirty / updateEffDirty：编辑态与服务端态比对，有差异时亮「未保存」提示。
+// 比对基于 JSON 序列化（fbRules/to 顺序敏感——改序也算未保存，语义正确）；保存成功
+// 后服务端态刷新（loadState → openSettings 未重开时由 save 回调手动清），零差异即隐藏。
+function fbServerRules() { return JSON.stringify(state.model_fallback || []); }
+function updateFbDirty() {
+  const el = $("fbDirty");
+  if (!el) return;
+  el.style.display = JSON.stringify(fbRules) === fbServerRules() ? "none" : "";
+}
+function updateEffDirty() {
+  const el = $("effDirty");
+  if (!el) return;
+  const effs = state.reasoning_efforts || {};
+  const g = $("effGlobalInput").value.trim();
+  const cur = {}; if (g) cur["*"] = g;
+  for (const r of effRules) cur[r.model] = r.effort;
+  const norm = (o) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+  el.style.display = norm(cur) === norm(effs) ? "none" : "";
+}
+
+// renderFbList 渲染降级链编辑区：每条规则一个卡片区块（自定义渠道卡片同款设计语言）——
+// head 行 = 「规则 N」徽标 + 主力模型ID 输入框 + 🗑；body = 备胎链 chips（含序号与拖拽）+ 添加行。
+// chip 序号即降级优先级（内核 pickModelFallback 按 rule.To 顺序取第一个可承载备胎），
+// 拖动改序只改编辑态 fbRules，点「保存降级链」才落盘（语义与上游一致）。
+// 交互全部事件委托在 #fbList 上（data-del-rule / data-del-to / data-add-to / data-edit-idx /
+// dragstart / dragover / drop / dragend），每轮 innerHTML 重建后委托仍然有效。
 function renderFbList() {
+  const dropped = fbSanitize(); // 互斥校验：主力ID不出现在任何备胎链（chip 索引与数据一致）
+  if (dropped > 0) toast(`已自动剔除 ${dropped} 个与主力模型互斥的备胎`); // 唯一剔除时机：打开面板首轮（历史脏数据）/ 改主力波及他链
   const rows = fbRules.map((r, i) => {
     const tos = r.to.map((t, j) =>
-      `<span class="fb-to" style="display:inline-flex;align-items:center;gap:2px;background:var(--card,#f5f5f5);border:1px solid var(--line,#ddd);border-radius:10px;padding:1px 7px;margin:0 3px;font-family:ui-monospace,monospace;font-size:12px">${esc(t)}<a data-del-to="${i}:${j}" title="移除该备胎" style="cursor:pointer;color:var(--danger);margin-left:3px">×</a></span>`
+      `<span class="fb-to-chip" draggable="true" data-chip="${i}:${j}" data-model="${esc(t)}" title="${esc(t)}（拖动调整顺序，序号 = 降级优先级）">`
+      + `<span class="chip-idx">${j + 1}</span><span class="chip-grip">⠿</span>${esc(t)}`
+      + `<a data-del-to="${i}:${j}" title="移除该备胎">×</a></span>`
     ).join("");
-    return `<div class="row proxy-row" style="align-items:flex-start">
-      <span style="display:flex;flex-direction:column;gap:4px;width:300px;flex-shrink:0">
-        <input class="input fb-from-edit" data-edit-idx="${i}" value="${esc(r.from)}" spellcheck="false" title="主模型 ID（channel/model，可编辑；失焦或回车确认，点「保存降级链」生效）" style="font-family:ui-monospace,monospace">
-        <input class="input fb-to-add" data-add-idx="${i}" spellcheck="false" placeholder="＋备胎 ID（回车添加）">
-      </span>
-      <span style="margin:0 4px;padding-top:5px">→</span>
-      <span style="flex:1;overflow-wrap:anywhere;min-width:0">${tos || "（无备胎）"}</span>
-      <button class="icon-btn" data-add-to="${i}" title="把下方添加框中的备胎追加到该规则末尾">＋</button>
-      <button class="icon-btn" data-del-rule="${i}" title="删除整条规则">🗑</button>
+    return `<div class="fb-rule-card">
+      <div class="fb-rule-head">
+        <span class="fb-rule-badge">规则 ${i + 1}</span>
+        <span class="pk-wrap fb-from-wrap"><input class="input fb-from-edit" data-edit-idx="${i}" value="${esc(r.from)}" spellcheck="false" title="主力模型ID（channel/model，可编辑；失焦或回车确认，点「保存降级链」生效）" placeholder="主力模型ID（channel/model）"></span>
+        <button class="icon-btn" data-del-rule="${i}" title="删除整条规则">🗑</button>
+      </div>
+      <div class="fb-rule-body">
+        <div class="fb-chips">${tos || `<span class="hint">（无备胎）</span>`}</div>
+        <div class="row" style="margin-top:2px">
+          <span class="pk-wrap grow"><input class="input fb-to-add" data-add-idx="${i}" spellcheck="false" placeholder="＋ 备胎模型ID（模糊搜索 / 回车添加 / 逗号分隔多个）"></span>
+          <button class="icon-btn" data-add-to="${i}" title="把添加框中的备胎追加到该规则末尾">＋</button>
+        </div>
+      </div>
     </div>`;
   }).join("");
   $("fbList").innerHTML = rows || `<div class="hint">（暂无规则——原模型无可用账号时将直接返回 503 提示）</div>`;
   $("fbErr").textContent = "";
+  attachFbPickers();
+  updateFbDirty();
 }
 
 // parseModelList 解析备胎输入：逗号/空格/换行分隔多个 channel/model，本地形态校验。
@@ -1698,11 +1991,40 @@ function parseModelList(raw) {
   return [out, ""];
 }
 
+// attachFbPickers 给 renderFbList 产出的行内输入框挂模糊搜索下拉（每轮 innerHTML 重建后重挂）：
+// - 主力模型ID（.fb-from-edit）：单选下拉，选中回填；Enter 无候选时 blur 确认（原行为）。
+// - 行内备胎添加框（.fb-to-add）：多选下拉——点选即追加到备胎链末尾（精确等值去重，
+//   与上游 to.includes 全等语义一致）、已上链模型从候选隐藏、可连续选择多个。
+function attachFbPickers() {
+  for (const inp of $("fbList").querySelectorAll(".fb-from-edit")) {
+    const self = fbRules[+inp.dataset.editIdx].from; // 自身当前值保留可见，仅排除其他规则主力（重复由 change 唯一性校验兜底）
+    attachModelPicker(inp, { excludeSet: () => { const s = { ...fbFromSet() }; delete s[self]; return s; } });
+  }
+  for (const inp of $("fbList").querySelectorAll(".fb-to-add")) {
+    const i = +inp.dataset.addIdx;
+    attachModelPicker(inp, {
+      stayOpen: true,
+      excludeSet: () => { const s = { ...fbFromSet() }; for (const t of (fbRules[i] && fbRules[i].to) || []) s[t] = true; return s; },
+      onPick: (id) => {
+        const r = fbRules[i];
+        if (!r) return;
+        if (fbFromSet()[id] || r.to.includes(id)) return; // 主力ID或已上链 → 不追加（候选已隐藏，双保险）
+        r.to.push(id);
+        renderFbList();
+        toast(`已加入备胎链第 ${r.to.length} 位（点保存生效）`);
+      },
+    });
+  }
+}
+
 async function saveModelFallback() {
   try {
+    fbSanitize(); // 落盘前互斥兜底（正常路径 renderFbList 已清洗过，防御未来路径）
     await api("/api/config/model_fallback", { rules: fbRules });
     toast("降级链已保存（热生效）");
     $("fbErr").textContent = "";
+    state.model_fallback = JSON.parse(JSON.stringify(fbRules)); // 即时同步服务端态基准，提示随之熄灭
+    updateFbDirty();
     loadState();
   } catch (e) { $("fbErr").textContent = e.message; }
 }
@@ -1841,8 +2163,30 @@ function renderCustomChList() {
   $("customChOk").textContent = "";
 }
 
+// addPendingCustomInputs 自定义渠道输入行有内容但未点「＋新增渠道」时，在保存前自动收录
+// 进编辑列表。返回 "" 表示无需收录或收录成功；否则返回错误提示。
+// 背景：此前直接点「保存全部配置」只提交内存列表——用户填完输入行没点「＋新增渠道」就点
+// 保存，会把空列表存进后端（toast 显示已保存但渠道实际未创建），重开弹层输入也会丢。
+function addPendingCustomInputs() {
+  const name = $("inCustomName").value.trim().toLowerCase();
+  const url = $("inCustomURL").value.trim();
+  const key = $("inCustomKey").value.trim();
+  if (!name && !url && !key) return "";
+  if (!name) return "输入行有未添加的渠道：请填入渠道标识";
+  if (!/^[a-zA-Z0-9_\-]+$/.test(name)) return "渠道标识仅允许字母、数字、下划线、短横线";
+  if (RESERVED_CHANNEL_NAMES.has(name)) return `渠道标识 ${name} 与内建渠道同名，请另取一个`;
+  if (!url) return "输入行有未添加的渠道：请填入 Base URL";
+  if (editCustomChannels.some(c => c.name.toLowerCase() === name)) return `已存在同名渠道 ${name}`;
+  editCustomChannels.push({ name, base_url: url, api_key: key, models: [], enabled: true });
+  renderCustomChList();
+  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = "";
+  return "";
+}
+
 async function saveCustomChannels() {
   try {
+    const pendingErr = addPendingCustomInputs(); // 输入行有内容但没点「＋新增渠道」时自动收录
+    if (pendingErr) { $("customChErr").textContent = pendingErr; $("customChOk").textContent = ""; return; }
     await api("/api/config/custom_channels", { channels: editCustomChannels });
     toast("自定义渠道已保存（热生效）");
     $("customChErr").textContent = "";
@@ -1859,21 +2203,23 @@ async function saveCustomChannels() {
 // 单独走「全局默认」输入行；保存成功后由 loadState 刷新）。
 let effRules = [];
 
-// renderEffList 渲染模型档位编辑区：每条映射一行（模型 → 档位 ＋ 🗑）。
-// 模型 ID 列显式 width:auto：本行复用了 .lbl.wide，而该类带定宽 width:90px；
-// 同时给定宽与 max-width 时实际宽度取二者较小值 ⇒ 只写 max-width 不生效，
-// 长模型名会被截到 90px（PR 前的实际表现）。
+// renderEffList 渲染模型档位编辑区：每条映射一个卡片区块（降级链规则卡片同款设计语言）——
+// 「映射 N」徽标 + 模型 ID（超长省略，title 悬浮看全）→ 档位 + 🗑；左对齐不撑满整行。
 function renderEffList() {
   const rows = effRules.map((r, i) =>
-    `<div class="row proxy-row">
-      <span class="lbl wide" style="width:auto;max-width:340px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace" title="${esc(r.model)}">${esc(r.model)}</span>
-      <span style="margin:0 4px">→</span>
-      <span style="flex:1;font-family:ui-monospace,monospace">${esc(r.effort)}</span>
-      <button class="icon-btn" data-del-eff="${i}" title="删除该映射">🗑</button>
+    `<div class="fb-rule-card fb-map-card">
+      <div class="fb-rule-head">
+        <span class="fb-rule-badge">映射 ${i + 1}</span>
+        <span class="fb-map-model" title="${esc(r.model)}">${esc(r.model)}</span>
+        <span class="fb-map-arrow">→</span>
+        <span class="fb-map-eff">${esc(r.effort)}</span>
+        <button class="icon-btn" data-del-eff="${i}" title="删除该映射">🗑</button>
+      </div>
     </div>`
   ).join("");
   $("effList").innerHTML = rows || `<div class="hint">（暂无模型档位——未配置的请求不注入）</div>`;
   $("effErr").textContent = "";
+  updateEffDirty();
 }
 
 async function saveReasoningEfforts() {
@@ -1885,6 +2231,8 @@ async function saveReasoningEfforts() {
     await api("/api/config/reasoning_efforts", { efforts });
     toast("思考强度已保存（热生效）");
     $("effErr").textContent = "";
+    state.reasoning_efforts = efforts; // 即时同步服务端态基准，提示随之熄灭
+    updateEffDirty();
     loadState();
   } catch (e) { $("effErr").textContent = e.message; }
 }
@@ -1931,6 +2279,8 @@ function syncListenRisk() {
 }
 
 function openSettings() {
+  // 弹层互斥：打开设置时收起「查找模型」（#134）
+  $("modelSearchOverlay").classList.add("hidden");
   // 监听
   $("inPort").value = state.listen_port;
   $("selHost").value = state.listen_host === "127.0.0.1" ? "127.0.0.1"
@@ -1985,6 +2335,7 @@ function openSettings() {
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
   $("chkLoopGuard").checked = state.loop_guard !== false; // 缺省（旧后端）按开启显示
+  $("chkBodyLog").checked = !!state.body_log;
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
   $("settingsOverlay").classList.remove("hidden");
 }
@@ -2104,7 +2455,9 @@ async function saveSettings() {
     } catch (e) { toast(e.message); return; }
   }
 
-  // 4.6) 自定义渠道（R66）
+  // 4.6) 自定义渠道（R66）——输入行有未点「＋新增渠道」的内容时先收录再存
+  const customPendingErr = addPendingCustomInputs();
+  if (customPendingErr) { toast(customPendingErr); return; }
   try {
     await api("/api/config/custom_channels", { channels: editCustomChannels });
   } catch (e) { toast(e.message); return; }
@@ -2318,6 +2671,7 @@ function bind() {
     if (row) { e.preventDefault(); copyText(row.dataset.mid, "模型 ID"); }
   };
   $("chkAutostart").onchange = toggleAutostart;
+  $("chkBodyLog").onchange = toggleBodyLog;
   $("btnAdminLogout").onclick = () => logout();
   $("btnClearAdminPass").onclick = clearAdminPassword;
   $("btnAdminLogin").onclick = submitLogin;
@@ -2328,8 +2682,8 @@ function bind() {
     copyText(v, "OpenAI 接口地址");
   };
   $("apiKeyDisplay").onclick = () => {
-    const v = $("apiKeyDisplay").querySelector(".val").textContent;
-    if (v === "（无鉴权）") { toast("当前未设置 API-Key"); return; }
+    const v = $("apiKeyDisplay").dataset.key;
+    if (v === undefined || v === "") { toast("当前未设置 API-Key"); return; }
     copyText(v, "API-Key");
   };
   // 顶栏齿轮进入统一设置（点击地址/Key 文本仍为复制）
@@ -2355,19 +2709,23 @@ function bind() {
   $("oczenKeyInput").addEventListener("input", (e) => { e.target.dataset.touched = "1"; });
   $("btnOczenTest").onclick = testOczenKey;
 
-  // 模型降级链：添加规则 / 保存 / 列表内事件委托（删规则、删备胎、追加备胎、回车添加）
+  // 模型降级链：添加规则 / 保存 / 列表内事件委托（删规则、删备胎、追加备胎、回车添加、拖拽排序）
   $("btnFbAdd").onclick = () => {
     const from = $("fbFromInput").value.trim();
-    if (!/^[^/]+\/.+/.test(from)) { $("fbErr").textContent = "主模型需为 channel/model 形式（如 workbuddyai/deepseek-v4.1-flash）"; return; }
+    if (!/^[^/]+\/.+/.test(from)) { $("fbErr").textContent = "主力模型ID 需为 channel/model 形式（如 workbuddyai/deepseek-v4.1-flash）"; return; }
     if (fbRules.some((r) => r.from === from)) { $("fbErr").textContent = `主模型 ${from} 已有规则（每个主模型只允许一条）`; return; }
     const [tos, err] = parseModelList($("fbToInput").value);
     if (err) { $("fbErr").textContent = err; return; }
-    if (tos.length === 0) { $("fbErr").textContent = "至少填一个备胎模型"; return; }
-    fbRules.push({ from, to: tos });
+    if (tos.length === 0) { $("fbErr").textContent = "至少填一个备胎模型ID"; return; }
+    // 互斥预过滤：剔除已有规则主力 + 新 from 自身（renderFbList 兜底同规则，此处前置给即时反馈）
+    const fsx = fbFromSet(); fsx[from] = true;
+    const kept = tos.filter((t) => !fsx[t]);
+    if (kept.length === 0) { $("fbErr").textContent = "备胎均与主力模型互斥（含新主力自身），请更换备胎"; return; }
+    if (kept.length < tos.length) toast(`已剔除 ${tos.length - kept.length} 个与主力模型互斥的备胎`);
+    fbRules.push({ from, to: kept });
     $("fbFromInput").value = ""; $("fbToInput").value = "";
-    renderFbList();
+    renderFbList(); // 内部先 fbSanitize：互斥兜底（预过滤后此处不再剔除）
   };
-  $("fbToInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnFbAdd").onclick(); });
   $("btnFbSave").onclick = saveModelFallback;
   $("fbList").addEventListener("click", async (e) => {
     const addBtn = e.target.closest("[data-add-to]");
@@ -2376,8 +2734,8 @@ function bind() {
       const inp = document.querySelector(`.fb-to-add[data-add-idx="${i}"]`);
       const [tos, err] = parseModelList(inp && inp.value);
       if (err) { $("fbErr").textContent = err; return; }
-      if (tos.length === 0) { $("fbErr").textContent = "先在输入框填备胎 ID 再点 ＋"; return; }
-      fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
+      if (tos.length === 0) { $("fbErr").textContent = "先在输入框填备胎模型ID 再点 ＋"; return; }
+      fbRules[i].to.push(...tos.filter((t) => !fbFromSet()[t] && !fbRules[i].to.includes(t))); // 主力ID全局排除
       renderFbList();
       return;
     }
@@ -2394,7 +2752,8 @@ function bind() {
       renderFbList();
     }
   });
-  // 行内备胎输入框回车 = 追加到该规则（事件委托 keydown）；主模型输入框回车 = blur 确认
+  // 行内备胎输入框回车 = 追加到该规则（事件委托 keydown）；主模型输入框回车 = blur 确认。
+  // combobox 的 Enter 在下拉开着时已被其自身 stopPropagation 消化，走到这里的必是「下拉关闭态」。
   $("fbList").addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     if (e.target.classList.contains("fb-from-edit")) { e.target.blur(); return; }
@@ -2403,7 +2762,7 @@ function bind() {
     const [tos, err] = parseModelList(e.target.value);
     if (err) { $("fbErr").textContent = err; return; }
     if (tos.length === 0) return;
-    fbRules[i].to.push(...tos.filter((t) => t !== fbRules[i].from && !fbRules[i].to.includes(t)));
+    fbRules[i].to.push(...tos.filter((t) => !fbFromSet()[t] && !fbRules[i].to.includes(t))); // 主力ID全局排除
     renderFbList();
   });
   // 行内主模型 ID 编辑：change（失焦/回车后 blur）提交——形态校验 + 主模型唯一性校验，
@@ -2414,18 +2773,66 @@ function bind() {
     const from = String(e.target.value || "").trim();
     const cur = fbRules[i].from;
     if (!from || from === cur) { e.target.value = cur; return; }
-    if (!/^[^/]+\/.+/.test(from)) { $("fbErr").textContent = `主模型 ${from} 需为 channel/model 形式（如 workbuddyai/deepseek-v4.1-flash）`; e.target.value = cur; return; }
+    if (!/^[^/]+\/.+/.test(from)) { $("fbErr").textContent = `主力模型ID ${from} 需为 channel/model 形式（如 workbuddyai/deepseek-v4.1-flash）`; e.target.value = cur; return; }
     if (fbRules.some((r, k) => k !== i && r.from === from)) { $("fbErr").textContent = `主模型 ${from} 已有规则（每个主模型只允许一条）`; e.target.value = cur; return; }
     fbRules[i].from = from;
     fbRules[i].to = fbRules[i].to.filter((t) => t !== from);
     renderFbList();
+  });
+  // 备胎 chip 拖拽排序（委托在 #fbList；仅同规则内拖动）。drop 后就地 splice fbRules[i].to
+  // 并重渲染（chip 序号随之刷新）；只改编辑态，点「保存降级链」才落盘。
+  // 从 × 删除链接起手不拖（chip 内 a[data-del-to] 命中时跳过 dragstart）。
+  let fbDragSrc = null; // { i, j, el }
+  $("fbList").addEventListener("dragstart", (e) => {
+    const chip = e.target.closest(".fb-to-chip");
+    if (!chip || e.target.closest("[data-del-to]")) { e.preventDefault(); return; }
+    const [i, j] = chip.dataset.chip.split(":").map(Number);
+    fbDragSrc = { i, j, el: chip };
+    chip.classList.add("dragging");
+    try { e.dataTransfer.setData("text/plain", "x"); e.dataTransfer.effectAllowed = "move"; } catch (err) {}
+  });
+  $("fbList").addEventListener("dragover", (e) => {
+    if (!fbDragSrc) return;
+    e.preventDefault();
+    const chip = e.target.closest(".fb-to-chip");
+    // 清掉上一轮指示条，再按指针相对 chip 左右半标记插入位
+    document.querySelectorAll(".fb-to-chip.drop-before,.fb-to-chip.drop-after").forEach((c) => c.classList.remove("drop-before", "drop-after"));
+    if (!chip || chip === fbDragSrc.el) return;
+    const r = chip.getBoundingClientRect();
+    chip.classList.add(e.clientX - r.left < r.width / 2 ? "drop-before" : "drop-after");
+  });
+  $("fbList").addEventListener("drop", (e) => {
+    e.preventDefault();
+    const chip = e.target.closest(".fb-to-chip");
+    const mark = document.querySelector(".fb-to-chip.drop-before, .fb-to-chip.drop-after");
+    if (chip && mark && fbDragSrc && chip.dataset.chip && fbDragSrc.el.dataset.chip) {
+      const [si, sj] = fbDragSrc.el.dataset.chip.split(":").map(Number);
+      const [ti] = chip.dataset.chip.split(":").map(Number);
+      if (si === ti) { // 仅同规则内拖动
+        const before = mark.classList.contains("drop-before");
+        let dj = +chip.dataset.chip.split(":")[1] + (before ? 0 : 1);
+        const arr = fbRules[si].to;
+        const [moved] = arr.splice(sj, 1);
+        if (dj > sj) dj--; // 移除原位后修正目标下标
+        arr.splice(dj, 0, moved);
+        renderFbList();
+        toast("顺序已调整（序号已同步），点「保存降级链」生效");
+      }
+    }
+    document.querySelectorAll(".fb-to-chip.drop-before,.fb-to-chip.drop-after").forEach((c) => c.classList.remove("drop-before", "drop-after"));
+    fbDragSrc = null;
+  });
+  $("fbList").addEventListener("dragend", () => {
+    if (fbDragSrc) fbDragSrc.el.classList.remove("dragging");
+    fbDragSrc = null;
+    document.querySelectorAll(".fb-to-chip.drop-before,.fb-to-chip.drop-after").forEach((c) => c.classList.remove("drop-before", "drop-after"));
   });
 
   // 思考强度：添加映射 / 保存 / 列表内删除 / 回车添加
   $("btnEffAdd").onclick = () => {
     const model = $("effModelInput").value.trim();
     const effort = $("effEffortInput").value.trim();
-    if (!model) { $("effErr").textContent = "模型 ID 不能为空（全局默认请在上方「全局默认」行填）"; return; }
+    if (!model) { $("effErr").textContent = "模型ID 不能为空（全局默认请在上方「全局默认」行填）"; return; }
     if (model === "*") { $("effErr").textContent = "* 是全局默认专用键，请在上方「全局默认」行填"; return; }
     if (!effort) { $("effErr").textContent = "思考档位不能为空"; return; }
     if (effRules.some((r) => r.model === model)) { $("effErr").textContent = `模型 ${model} 已有档位（每个模型只允许一条）`; return; }
@@ -2433,7 +2840,6 @@ function bind() {
     $("effModelInput").value = ""; $("effEffortInput").value = "";
     renderEffList();
   };
-  $("effEffortInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnEffAdd").onclick(); });
   $("btnEffSave").onclick = saveReasoningEfforts;
   $("effList").addEventListener("click", (e) => {
     const del = e.target.closest("[data-del-eff]");
@@ -2442,6 +2848,23 @@ function bind() {
       renderEffList();
     }
   });
+
+  // 配置区模糊搜索下拉接线（静态输入框一次性挂；行内输入框由 attachFbPickers 每轮重挂）。
+  // 回车链：底部主力框 → 跳备胎框；备胎框 → 添加规则；映射模型框 → 跳档位框；档位框 → 添加映射。
+  attachModelPicker($("fbFromInput"), {
+    excludeSet: () => fbFromSet(), // 已配置的主力从候选隐藏（重复由下方添加校验兜底），与备胎框行为对齐
+    enterAction: () => $("fbToInput").focus(),
+  });
+  attachModelPicker($("fbToInput"), {
+    stayOpen: true, multiAccum: true, // 累积多选：点选逐个逗号追加，末段继续搜
+    excludeSet: () => fbFromSet(), // 已配置的主力模型ID从备胎候选隐藏（实时取，主力变更即同步）
+    enterAction: () => $("btnFbAdd").onclick(),
+  });
+  attachModelPicker($("effModelInput"), { enterAction: () => $("effEffortInput").focus() });
+  attachEffortPicker($("effGlobalInput"));
+  attachEffortPicker($("effEffortInput"), { enterAction: () => $("btnEffAdd").onclick() });
+  // 全局默认框手输/选择后即时刷新未保存提示（effRules 变化经 renderEffList 已覆盖）
+  $("effGlobalInput").addEventListener("input", updateEffDirty);
 
   // 自定义渠道（R66）：测试、停用/启用、删除、添加、保存
   $("customChList").addEventListener("click", async (e) => {
@@ -2587,26 +3010,16 @@ function bind() {
   };
 
   $("btnCustomAdd").onclick = () => {
-    const name = $("inCustomName").value.trim().toLowerCase();
-    const url = $("inCustomURL").value.trim();
-    const key = $("inCustomKey").value.trim();
-    if (!name) { $("customChErr").textContent = "请填入渠道标识"; $("customChOk").textContent = ""; return; }
-    if (!/^[a-zA-Z0-9_\-]+$/.test(name)) { $("customChErr").textContent = "渠道标识仅允许字母、数字、下划线、短横线"; $("customChOk").textContent = ""; return; }
-    // 与内建渠道/上游命名空间同名时两层会指向不同 Runtime，后端也会拒；此处先给即时反馈。
-    if (RESERVED_CHANNEL_NAMES.has(name)) { $("customChErr").textContent = `渠道标识 ${name} 与内建渠道同名，请另取一个`; $("customChOk").textContent = ""; return; }
-    if (!url) { $("customChErr").textContent = "请填入 Base URL"; $("customChOk").textContent = ""; return; }
-    if (editCustomChannels.some(c => c.name.toLowerCase() === name)) {
-      $("customChErr").textContent = `已存在同名渠道 ${name}`;
+    if (!$("inCustomName").value.trim() && !$("inCustomURL").value.trim() && !$("inCustomKey").value.trim()) {
+      $("customChErr").textContent = "请先填入渠道标识、Base URL 与 API 密钥";
       $("customChOk").textContent = "";
       return;
     }
-    editCustomChannels.push({ name, base_url: url, api_key: key, models: [], enabled: true });
-    renderCustomChList();
-    $("inCustomName").value = "";
-    $("inCustomURL").value = "";
-    $("inCustomKey").value = "";
+    const err = addPendingCustomInputs();
+    if (err) { $("customChErr").textContent = err; $("customChOk").textContent = ""; return; }
     $("customChErr").textContent = "";
-    $("customChOk").textContent = `已创建渠道 [${name}]，现在可在其下方配置模型 ID、上下文大小、思考等级与能力`;
+    const added = editCustomChannels[editCustomChannels.length - 1];
+    $("customChOk").textContent = `已创建渠道 [${added.name}]，现在可在其下方配置模型 ID、上下文大小、思考等级与能力`;
   };
 
   $("btnCustomSave").onclick = saveCustomChannels;

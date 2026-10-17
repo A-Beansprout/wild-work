@@ -26,7 +26,11 @@ type Account struct {
 	AccountID       string
 	UserID          string
 	Label           string
-	BaseURL         string // 网关基址（形如 https://modelgw-0004.<region>.huaweicloud-agentarts.com/v2）
+	BaseURL         string // 网关**裸 host**（形如 https://modelgw-0004.officeace.<region>.huaweicloud-agentarts.com）
+	// ⚠️ 必须存裸 host、不带 `/v2`：同一字段被两类端点复用，而它们的前缀要求相反
+	// （issue #152）：模型/对话要 `{host}/v2/...`，额度/签到要 `{host}/v1/subscription`。
+	// 存带 /v2 的值会让额度请求变成 `{host}/v2/v1/subscription` → APIG.0303 app not found。
+	// 归一化在 bareGateway() 与 chatURL()/modelsURL() 两处收口（剥 `/v2` / 按需拼）。
 	Authorization   string // 网关 Basic 凭据头值
 	ModelNames      []string
 	AccessKeyID     string // 临时 AK
@@ -75,7 +79,7 @@ func accountFromAuth(a *auth.Auth) *Account {
 		AccountID:       ex[keyAccountID],
 		UserID:          ex[keyUserID],
 		Label:           ex[keyLabel],
-		BaseURL:         firstNonEmpty(ex[keyBaseURL], a.ApiHost),
+		BaseURL:         bareGateway(firstNonEmpty(ex[keyBaseURL], a.ApiHost)),
 		Authorization:   a.AccessToken,
 		AccessKeyID:     ex[keyAccessKey],
 		SecretAccessKey: ex[keySecretKey],
@@ -215,29 +219,24 @@ func urlPathUnescape(s string) (string, error) { return url.PathUnescape(s) }
 // trimSlash 去掉 URL 尾部所有 '/'。
 func trimSlash(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
 
-// gatewayRootOf 把任意来源的网关地址归一为**网关根**（即剥掉数据面命名空间 `/v2`）。
+// bareGateway 把网关基址归一化为**裸 host**：剥掉结尾的 `/v2`（可带尾斜杠）。
 //
-// 为什么必须归一（2026-10-17 离线取证定位）：OfficeAce 的两个 base 来源形态不同，混用会
-// 在同一台机器上产生两类相反的故障：
-//   - 导入路径（桌面端 models.json 的 `api_base`）**自带 `/v2`**：`https://host/v2`；
-//   - 自助登录路径（`client-permission-validate` 的 `model_api_url_base`）**不带 `/v2`**：
-//     `https://host`（上游下发的是裸主机名，本仓只补 scheme）。
+// 为什么需要（issue #152）：`model_api_url_base` 在不同账号/不同网关版本下**可能带也可能
+// 不带** `/v2`，而它被两类端点复用且前缀要求相反：
 //
-// 而两类端点的正确前缀也不同（参考实现 officeace2api 的判据，非推断）：
-//   - **数据面**（对话/模型目录）恒打 `{root}/v2/...`（其 oauth.mjs 显式拼 `https://${host}/v2`）；
-//   - **控制面**（`/v1/subscription`、`/v1/subscription/bonus/claim`、`/v1/claw/*`）恒打 `{root}/v1/...`。
+//	{host}/v2/chat/completions     ← 模型/对话（带 /v2）
+//	{host}/v1/subscription         ← 额度/签到（不带 /v2）
 //
-// 旧实现只有一个 BaseURL 直接拼两种端点，于是：OAuth 产物（无 /v2）的 `/models` 落在
-// `{root}/models` ⇒ 上游 `404 APIG.0101 The API does not exist or has not been published`；
-// 导入产物（有 /v2）的控制面会落在 `{root}/v2/v1/subscription` ⇒ 同样 404。
+// 故存盘一律存裸 host，各端点按需自行拼前缀。旧凭据里已带 /v2 的也在这里剥掉，
+// 无需用户重新登录（向后兼容）。
 //
-// 归一规则保守：**仅当路径以整段 `/v2` 结尾时**才剥（大小写不敏感），其余路径（含
-// `/v2/v1` 这类意外形态）原样保留，避免把用户自定义网关上真实的路径段吃掉；
-// 剥完若为空（退化输入，例如 BaseURL 恰好就是 `"/v2"`）则**原样返回** ——
-// 不能让控制面 base 变成空串（那会拼出 `"/v1/subscription"` 这种无主机地址）。
-// 2026-10-17 独立复核指出该退化输入，此处按"宁可不剥也不产出空 base"处理。
-func gatewayRootOf(base string) string {
-	u := trimSlash(base)
+// 归一规则保守（合并 upstream/master 时并入，来源：本地分支 `fix/officeace-credential-chain`
+// 的 `gatewayRootOf`，2026-10-17 独立复核抓出的退化输入）：剥完若为空（例如入参恰好就是
+// `"/v2"`）则**原样返回**——不能让 base 变成空串，否则会拼出 `"/v1/subscription"` 这种
+// 无主机地址。大小写不敏感由 EqualFold 保证（`/V2` 同样剥）。
+func bareGateway(u string) string {
+	u = trimSlash(u)
+	// 只剥最后一段 `/v2`；更深的路径（理论上不存在）保持原样，不猜。
 	if len(u) >= 3 && strings.EqualFold(u[len(u)-3:], "/v2") {
 		if root := strings.TrimRight(u[:len(u)-3], "/"); root != "" {
 			return root
@@ -246,16 +245,22 @@ func gatewayRootOf(base string) string {
 	return u
 }
 
-// gatewayRoot 返回本账号的网关根（控制面基址，无 `/v2`）。
-func (ac *Account) gatewayRoot() string { return gatewayRootOf(ac.BaseURL) }
+// dataBase 返回本账号的**数据面**基址（裸 host + `/v2`，即 chatURL/modelsURL 的前缀）。
+//
+// 合并 upstream/master 时并入（来源：本地 `fix/officeace-credential-chain`）：
+// 把「数据面拼 /v2」与「控制面用裸 host」的差异收口到一处方法，避免各调用点各写一遍
+// trimSlash+"/v2" 而漏掉归一（quota.go 的控制面走 `c.gatewayBase()` → `bareGateway`）。
+func (ac *Account) dataBase() string { return bareGateway(ac.BaseURL) + "/v2" }
 
-// dataBase 返回本账号的数据面基址（网关根 + `/v2`）。
-func (ac *Account) dataBase() string { return ac.gatewayRoot() + "/v2" }
-
-// chatURL 返回对话端点（网关 OpenAI 兼容：{root}/v2/chat/completions）。
+// chatURL 返回对话端点（网关 OpenAI 兼容：{base}/v2/chat/completions）。
+//
+// 必须带 `/v2`（issue #152 实测）：上游下发的是裸 host，而 OpenAI 兼容面挂在 `/v2`
+// 之下——不带则 `GET {host}/models` 与 `POST {host}/chat/completions` 均返回
+// APIG.0101「The API does not exist or has not been published」。
+// 这里改走 dataBase()：入参可能自带 `/v2`（导入路径），必须先去重再拼，否则拼出 `/v2/v2`。
 func (ac *Account) chatURL() string { return ac.dataBase() + "/chat/completions" }
 
-// modelsURL 返回模型目录端点（{root}/v2/models）。
+// modelsURL 返回模型目录端点（{base}/v2/models）。理由同 chatURL。
 func (ac *Account) modelsURL() string { return ac.dataBase() + "/models" }
 
 // regionFromBaseURL 从网关 host 里猜 region（华为主机形如

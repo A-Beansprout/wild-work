@@ -56,6 +56,7 @@ function mkNode(id) {
     id,
     innerHTML: "",
     textContent: "",
+    value: "", // #149 起 updateEffDirty/renderFbList 会读输入框 .value.trim()
     style: {},
     classList: {
       add: (c) => cls.add(c),
@@ -381,7 +382,9 @@ const uniq = [
   ["const CH_ORDER", /^\s*const CH_ORDER\s*=/gm],
   ["const CH_SUMMARY_ORDER", /^\s*const CH_SUMMARY_ORDER\s*=/gm],
   ["function renderAccounts", /^\s*function renderAccounts\s*\(/gm],
-  ["function render()", /^\s*function render\s*\(/gm],
+  // 顶层 = 行首无缩进。内层同名函数（如 attachModelPicker 内的 render()、
+  // attachEffortPicker 内的 render()）是合法的局部闭包，不得计入。
+  ["function render()", /^function render\s*\(/gm],
   // 运行统计区块（防「同一提交里写两版」的非预期重复，同 renderSummary 教训）
   ["function loadStats", /^\s*async function loadStats\s*\(/gm],
   ["function renderStats", /^\s*function renderStats\s*\(/gm],
@@ -615,9 +618,11 @@ for (const [label, re] of uniq) {
   const need = [
     ["设置弹层有思考强度编辑区（全局默认行 + 映射列表 + 输入行）",
       html.includes('id="effGlobalInput"') && html.includes('id="effList"') && html.includes('id="effModelInput"') && html.includes('id="effEffortInput"') && html.includes('id="btnEffAdd"') && html.includes('id="btnEffSave"')],
-    ["档位建议集 datalist = none/low/medium/high/max（哑管道：输入框仍可自由输入）",
-      /<datalist id="effortDatalist">[\s\S]*?value="none"[\s\S]*?value="low"[\s\S]*?value="medium"[\s\S]*?value="high"[\s\S]*?value="max"/.test(html)
-      && html.includes('list="effortDatalist"')],
+    // #149 把 datalist 换成了 combobox 下拉（attachEffortPicker），候选集在 app.js 的
+    // PK_EFFORTS；仍可自由输入（哑管道不校验档位取值）。
+    ["档位建议集 none/low/medium/high/max（哑管道：输入框仍可自由输入）",
+      /const PK_EFFORTS = \["none", "low", "medium", "high",[^\]]*"max"\]/.test(raw)
+      && raw.includes("attachEffortPicker($(\"effEffortInput\")")],
     ["hint 含三态语义（未带才注入 / 显式传不覆盖 / 回退全局默认）",
       html.includes("客户端请求<b>未带</b>") && html.includes("一律不覆盖") && html.includes("精确未命中回退全局默认")],
     ["hint 含 channel/model 格式与 TraeWork 无效说明",
@@ -630,8 +635,12 @@ for (const [label, re] of uniq) {
     ["模型行拒绝 `*`（全局默认专用键另有入口）", raw.includes("* 是全局默认专用键")],
     ["renderEffList 空态占位常显（未配置 = 不注入，不整块隐藏）",
       (T.renderEffList(), nodes["effList"].innerHTML.includes("暂无模型档位"))],
-    ["renderEffList 模型 ID 列显式 width:auto（.lbl.wide 的 90px 定宽会压掉 max-width）",
-      /class="lbl wide" style="width:auto;max-width:340px/.test(raw)],
+    // #149 起映射行改为卡片（.fb-map-card），“模型 ID 列不被 .lbl.wide 的 90px 定宽压掉”
+    // 的约束转移到了 style.css 的 .fb-map-card .fb-map-model（flex 自适应 + 省略号）。
+    ["renderEffList 模型 ID 列可伸缩不被定宽压掉",
+      /class="fb-map-model" title=/.test(raw)
+      && /\.fb-map-card \.fb-map-model \{[^}]*flex: 1 1 200px/.test(
+        readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8"))],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
@@ -647,8 +656,10 @@ for (const [label, re] of uniq) {
   const need = [
     ["两处 cfg-heading 各带一个 data-model-search 查找按钮",
       (html.match(/data-model-search/g) || []).length === 2],
-    ["按钮文案含「🔍 查询模型」（与首页纯图标入口区分）",
-      (html.match(/🔍 查询模型/g) || []).length === 2],
+    // 文案带「🔍 查询模型」：设置内两处 + 模型列表标题行一处（#139 把首页纯图标入口也改成了带字文案）。
+    // 只断言数量是为了防“改回纯图标”回退：纯图标入口在触屏/小字号下不可发现。
+    ["按钮文案含「🔍 查询模型」（设置内两处 + 模型列表标题行一处）",
+      (html.match(/🔍 查询模型/g) || []).length === 3],
     ["模型降级链标题右侧有查找入口", /模型降级链[\s\S]{0,80}data-model-search/.test(html)],
     ["思考强度标题右侧有查找入口", /思考强度[\s\S]{0,80}data-model-search/.test(html)],
     ["app.js 统一接线 data-model-search → openModelSearch",
@@ -741,6 +752,28 @@ for (const [label, re] of uniq) {
       closeAt > 0 && adminAt > closeAt],
   ];
   for (const [label, pass] of need2) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 局域网/无头部署的剪贴板降级（issue #142 / PR #143）----
+// 明文 http:// 是非安全上下文，navigator.clipboard 被浏览器直接禁用。这类缺陷在桌面
+// localhost（安全上下文）**测不出来**，只在局域网部署暴露，故静态锁住：copyUrl 必须
+// 走带 execCommand 降级的 copyText，且不得裸调 navigator.clipboard。
+{
+  const body = (raw.match(/function copyUrl\(\)[\s\S]*?\n}/) || [""])[0]
+    .replace(/\/\/.*$/gm, ""); // 去行注释：注释里会提到 navigator.clipboard（不得误判）
+  const need3 = [
+    ["copyUrl 函数存在", body.length > 0],
+    ["copyUrl 走 copyText（含 execCommand 降级）", /copyText\(/.test(body)],
+    ["copyUrl 不得裸调 navigator.clipboard（局域网 http 下静默失效）", !/navigator\.clipboard/.test(body)],
+    ["copyText 内部有 execCommand 降级分支", /document\.execCommand\("copy"\)/.test(raw)],
+    // noopener 下 window.open 返回恒为 null（MDN），拿返回值判拦截会每次误报。
+    ["OfficeAce 打开授权页不得用 noopener 的返回值判弹窗拦截",
+      !/window\.open\([^)]*noopener[^)]*\)\s*\)/.test(raw)],
+  ];
+  for (const [label, pass] of need3) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
     if (!pass) failed++;
   }

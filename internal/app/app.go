@@ -58,7 +58,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.8.2"
+const Version = "2.9.0"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -206,6 +206,8 @@ func New(opts Options) (*App, error) {
 	if a.ledger != nil {
 		a.ledgerStop = make(chan struct{})
 		go a.ledger.AutoFlush(a.ledgerStop)
+		// 请求体摘要开关（诊断用，默认关）：进程级全局，启动时与 config.body_log 同步
+		ledger.SetBodyTrace(a.cfg.BodyLog)
 	}
 
 	// 运行统计引擎（data/stats.json）：初始化失败不致命——端点回 disabled、插桩/喂入全判 nil
@@ -1635,8 +1637,10 @@ func (a *App) CancelGLMAutoLogin() error {
 
 // StartOfficeAceLogin 发起 OfficeAce 自助登录（华为云 OAuth 授权码 + PKCE + DPoP）。
 // 返回待打开的授权 URL；后台轮询完成登录并落盘。前端轮询 GetOfficeAceLoginStatus。
-// StartOfficeAceLogin 发起 OfficeAce 自助登录（华为云 OAuth 授权码 + PKCE + DPoP）。
-// 返回待打开的授权 URL；后台轮询完成登录并落盘。前端轮询 GetOfficeAceLoginStatus。
+//
+// 不在服务端开浏览器（#143）：授权页由前端 window.open 在「用户正在使用的设备」打开
+// —— 捕获走云端轮询 state→code，与授权页在哪台设备打开无关；服务端弹窗对局域网用户
+// 不可见，反而造成「点了没反应」的困惑。前端有「复制链接」兜底。
 //
 // 并发约定（2026-10-17 修）：只有「进行中」的会话才拒绝新请求；已进入终态的旧会话
 // 必须**先清空再解锁**，否则并发的状态轮询会读到上一轮的 done/failed，把用户新点的
@@ -1663,18 +1667,10 @@ func (a *App) StartOfficeAceLogin() (string, error) {
 		return "", err
 	}
 	a.oaLogin = sess
-	url := sess.URL()
-	a.muOALogin.Unlock()
-
-	// 尝试用系统浏览器打开授权页。失败**不阻断**登录：URL 已返回给前端，
-	// 用户可点「复制链接」手动打开（见 app.js 的 warning 分支）。
-	// 注意：必须放在解锁之后 —— 拉起浏览器是同步的系统调用，持锁期间调用会把
-	// 并发的状态轮询全部堵住（表现为面板卡住）。
-	if err := sess.OpenInBrowser(); err != nil {
-		log.Printf("officeace 自助登录：无法自动打开浏览器，请手动复制链接打开：%v", err)
-		return url, fmt.Errorf("无法自动打开浏览器，请点「复制链接」手动打开授权页：%w", err)
-	}
-	return url, nil
+	// 不在服务端开浏览器：授权页由前端 window.open 在「用户正在使用的设备」打开
+	//（捕获走云端轮询 state→code，与授权页在哪台设备打开无关；服务端弹窗对
+	// 局域网用户不可见，反而造成「点了没反应」的困惑）。前端有复制链接兜底。
+	return sess.URL(), nil
 }
 
 // GetOfficeAceLoginStatus 查询 OfficeAce 自助登录状态。
@@ -2411,6 +2407,24 @@ func (a *App) ResourceDetail(uid string) (remain int64, items []provider.Resourc
 // 配置操作
 // ---------------------------------------------------------------------------
 
+// SetBodyLog 开关请求体构成摘要记录（诊断用：定位上下文为何膨胀）。
+func (a *App) SetBodyLog(on bool) error {
+	a.mu.Lock()
+	a.cfg.BodyLog = on
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	ledger.SetBodyTrace(on)
+	if on {
+		log.Printf("请求体摘要记录已开启（写 data/ledger/body-trace-*.jsonl）")
+	} else {
+		log.Printf("请求体摘要记录已关闭")
+	}
+	return nil
+}
+
 // SetCheckinTimes 更新自动签到时间（HH:MM）并立即唤醒两个调度器。
 func (a *App) SetCheckinTimes(times []string) error {
 	minutes, err := config.ParseClockTimes(times)
@@ -2915,6 +2929,9 @@ type AccountView struct {
 	LastCheckinOK  bool              `json:"last_checkin_ok"`
 	LastCheckinAt  string            `json:"last_checkin_at"`
 	LastCheckinMsg string            `json:"last_checkin_msg"`
+	// SessionDead 登录态失效（401/登录已失效）：面板显示「需重新登录」+ 重新登录入口（#134）。
+	SessionDead       bool   `json:"session_dead,omitempty"`
+	SessionDeadReason string `json:"session_dead_reason,omitempty"`
 }
 
 // State Web UI 初始数据。
@@ -2965,6 +2982,9 @@ type State struct {
 
 	// OczenAPIKey OpenCodeZen 自定义 API key（只读脱敏回显：sk-xxx…尾4位；保存走同端点）。
 	OczenAPIKey string `json:"oczen_api_key"`
+
+	// BodyLog 请求体摘要诊断是否开启（只读，保存走 POST /api/config/body_log）。
+	BodyLog bool `json:"body_log"`
 
 	// LoopGuard 思考链死循环检测（发癫拦截）是否开启（只读，保存走 POST /api/config/loop_guard）。
 	LoopGuard bool `json:"loop_guard"`
@@ -3031,6 +3051,7 @@ func (a *App) GetState() State {
 	st.BackupProxyActive = backuplink.Enabled()
 	// oczen key 脱敏回显：仅露首 5 + 尾 4（空则原样空串）
 	st.OczenAPIKey = maskKey(a.cfg.OczenAPIKey)
+	st.BodyLog = a.cfg.BodyLog
 	// 自定义渠道路由的 api_key 同样脱敏回显（不把上游密钥明文送进面板载荷）。
 	// 返回深拷贝而非配置引用，避免调用方意外改写配置。
 	st.CustomChannels = maskCustomChannels(a.cfg.CustomChannels)
@@ -3052,18 +3073,20 @@ func (a *App) accountViews() []AccountView {
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
 			// 匿名与自定义渠道无积分：前端据此显示「不适用」
-			CreditsNA:      a.creditsNAKind(group),
-			CreditsUnit:    a.creditsUnit(group),
-			Cooling:        s.Cooling,
-			Until:          fmtTime(s.Until),
-			UntilTS:        unixOrZero(s.Until),
-			Reason:         s.Reason,
-			Disabled:       s.Disabled,
-			ModelCooling:   fmtTimeMap(s.ModelCooling),
-			ErrCount:       s.ErrCount,
-			LastCheckinOK:  s.LastCheckinOK,
-			LastCheckinAt:  fmtTime(s.LastCheckinAt),
-			LastCheckinMsg: s.LastCheckinMsg,
+			CreditsNA:         a.creditsNAKind(group),
+			CreditsUnit:       a.creditsUnit(group),
+			Cooling:           s.Cooling,
+			Until:             fmtTime(s.Until),
+			UntilTS:           unixOrZero(s.Until),
+			Reason:            s.Reason,
+			Disabled:          s.Disabled,
+			ModelCooling:      fmtTimeMap(s.ModelCooling),
+			ErrCount:          s.ErrCount,
+			LastCheckinOK:     s.LastCheckinOK,
+			LastCheckinAt:     fmtTime(s.LastCheckinAt),
+			LastCheckinMsg:    s.LastCheckinMsg,
+			SessionDead:       s.SessionDead,
+			SessionDeadReason: s.SessionDeadReason,
 		})
 	}
 	// 面板固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公
@@ -3518,6 +3541,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		if err := a.SetBackupProxy(req.Proxy, key); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/body_log", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			On bool `json:"on"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetBodyLog(req.On); err != nil {
+			apiError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

@@ -64,6 +64,11 @@ func Classify(status int, body string) ErrKind {
 	if status == http.StatusPaymentRequired {
 		return ErrHardCredit
 	}
+	// 401：登录态失效（令牌过期/被吊销）。放在文案标记之前：HTML 形态的 401
+	// Authorization Required（无业务信封）没有可匹配文案，也要归入 SessionDead（#134）。
+	if status == http.StatusUnauthorized {
+		return ErrSessionDead
+	}
 	lower := strings.ToLower(body)
 	for _, m := range sessionDeadMarkers {
 		if strings.Contains(body, m) {
@@ -71,6 +76,21 @@ func Classify(status int, body string) ErrKind {
 		}
 	}
 	if status == http.StatusTooManyRequests {
+		// 例外：积分耗尽（14018 "Credits exhausted"，复数 s 漏配 hardMarkers）是账号级
+		// 余额问题而非限流——误判软限流只冷 60s 且降级链永不触发，客户端死循环吃 429。
+		// 与 workbuddyai/models.go Classify 同构特判（预防性：国内 workbuddy 渠道暂无
+		// 14018 实录，但两份 Classify 语义须同步演进）。归 hard_credit：账号级 12h
+		// 硬冷却（充值后 ReenableIfCredits 自动解冻），下一请求入口降级链正常顶替。
+		// 匹配防前缀误伤："code":140180 含子串 "code":14018——命中后下一字符须非
+		// 数字，防未来 14xxxx 新码误归 12h 账号硬冷却。
+		if idx := strings.Index(body, `"code":14018`); idx >= 0 {
+			if end := idx + len(`"code":14018`); end >= len(body) || body[end] < '0' || body[end] > '9' {
+				return ErrHardCredit
+			}
+		}
+		if strings.Contains(lower, "credits exhausted") {
+			return ErrHardCredit
+		}
 		return ErrSoftRate
 	}
 	for _, m := range hardMarkers {
@@ -345,12 +365,12 @@ type catalogModel struct {
 
 // catalogReasoning 目录 reasoning 对象（仅取可透传的权威字段）。
 type catalogReasoning struct {
-	SupportedEfforts   []string `json:"supportedEfforts"`
-	DefaultEffort      string   `json:"defaultEffort"`
+	SupportedEfforts []string `json:"supportedEfforts"`
+	DefaultEffort    string   `json:"defaultEffort"`
 	// Effort 老式默认档字段（上游 deepseek 系实测：reasoning:{effort:"high"}）；
 	// DefaultEffort 为空时回退取它。
-	Effort             string   `json:"effort"`
-	CanDisableThinking bool     `json:"canDisableThinking"`
+	Effort             string `json:"effort"`
+	CanDisableThinking bool   `json:"canDisableThinking"`
 }
 
 // FetchModels 调上游动态模型接口。

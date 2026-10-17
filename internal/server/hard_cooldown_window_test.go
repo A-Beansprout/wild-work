@@ -20,29 +20,31 @@ import (
 	"wild-work/internal/provider"
 )
 
-// hardCreditUpstream 假上游：一律返回 402（权益不足），用于触发硬冷却。
-type hardCreditUpstream struct{}
+// payRequiredUpstream 假上游：一律返回 402（权益不足），用于触发硬冷却。
+// 命名带 payRequired 前缀以区别于 model_fallback_14018_test.go 的 hardCreditUpstream
+// （后者按 429+14018 触发 hard_credit，两者语义不同，合并 v2.8.2 时曾撞名）。
+type payRequiredUpstream struct{}
 
-func (hardCreditUpstream) RefreshToken(*auth.Auth) error { return nil }
-func (hardCreditUpstream) ChatStream(*auth.Auth, []byte) (io.ReadCloser, int, []byte, error) {
+func (payRequiredUpstream) RefreshToken(*auth.Auth) error { return nil }
+func (payRequiredUpstream) ChatStream(*auth.Auth, []byte) (io.ReadCloser, int, []byte, error) {
 	return nil, http.StatusPaymentRequired, []byte(`{"code":"402","message":"Error in upstream response"}`), nil
 }
-func (hardCreditUpstream) Aggregate(io.Reader, string) (map[string]any, error) {
+func (payRequiredUpstream) Aggregate(io.Reader, string) (map[string]any, error) {
 	return map[string]any{}, nil
 }
-func (hardCreditUpstream) FetchModels(*auth.Auth) ([]provider.ModelInfo, error) { return nil, nil }
-func (hardCreditUpstream) FetchModelPricing(*auth.Auth) ([]provider.ModelPricing, error) {
+func (payRequiredUpstream) FetchModels(*auth.Auth) ([]provider.ModelInfo, error) { return nil, nil }
+func (payRequiredUpstream) FetchModelPricing(*auth.Auth) ([]provider.ModelPricing, error) {
 	return nil, nil
 }
-func (hardCreditUpstream) UserResource(*auth.Auth) (int64, error) { return 0, nil }
-func (hardCreditUpstream) UserResourceDetail(*auth.Auth) (int64, []provider.ResourceItem, error) {
+func (payRequiredUpstream) UserResource(*auth.Auth) (int64, error) { return 0, nil }
+func (payRequiredUpstream) UserResourceDetail(*auth.Auth) (int64, []provider.ResourceItem, error) {
 	return 0, nil, nil
 }
-func (hardCreditUpstream) DailyCheckin(*auth.Auth) error { return nil }
-func (hardCreditUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+func (payRequiredUpstream) DailyCheckin(*auth.Auth) error { return nil }
+func (payRequiredUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
 	return nil, nil
 }
-func (hardCreditUpstream) Classify(status int, _ string) provider.ErrKind {
+func (payRequiredUpstream) Classify(status int, _ string) provider.ErrKind {
 	if status == http.StatusPaymentRequired {
 		return provider.ErrHardCredit
 	}
@@ -60,7 +62,7 @@ func newHardCooldownHandler(t *testing.T, hardFor func(time.Time) time.Duration)
 	p.SetCreditDetail("uB", 900, 0, 0)
 	h := NewHandler(Config{
 		Runtimes: map[provider.Kind]*Runtime{
-			provider.GLM: {Kind: provider.GLM, Pool: p, Upstream: hardCreditUpstream{},
+			provider.GLM: {Kind: provider.GLM, Pool: p, Upstream: payRequiredUpstream{},
 				StaticModels: []provider.ModelInfo{{ID: "m"}}},
 		},
 		HardCooldown:    12 * time.Hour,
