@@ -31,6 +31,10 @@ func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
 	return aggregate(r, model)
 }
 
+// streamSniffLimit 非 SSE 原文的留存上限：足够覆盖多行业务错误信封，
+// 又不会把整段异常响应驻留内存。
+const streamSniffLimit = 8 << 10
+
 // Stream 边读边把上游 SSE 转写为标准 OpenAI SSE 给客户端（每个 chunk 重写 model）。
 // 返回末帧捕获的 usage（OpenAI 形状，供 handler 记 token 流水）；上游未返回时为 nil。
 func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
@@ -51,6 +55,12 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, e
 	if loopguard.Enabled() {
 		guard = loopguard.NewDefault()
 	}
+	// 上游可能整段不是 SSE（HTTP 200 + 纯 JSON 业务错误体）：记录「是否透传过有效帧」
+	// 与「被跳过的原文」，供流结束时兜底判定（覆盖多行信封 / 非 `{` 开头行）。
+	var (
+		sawFrame bool
+		skipped  strings.Builder
+	)
 
 	sc := newSSEScanner(r)
 	for sc.Scan() {
@@ -68,8 +78,15 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, e
 					return usage, berr
 				}
 			}
+			// 同时留存非 SSE 原文：若整段都不是 SSE（多行信封、或错误体不满足单行判定），
+			// 由流末的统一判定兜底。上限见 streamSniffLimit。
+			if !sawFrame && skipped.Len() < streamSniffLimit {
+				skipped.WriteString(line)
+				skipped.WriteByte('\n')
+			}
 			continue
 		}
+		sawFrame = true
 		if payload == "[DONE]" {
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 			flush()
@@ -116,6 +133,18 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, e
 		// 不补帧 = 客户端收到无收尾的截断流 =「突然无响应」（2026-09-24 实测形态）。
 		provider.WriteTruncationFrames(w, err)
 		return usage, err
+	}
+	// 整段没有任何有效 SSE 帧，且残留文本是上游业务错误体（HTTP 200 + 业务码）
+	// ⇒ 这不是「空回答」，是上游以 200 返回的鉴权/业务失败。补一帧 error（**不补 [DONE]**）
+	// 并把错误上抛，避免「静默成功 + 空流」把故障藏起来。
+	if !sawFrame {
+		if berr := errFromBusinessEnvelope(skipped.String()); berr != nil {
+			var pe *provider.Error
+			if errors.As(berr, &pe) {
+				writeErrorFrame(w, pe.Kind, pe.Msg)
+			}
+			return usage, berr
+		}
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flush()
