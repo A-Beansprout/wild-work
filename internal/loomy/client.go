@@ -444,7 +444,6 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 	if err != nil {
 		return nil, err
 	}
-	explicit := true
 	out := make([]provider.ModelPricing, 0, len(resp.Data))
 	for _, m := range resp.Data {
 		id := strings.TrimSpace(m.ID)
@@ -452,17 +451,17 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 			continue
 		}
 		rate := priceFromName(m.Name)
-		if rate <= 0 {
-			// 解析不到倍率时必须置 Explicit=false：面板据此显示「未知」而不是「免费」（R5 约定）。
-			explicit = false
-		}
+		// ⚠️ 每轮必须取**新的**变量地址（2026-10-17 修复）：旧实现把 `explicit` 声明在循环外、
+		// 每轮 `&explicit` 后又在末尾复位为 true ⇒ 所有条目共享同一个 bool 且末值恒 true，
+		// 于是「解析不到倍率 → 面板显示未知而不是免费」（R5 约定）**静默失效**。
+		// 现在按本条自己的解析结果取值：解析不到倍率即为 false。
+		explicit := rate > 0
 		out = append(out, provider.ModelPricing{
 			Model:    id,
 			Channel:  ChannelName,
 			Rate:     rate,
 			Explicit: &explicit,
 		})
-		explicit = true
 	}
 	return out, nil
 }
