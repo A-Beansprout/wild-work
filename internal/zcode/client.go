@@ -355,19 +355,23 @@ type balanceResult struct {
 	Enterprise bool
 }
 
-// UserResource 查询可消耗额度（Σ 可消耗桶的 remaining/available）。
-func (c *Client) UserResource(a *auth.Auth) (int64, error) {
-	res, err := c.fetchBalance(a)
-	if err != nil {
-		return 0, err
-	}
-	return res.remaining(), nil
+// UserResource 查询「可消耗积分」。
+//
+// ⚠️ **本渠道恒返回 0**（2026-10-17 修正，用户实测报告）：ZCode 的 `billing/balance` 下发的是
+// **token 桶**（`unit_type="token"`），**不是积分**。早期实现把 Σ token remaining 当可消耗余额返回，
+// 后果是 token 数（动辄上亿）被 pool 当作账号余额排序、被面板当积分展示，并进入 ledger/stats 的
+// 积分口径 —— 严重污染统计。
+//
+// token 桶仍然要展示，但只走 `UserResourceDetail` 的 **InfoOnly** 条目：
+// 那条路径明确不进 Summarize 小计、不进临期统计、不参与 ledger 差分（与 gemini 的配额窗口同一口径）。
+func (c *Client) UserResource(_ *auth.Auth) (int64, error) {
+	return 0, nil
 }
 
 // UserResourceDetail 返回余额与明细条目。
 //
 // 条目来源两处（口径同源，避免两处各算一遍）：
-//   - `billing/balance` 的每个 token 桶 → 一条可消耗明细；
+//   - `billing/balance` 的每个 token 桶 → 一条 **InfoOnly** 明细（token 不是积分，只作展示）；
 //   - `billing/preview` 的每个可领 plan → 一条 **InfoOnly** 条目（只作展示，见下）。
 //
 // 为什么可领 plan 标 InfoOnly：本渠道**不能自动领取**（见 ErrClaimUnsupported），
@@ -380,7 +384,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	if err != nil {
 		return 0, nil, err
 	}
-	remain := res.remaining()
+	// 标量余额恒 0：本渠道没有积分，只有 token 桶（口径见 UserResource 的注释）。
+	// token 的数字只出现在下面的 InfoOnly 明细里。
+	var remain int64
 
 	if res.Enterprise {
 		// 企业版不下发额度数字：用一条**只作展示**的条目承载这个事实，
@@ -410,7 +416,12 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 			Remain:   b.Remain,
 			ExpireAt: balanceExpireAt(b.ExpireAt),
 			Key:      b.PlanID,
+			// Usable=true：它是账号真实可用的额度；
+			// ⚠️ InfoOnly=true：它**不是积分**（计量单位是 token），不得进 Summarize 小计、
+			// 不得参与临期判定与 ledger 差分 —— 否则上亿 token 会污染积分口径
+			// （2026-10-17 修正，与 gemini 的配额窗口同一口径）。
 			Usable:   true,
+			InfoOnly: true,
 		})
 	}
 	// preview：失败一律降级为空（余额是主体，preview 是补充）。
@@ -430,15 +441,6 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		})
 	}
 	return remain, items, nil
-}
-
-// remaining 汇总可消耗额度：`available_units ?? remaining_units`（协议 §1.7.1）。
-func (r balanceResult) remaining() int64 {
-	var sum int64
-	for _, b := range r.Buckets {
-		sum += b.Remain
-	}
-	return sum
 }
 
 // balanceExpireAt 把 Unix 秒转成 provider.ResourceItem.ExpireAt 约定的**日期串**

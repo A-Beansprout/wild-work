@@ -667,12 +667,14 @@ func TestBillingParsing(t *testing.T) {
 
 	c := NewWithBase(srv.URL)
 	a := testAuth(nil)
+	// ⚠️ 2026-10-17 修正：UserResource 恒 0 —— 本渠道额度计量单位是 **token**，不是积分；
+	// 把 Σ token 当余额返回会污染 pool 选号与积分统计（用户实测报告）。
 	remain, err := c.UserResource(a)
 	if err != nil {
 		t.Fatalf("UserResource: %v", err)
 	}
-	if remain != 94539275 {
-		t.Errorf("remain = %d，期望 94539275（available_units 优先）", remain)
+	if remain != 0 {
+		t.Errorf("remain = %d，期望 0（token 桶不是积分）", remain)
 	}
 	_, items, err := c.UserResourceDetail(a)
 	if err != nil {
@@ -691,8 +693,10 @@ func TestBillingParsing(t *testing.T) {
 	if bal.Key != "plan-a" {
 		t.Errorf("桶 Key 应为 plan_id：%q", bal.Key)
 	}
-	if !bal.Usable || bal.InfoOnly {
-		t.Errorf("余额桶应可消耗且非 InfoOnly：%+v", bal)
+	// ⚠️ 2026-10-17 修正：token 桶**必须 InfoOnly**（它不是积分）。
+	// 旧断言要求「非 InfoOnly」，正是「上亿 token 被当成积分污染统计」的根源。
+	if !bal.Usable || !bal.InfoOnly {
+		t.Errorf("token 桶应 可展示(Usable) 且 InfoOnly（token 不是积分）：%+v", bal)
 	}
 	if bal.ExpireAt != "2030-01-01" {
 		t.Errorf("ExpireAt = %q，期望 UTC+8 墙钟日期 2030-01-01", bal.ExpireAt)
@@ -704,10 +708,11 @@ func TestBillingParsing(t *testing.T) {
 	if plan.Total != 100000000 {
 		t.Errorf("可领额度应取 entitlements[0].grant_units：%+v", plan)
 	}
-	// InfoOnly 条目不进可消耗小计（否则会把「领不到的额度」算进余额）。
+	// InfoOnly 条目不进任何小计：token 桶与可领计划都不得算进「可消耗积分」，
+	// 否则上亿 token 会污染积分口径（2026-10-17 修正）。
 	usable, unusable := provider.Summarize(items)
-	if usable != 94539275 || unusable != 0 {
-		t.Errorf("Summarize = (%d,%d)，期望 (94539275,0)", usable, unusable)
+	if usable != 0 || unusable != 0 {
+		t.Errorf("Summarize = (%d,%d)，期望 (0,0)（token 不是积分）", usable, unusable)
 	}
 }
 
@@ -741,7 +746,9 @@ func TestBillingErrorIsTyped(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewWithBase(srv.URL)
-	_, err := c.UserResource(testAuth(nil))
+	// 用 UserResourceDetail 验证 401 分类：UserResource 自 2026-10-17 起恒 0 且**不发请求**
+	// （token 不是积分），401 的自愈判据由仍在请求上游的明细路径承担。
+	_, _, err := c.UserResourceDetail(testAuth(nil))
 	var pe *provider.Error
 	if !errors.As(err, &pe) || pe.Kind != provider.ErrSessionDead {
 		t.Fatalf("401 必须是 *provider.Error{ErrSessionDead}（不变式 19 的自愈判据），实际 %v", err)

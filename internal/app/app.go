@@ -387,11 +387,14 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 //
 // 两种成因不同，但 UI 处理一致：
 //   - oczen / kilo：免密免费池，根本没有账号/余额概念；
+//   - zcode：额度计量单位是 **token**（不是积分）⇒ 标量积分恒 0，「不适用」比「0」准确；
+//     token 桶仍在明细里以 InfoOnly 条目展示（不进任何积分算术）。
 //   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
 //     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
 //   - 自定义渠道（R66）：无积分与额度接口，同样走 NA。
 func (a *App) creditsNAKind(group string) bool {
-	if group == provider.Oczen.String() || group == provider.Kilo.String() || group == provider.Cline.String() {
+	if group == provider.Oczen.String() || group == provider.Kilo.String() ||
+		group == provider.ZCode.String() || group == provider.Cline.String() {
 		return true
 	}
 	return a.isCustomChannel(group)
@@ -2014,6 +2017,11 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		// 免密免费池同样没有积分概念（面板显示「不适用」）。
 		return 0, fmt.Errorf("Kilo 免费池无积分，不适用")
 	}
+	if rt.Kind == provider.ZCode {
+		// ZCode 的额度以 **token** 计量、不是积分：这里必须明确拒绝，
+		// 否则「刷新积分」会回一个看起来像积分的 token 数（2026-10-17 修正）。
+		return 0, fmt.Errorf("ZCode 的额度以 token 计量、不是积分，不适用")
+	}
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
 	usable, expiring, unusable, err := a.creditTotals(rt, au)
 	if err != nil {
@@ -2044,8 +2052,9 @@ func (a *App) RefreshAll() RefreshSummary {
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Alias {
 			continue
 		}
-		// oczen 与 kilo 都无积分可刷：纳入只会产生一条无意义的「无积分」失败记录。
-		if rt.Kind == provider.Oczen || rt.Kind == provider.Kilo {
+		// oczen / kilo / zcode 都无「积分」可刷：纳入只会产生一条无意义的失败记录
+		// （zcode 的额度以 token 计量、不是积分）。
+		if rt.Kind == provider.Oczen || rt.Kind == provider.Kilo || rt.Kind == provider.ZCode {
 			continue
 		}
 		ps := PlatformSummary{Accounts: []AccountRefresh{}}
