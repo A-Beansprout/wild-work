@@ -81,6 +81,12 @@ type Config struct {
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
 
+	// HardCooldownFor 硬冷却（402 余额/权益不足）时长的计算钩子：nil 时恒用
+	// HardCooldown。非 nil 时由装配层注入「截到每日发奖窗口」策略（见
+	// config.HardCooldownFor）——放在钩子里而不是 server 直接依赖 config，
+	// 是因为 server 包只依赖 provider/pool/ledger，不引入配置层。
+	HardCooldownFor func(now time.Time) time.Duration
+
 	// ModelFallbacks 模型降级链初始值（面板保存后经 SetModelFallbacks 热更新）。
 	ModelFallbacks []config.ModelFallbackRule
 
@@ -662,9 +668,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 402（权益不足）例外：账号本身健康，同号其他模型照常可用，只冷却「账号×该模型」
 				// ——下一次请求挑号阶段即「模型全冷」，自动触发降级链顶替；本次仍原文透传。
 				if kind == provider.ErrHardCredit {
-					rt.Pool.CooldownModel(acct.UID, model, h.cfg.HardCooldown, "402 权益不足")
+					rt.Pool.CooldownModel(acct.UID, model, h.hardCooldown(), "402 权益不足")
 					log.Printf("model cooldown (single-account 402) platform=%s uid=%s model=%s cooldown=%s",
-						rt.Kind, acct.UID, model, h.cfg.HardCooldown)
+						rt.Kind, acct.UID, model, h.hardCooldown())
 				}
 				// 日志点明错误性质与上游原文：旧文案（「不罚账号」）会让用户看到 403 时
 				// 误以为「工具把这个错误当成了请求级问题」，掩盖了真实原因（issue #117）。
@@ -675,7 +681,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			switch kind {
 			case provider.ErrHardCredit:
-				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
+				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.hardCooldown(), "余额/权益不足")
 			case provider.ErrSoftRate:
 				// 429/6004 上游按模型限额（「您也可以切换其他模型继续使用」）：
 				// 只冷却该账号的该模型，同号其他模型继续参与选号；
@@ -799,14 +805,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 							// 单号渠道：余额/权益不足透传原文，客户端/用户直接看到真实原因（如充值），
 							// 而不是被 503 掩盖成「渠道不可用」。账号本身不动，仅冷却「账号×该模型」，
 							// 下一次请求挑号即「模型全冷」，自动走降级链顶替。
-							rt.Pool.CooldownModel(acct.UID, model, h.cfg.HardCooldown, "stream 402 权益不足")
+							rt.Pool.CooldownModel(acct.UID, model, h.hardCooldown(), "stream 402 权益不足")
 							log.Printf("stream error model-cooldown platform=%s uid=%s model=%s kind=%s（单号渠道仅冷却该模型，原文透传）",
 								rt.Kind, acct.UID, model, kind)
 							break
 						}
-						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "stream business error: "+serr.Error())
+						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.hardCooldown(), "stream business error: "+serr.Error())
 						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
-							rt.Kind, acct.UID, kind, h.cfg.HardCooldown)
+							rt.Kind, acct.UID, kind, h.hardCooldown())
 					case provider.ErrSessionDead:
 						rt.Pool.Disable(acct.UID, "stream business error: session dead")
 						log.Printf("stream error disabled platform=%s uid=%s", rt.Kind, acct.UID)
@@ -825,9 +831,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 下一次请求挑号即「模型全冷」，自动走降级链顶替；本次仍返回错误。
 			var asec provider.StreamErrorClassifier
 			if errors.As(err, &asec) && asec.Kind() == provider.ErrHardCredit {
-				rt.Pool.CooldownModel(acct.UID, model, h.cfg.HardCooldown, "402 权益不足")
+				rt.Pool.CooldownModel(acct.UID, model, h.hardCooldown(), "402 权益不足")
 				log.Printf("model cooldown (aggregate 402) platform=%s uid=%s model=%s cooldown=%s",
-					rt.Kind, acct.UID, model, h.cfg.HardCooldown)
+					rt.Kind, acct.UID, model, h.hardCooldown())
 			}
 			statRow.Status = http.StatusBadGateway
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
@@ -1386,6 +1392,19 @@ const softRateResetMaxCap = 24 * time.Hour
 // 按重置点解封，60s 软冷却过期后账号会被反复选中反复 429。解析失败/时长为非正值时
 // 回退默认 SoftCooldown。时间戳按 UTC+8 墙钟解析，与到期字段口径一致（AGENTS §6.18）。
 // 已知形态「2026-09-23 14:47:19」可能带「UTC+8」后缀，解析前剥掉。
+// hardCooldown 本次硬冷却（402 余额/权益不足）应持续多久。
+// 默认恒为 HardCooldown；装配层注入 HardCooldownFor 时按其计算（当前策略：
+// 截到下一个每日发奖窗口，见 config.HardCooldownFor）——qwenwork 每日 00:00
+// UTC+8 自动发额度，固定 12h 会把 19:07 的 402 锁到次日 07:07，白锁 7 小时。
+func (h *Handler) hardCooldown() time.Duration {
+	if h.cfg.HardCooldownFor != nil {
+		if d := h.cfg.HardCooldownFor(time.Now()); d > 0 {
+			return d
+		}
+	}
+	return h.cfg.HardCooldown
+}
+
 func (h *Handler) softRateCooldown(body string) time.Duration {
 	ts, ok := softRateResetTs(body)
 	if !ok {
