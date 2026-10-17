@@ -29,6 +29,7 @@ import (
 	logingemini "wild-work/internal/login_gemini"
 	"wild-work/internal/login_glm"
 	loginlobsterai "wild-work/internal/login_lobsterai"
+	loginloomy "wild-work/internal/login_loomy"
 	loginminimax "wild-work/internal/login_minimax"
 	loginqoder "wild-work/internal/login_qoder"
 	loginqodercn "wild-work/internal/login_qodercn"
@@ -462,16 +463,20 @@ func (a *App) SetCustomChannelsSyncer(fn func(channels []custom.ChannelConfig)) 
 // QoderCN/QoderCOM 已实现 campaigns 签到，支持手动按钮（上游同一套机制）。
 // 智谱清言已实现 activity-api 每日签到，支持手动按钮。
 // 小浣熊已实现 setting_info 触发每日积分落账（见 internal/raccoon/checkin.go，R65），支持手动按钮。
-// MonkeyCode 一期也不提供手动签到：上游未提供额度或签到端点。
-// Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
+// MonkeyCode 已实现签到（POST {console}/api/v1/users/wallet/checkin，见 internal/monkeycode/checkin.go），
+// 支持手动按钮并参与批量签到 —— 故**不在**本名单内（2026-10-17 起，此前误列为「无签到」）。
+// Loomy 已实现签到（宠物每日打工奖励，POST /api/v1/pet-work/rewards，0~1000 分），
+// 支持手动按钮并参与批量签到 —— 故**不在**本名单内（2026-10-17 接线完成）。
+// ⚠️ 它的判据是该账号当日**有效对话轮次**（由上游计算，见 internal/loomy/checkin.go 文件头）：
+// 本工具是 API 网关、不产生轮次归属，故未在官方客户端用过该账号时，领取结果是
+// 「未达档位」（可重试 error），**不是**「无活动」——这是如实状态，不是缺陷。
 // Cline 走官方 API Key：无签到活动、Key 不过期 ⇒ 既不需手动签到也不需保活。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
 // Kilo 免费池同为免密渠道：无账号、无签到、无积分。
-// noExplicitCheckin 不支持显式签到（手动按钮）的渠道。
 // 自定义渠道无签到活动（R66）；内建名单固定，故抽成无状态的包级函数（可脱离 App 断言），
 // 方法体仅补上「是否自定义渠道」这一动态判定。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Kilo || k == provider.ZCode || k == provider.Gemini || k == provider.Cline
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.Oczen || k == provider.Kilo || k == provider.ZCode || k == provider.Gemini || k == provider.Cline
 }
 
 func (a *App) noExplicitCheckinKind(k provider.Kind) bool {
@@ -635,8 +640,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		// 经 CDP 捕获 Cookie 里的 refresh_token 并换取凭据（见 internal/login_raccoon/web.go）。
 		// 面板同时保留「从本机客户端导入」作为替代路径。
 	case provider.Loomy:
-		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
-		return "", fmt.Errorf("%s 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）", k)
+		// Loomy：浏览器登录 —— 起一个 127.0.0.1 的本机登录引导页（手机号 + 短信验证码换 session，
+		// 见 internal/login_loomy）。上游没有 OAuth 授权页，登录入口是讯飞账号服务的短信验证码
+		// 接口（HMAC-SHA1 签名），故由本工具代发短信、代换 session。
+		// 面板同时保留「从本机客户端导入」作为替代路径（internal/app/import_local.go）。
 	case provider.Oczen:
 		// 匿名通道无账号可登（凭证固定为 public，启动时已注入虚拟账号）
 		return "", errors.New("OpenCodeZen 为匿名通道，无需也无法添加账号")
@@ -684,6 +691,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.loginClient = logincodearts.NewClient()
 	case provider.Raccoon:
 		// 网页版登录靠 CDP，不用 HTTP client；置 nil 即可（pollLogin 里也不再用它）。
+	case provider.Loomy:
+		a.loginClient = loginloomy.NewClient()
 	default:
 		a.loginClient = login.NewClient()
 	}
@@ -708,6 +717,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
 	case provider.Raccoon:
 		// 网页版登录：拉起独立 profile 的浏览器并返回登录页地址（跨平台，无需注册表/客户端）。
+	case provider.Loomy:
+		// 浏览器登录：起本机登录引导页并**立即**返回其地址（前端 window.open 只在用户
+		// 点击后的短暂窗口内有效），用户在里面完成短信验证码登录后由 pollLogin 收尾。
+		authURL, err = loginloomy.Start(a.loginClient, a.loginStateFP)
 		authURL, err = loginraccoon.Start()
 	case provider.Minimax:
 		// 设备码 + PKCE：Start **立即**返回授权链接（前端 window.open 只在用户点击后的
@@ -815,6 +828,12 @@ func (a *App) CancelLogin() error {
 	if kind == provider.Raccoon {
 		loginraccoon.Shutdown()
 	}
+	// Loomy 登录引导页占着 127.0.0.1 的随机端口，取消时一并关闭（幂等）。
+	// ⚠️ 必须与上面平铺在同一层：曾经被误插进 Raccoon 的 if 块里，于是只有
+	// 「取消小浣熊登录」时才会执行到，取消 Loomy 时引导页不关（端口/页面残留）。
+	if kind == provider.Loomy {
+		loginloomy.Shutdown()
+	}
 	log.Printf("登录已取消")
 	return nil
 }
@@ -832,6 +851,10 @@ func (a *App) pollLogin(ctx context.Context) {
 		}
 		// LobsterAI 与 Raccoon 同属「持有本机资源」的登录：它起的是 127.0.0.1 上的
 		// 回调监听端口，故无论成功、失败、超时、取消还是 panic，都必须关掉（Shutdown 幂等）。
+		// Loomy 的登录引导页同样持有 127.0.0.1 监听端口，必须一并关闭。
+		if a.loginKind == provider.Loomy {
+			loginloomy.Shutdown()
+		}
 		if a.loginKind == provider.LobsterAI {
 			loginlobsterai.Shutdown()
 		}
@@ -983,6 +1006,21 @@ func (a *App) pollLogin(ctx context.Context) {
 			}
 			continue
 		}
+		if a.loginKind == provider.Loomy {
+			r, err := loginloomy.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeLoomyLogin(r)
+				return
+			}
+			if !errors.Is(err, loginloomy.ErrPending) {
+				// 终态错误（下发验证码失败 / 引导页起不来）：立即结束轮询，
+				// 由 defer 关闭引导页；继续轮询只会重复报同一个错。
+				log.Printf("loomy login poll failed: %v", err)
+				a.setLoginError("登录失败：" + err.Error())
+				return
+			}
+			continue
+		}
 		if a.loginKind == provider.Raccoon {
 			r, err := loginraccoon.Poll()
 			if err == nil {
@@ -1073,6 +1111,81 @@ func (a *App) firstCheckinRaccoon(uid string) {
 }
 
 // completeLogin 登录成功：写 auth 文件、重载账号池，异步签到。
+// completeLoomyLogin Loomy 浏览器登录（短信验证码）成功后的收尾。
+//
+// 凭据形态与「从本机客户端导入」（import_local.go 的 importLoomy）**完全一致** ——
+// 两者拿到的是同一个上游 session，只是来源不同：
+//   - uid 优先取上游 userid，缺失时由 login_loomy 从前缀派生（账号池需要稳定去重标识）；
+//   - domain/apiHost 对齐 internal/loomy 的调用前缀；
+//   - refreshToken 留空：Loomy **没有任何 refresh 端点**，session 约 14 天到期后
+//     只能重新登录（或重新从客户端导入）。留空还能让 scheduler 跳过必然失败的保活。
+//
+// 刻意**不**做登录即签到：internal/loomy 没有签到端点（见 noExplicitCheckin 的说明），
+// 硬加一次请求只会产生一条无意义的失败流水。
+func (a *App) completeLoomyLogin(r loginloomy.Result) {
+	uid := strings.TrimSpace(r.UID)
+	if uid == "" {
+		// login_loomy 已保证非空（上游缺 userid 时会派生）；这里是防御，
+		// 避免把半成品凭据写成 loomy-default.json 污染账号池。
+		log.Printf("loomy 登录失败：缺少账号标识（上游未下发 userid）")
+		a.finishLogin()
+		return
+	}
+	// LogFields 只含 uid / 脱敏手机号 / 到期时刻，**不含 token**（零 token 落盘红线）。
+	log.Printf("loomy 登录成功 %s", r.LogFields())
+	doc := authDoc{
+		Auth: authSection{
+			AccessToken: r.AccessToken,
+			// 留空：Loomy 无 refresh 端点（与 importLoomy 同口径）。
+			RefreshToken: "",
+			ExpiresAt:    r.ExpiresAt,
+			Domain:       r.Domain,
+			ApiHost:      r.ApiHost,
+		},
+		Account: accountSection{
+			UID:      uid,
+			Nickname: r.Nickname,
+		},
+	}
+	fp, err := a.writeAuthFile("loomy", uid, doc)
+	if err != nil {
+		log.Printf("loomy 登录失败：写凭据出错 uid=%s err=%v", uid, err)
+		a.finishLogin()
+		return
+	}
+	log.Printf("loomy 登录成功，凭据已落盘 uid=%s file=%s", uid, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.Loomy)
+	// 登录后立即领一次宠物打工奖励：此时凭据刚拿到，若该账号今天在官方客户端已有
+	// 有效对话轮次，这一步就能把已达档位的奖励领掉，不必等到下一个签到时刻。
+	// 与 raccoon 同款（firstCheckinRaccoon）：**走调度器**，领到的积分才会进流水账；
+	// 失败只记日志，不影响「登录成功」这个主结果。
+	a.safeGo(func() { a.firstCheckinLoomy(uid) })
+}
+
+// firstCheckinLoomy 新账号首次签到（领宠物打工奖励）+ 积分兜底。
+//
+// 与 firstCheckinRaccoon 同形：走调度器的 CheckinAccount，因而领到的积分会经
+// Ledger.RecordCheckinEarn 进流水；随后独立刷一次余额，保证新账号首屏数字正确。
+// 幂等：未达档位时上游返回 granted=false，不会重复发放。
+func (a *App) firstCheckinLoomy(uid string) {
+	rt := a.runtime(provider.Loomy)
+	if rt == nil || rt.Scheduler == nil {
+		return
+	}
+	if res, err := rt.Scheduler.CheckinAccount(uid); err != nil {
+		log.Printf("loomy 新账号签到失败 %s: %v", uid, err)
+	} else {
+		log.Printf("loomy 新账号签到完成 %s：%s", uid, res.Msg)
+	}
+	// 积分兜底：签到路径失败（余额查询失败/未达档位）时 pool 内 credits 仍为 0，
+	// 独立刷一次保证新账号首屏正确（幂等：多刷无害；Loomy 已在积分自动刷新名单里）。
+	if _, err := a.RefreshCredits(uid); err != nil {
+		log.Printf("loomy 新账号积分兜底失败 %s: %v", uid, err)
+	}
+}
+
 func (a *App) completeLogin(r login.Result) {
 	log.Printf("workbuddy 登录成功 uid=%s nickname=%s expires_in=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresIn, r.RefreshToken != "")
 	fp, err := login.SaveAuth(a.cfg.AuthDir, r)
@@ -1522,13 +1635,23 @@ func (a *App) CancelGLMAutoLogin() error {
 
 // StartOfficeAceLogin 发起 OfficeAce 自助登录（华为云 OAuth 授权码 + PKCE + DPoP）。
 // 返回待打开的授权 URL；后台轮询完成登录并落盘。前端轮询 GetOfficeAceLoginStatus。
+// StartOfficeAceLogin 发起 OfficeAce 自助登录（华为云 OAuth 授权码 + PKCE + DPoP）。
+// 返回待打开的授权 URL；后台轮询完成登录并落盘。前端轮询 GetOfficeAceLoginStatus。
+//
+// 并发约定（2026-10-17 修）：只有「进行中」的会话才拒绝新请求；已进入终态的旧会话
+// 必须**先清空再解锁**，否则并发的状态轮询会读到上一轮的 done/failed，把用户新点的
+// 「新增账号」直接顶成旧终态（表现为「点了没反应」）。
 func (a *App) StartOfficeAceLogin() (string, error) {
 	a.muOALogin.Lock()
-	defer a.muOALogin.Unlock()
 	if a.oaLogin != nil {
-		if st, _ := a.oaLogin.Status(); st == "pending" || st == "exchanging" {
-			return a.oaLogin.URL(), errors.New("已有 OfficeAce 登录流程进行中，请先在浏览器完成登录或取消")
+		if st, _ := a.oaLogin.Status(); oaLoginActive(st) {
+			url := a.oaLogin.URL()
+			a.muOALogin.Unlock()
+			return url, errors.New("已有 OfficeAce 登录流程进行中，请先完成或取消")
 		}
+		// 上一轮已到终态：清空，让本次新建的会话立刻成为唯一可见状态。
+		// 刻意在上锁期间清空 —— 否则并发的 GetOfficeAceLoginStatus 会读到旧会话。
+		a.oaLogin = nil
 	}
 	sess, err := officeace.StartLogin(a.cfg.AuthDir, func(r officeace.LoginResult) {
 		a.reloadAccounts()
@@ -1536,30 +1659,45 @@ func (a *App) StartOfficeAceLogin() (string, error) {
 		log.Printf("officeace 自助登录完成，账号池已重载 uid=%s", r.UID)
 	})
 	if err != nil {
+		a.muOALogin.Unlock()
 		return "", err
 	}
 	a.oaLogin = sess
-	// 尝试用系统浏览器打开授权页（失败不阻断：URL 已返回给前端，可手动打开）。
-	_ = sess.OpenInBrowser()
-	return sess.URL(), nil
+	url := sess.URL()
+	a.muOALogin.Unlock()
+
+	// 尝试用系统浏览器打开授权页。失败**不阻断**登录：URL 已返回给前端，
+	// 用户可点「复制链接」手动打开（见 app.js 的 warning 分支）。
+	// 注意：必须放在解锁之后 —— 拉起浏览器是同步的系统调用，持锁期间调用会把
+	// 并发的状态轮询全部堵住（表现为面板卡住）。
+	if err := sess.OpenInBrowser(); err != nil {
+		log.Printf("officeace 自助登录：无法自动打开浏览器，请手动复制链接打开：%v", err)
+		return url, fmt.Errorf("无法自动打开浏览器，请点「复制链接」手动打开授权页：%w", err)
+	}
+	return url, nil
 }
 
 // GetOfficeAceLoginStatus 查询 OfficeAce 自助登录状态。
-func (a *App) GetOfficeAceLoginStatus() map[string]any {
+// GetOfficeAceLoginStatus 查询 OfficeAce 自助登录状态。
+func (a *App) GetOfficeAceLoginStatus() officeAceLoginStatus {
 	a.muOALogin.Lock()
 	sess := a.oaLogin
 	a.muOALogin.Unlock()
 	if sess == nil {
-		return map[string]any{"status": "idle"}
+		return officeAceLoginStatus{Status: "idle"}
 	}
 	status, err := sess.Status()
-	out := map[string]any{"status": status}
+	out := officeAceLoginStatus{Status: status}
+	if status == "" {
+		// 会话刚建立、run() 还没写首个状态：按「进行中」上报，避免前端误判成空闲。
+		out.Status = "pending"
+	}
 	if err != nil {
-		out["error"] = err.Error()
+		out.Error = err.Error()
 	}
 	if r, ok := sess.Result(); ok {
-		out["uid"] = r.UID
-		out["nickname"] = r.Nickname
+		out.UID = r.UID
+		out.Nickname = r.Nickname
 	}
 	return out
 }
@@ -1575,6 +1713,27 @@ func (a *App) CancelOfficeAceLogin() error {
 	sess.Cancel()
 	return nil
 }
+
+// officeAceLoginStatus OfficeAce 自助登录状态（**单一来源**：前端读的字段名以此为准）。
+//
+// 字段契约（app.js 的 startOfficeAcePoll 依赖它）：
+//	status: pending | exchanging | done | failed | expired | canceled | idle
+//	可选 error / uid / nickname / warning
+//
+// 历史：这里原先返回 map[string]any，字段名靠手写字符串维护 —— 改一个拼写前端就静默读不到
+// （表现为「永远转圈」）。改成结构体后由 json 标签约束，并有静态断言测试锁死。
+type officeAceLoginStatus struct {
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	UID      string `json:"uid,omitempty"`
+	Nickname string `json:"nickname,omitempty"`
+	AuthURL  string `json:"auth_url,omitempty"`
+	Warning  string `json:"warning,omitempty"`
+}
+
+// oaLoginActive 该状态是否表示「流程进行中」（此时不允许再起一条）。
+func oaLoginActive(st string) bool { return st == "pending" || st == "exchanging" }
+
 
 // completeQwenWorkLogin 登录成功：写 auth 文件、重载账号池。
 // 千问办公无签到活动（每日积分服务端被动发放），不做首次签到。

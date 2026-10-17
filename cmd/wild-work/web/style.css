@@ -540,6 +540,12 @@ body {
   font-size: 13px; line-height: 1; padding: 0;
 }
 .credit-tip .detail-close:hover { color: var(--danger); border-color: var(--danger); background: #fef2f2; }
+/* 空明细 / 接口失败时的可见提示：替代「点了完全没反应」的静默失败。
+   必须留在浮窗里（贴用户刚点的位置），不依赖会自己消失的 toast。 */
+.credit-tip .detail-empty {
+  color: var(--muted); line-height: 1.6; padding: 6px 2px 10px;
+  word-break: break-word;
+}
 /* 积分标签变成点击入口：给出可点暗示 */
 .acct-card .acct-credits.clickable { cursor: pointer; }
 .acct-card .acct-credits.clickable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }

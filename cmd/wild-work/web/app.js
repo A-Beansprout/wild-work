@@ -169,7 +169,7 @@ function renderModelSearch(q) {
       const eff = (m.reasoning_efforts && m.reasoning_efforts.length)
         ? `<span class="ms-eff" title="思考档位：${esc(m.reasoning_efforts.join("·"))}${m.default_reasoning_effort ? `（默认 ${m.default_reasoning_effort}）` : ""}">${esc(m.reasoning_efforts.join("·"))}</span>` : "";
       const ctx = (m.has_context && m.context_window)
-        ? `<span title="上下文窗口：${esc(fmtTokens(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokens(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
+        ? `<span title="上下文窗口：${esc(fmtTokensCompact(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokensCompact(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
       const rate = m.free ? "Free" : (m.priced ? `x${m.rate.toFixed(2)}` : "unknown");
       return `<div class="ms-row" data-mid="${esc(full)}" role="button" tabindex="0" title="点击复制完整模型 ID：${esc(full)}">`
         + `<span class="badge ${chClass(ch)}">${esc(chLabel(ch))}</span>`
@@ -234,7 +234,9 @@ function bindCreditDetailDismiss() {
 }
 
 async function showCreditDetail(e, uid) {
-  const el = e.currentTarget;
+  // e（内联 onclick 传入的 event）刻意只作占位：浮窗位置由 CSS 固定（水平居中、距顶 12vh），
+  // 不需要锚定元素。**不要**在这里取 `e.currentTarget` —— 它在下面第一个 `await` 之后恒为
+  // null（事件派发早已结束），留着只会误导后来者（2026-10-17 清理掉一处这样的死代码）。
   const seq = ++detailOpenSeq; // 本次打开的身份；被更晚的打开或关闭动作作废时不再上屏
 
   // 切换到另一个账号时重置页码；同一账号重复点击保留原页码。
@@ -248,9 +250,23 @@ async function showCreditDetail(e, uid) {
       if (seq !== detailOpenSeq) return;
       detailCache[uid] = d;
       syncCreditsFromDetail(uid, d);
-    } catch (err) { return; }
+    } catch (err) {
+      // 不再静默 return：接口失败以前什么都不显示，用户完全不知道发生了什么事。
+      // 后端对 oczen / kilo / 自定义渠道直接 400（「无积分，不适用」），其余是网络/
+      // 上游错误——两类都必须把原因摆到用户面前（浮窗 + toast 双通道：
+      // 浮窗贴在被点的位置、常驻；toast 兜住浮窗可能被下一次点击关掉的情形）。
+      if (seq !== detailOpenSeq) return;
+      const msg = (err && err.message) ? err.message : "积分明细获取失败";
+      renderCreditTipNotice(msg);
+      toast(`积分明细获取失败：${msg}`);
+      return;
+    }
   }
-  if (!d || !d.items || !d.items.length) return;
+  // 同理：请求成功但一件明细都没有（渠道没下发条目）也必须给出可见解释，不再静默返回。
+  if (!d || !d.items || !d.items.length) {
+    renderCreditTipNotice("该账号暂无可展示的积分明细（上游未下发条目）。");
+    return;
+  }
 
   let tip = $("creditTip");
   if (!tip) {
@@ -262,7 +278,6 @@ async function showCreditDetail(e, uid) {
 
   // 位置由 CSS 固定（水平居中、距顶 12vh）：不再跟着被点卡片算 left/top，
   // 这样后台重渲染、滚动都不会让浮窗跑偏，也避免窄屏越界。
-  void el;
   detailState = { uid, page };
   renderCreditDetail();
   tip.style.display = "block";
@@ -286,12 +301,38 @@ function syncCreditsFromDetail(uid, d) {
   renderSummary();
 }
 
+// renderCreditTipNotice 在浮窗里显示一条可见提示（替代「静默什么都不发生」）。
+// 为什么必须用浮窗而不用 toast：toast 3 秒后消失且位置在页面底部，用户点的是卡片上的
+// 某个数字，反馈必须出现在「他刚点的那个地方」，否则容易被当成没反应。
+// 提示条沿用浮窗壳子（关闭按钮/点外部/Esc 全部照常），只是正文换成一行说明。
+function renderCreditTipNotice(msg) {
+  let tip = $("creditTip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "creditTip";
+    tip.className = "credit-tip";
+    document.body.appendChild(tip);
+  }
+  tip.innerHTML = `<div class="detail-head">`
+    + `<span class="detail-count"></span>`
+    + `<span class="detail-pager"></span>`
+    + `<span class="detail-title">积分明细</span>`
+    + `<button type="button" class="detail-close" data-close-credit-tip="1" title="关闭" aria-label="关闭积分明细">✕</button>`
+    + `</div><div class="detail-empty">${esc(msg)}</div>`;
+  tip.style.display = "block";
+}
+
 // renderCreditDetail 按 detailState 重绘 tooltip（含分页控件与可用/不可用小计）。
 function renderCreditDetail() {
   const tip = $("creditTip");
   if (!tip || !detailState) return;
   const d = detailCache[detailState.uid];
-  if (!d || !d.items || !d.items.length) return;
+  // 空明细不能静默 return：此前这里直接返回，用户点了积分数字后浮窗不出现也没有任何解释
+  // （典型：渠道有积分但没有下发条目、或该账号额度桶为空）。改为在浮窗里说明。
+  if (!d || !d.items || !d.items.length) {
+    renderCreditTipNotice("该账号暂无可展示的积分明细（上游未下发条目）。");
+    return;
+  }
 
   const items = d.items.slice();
   // 临期判定与后端 ExpiringWithin 同口径：北京时间墙钟 now + 阈值天数，到期日当天零点前即临期。
@@ -326,7 +367,11 @@ function renderCreditDetail() {
     html += `</span>`;
   }
   // 标题随计量单位切换：token 渠道不叫「积分明细」（避免把 token 数当积分读）。
-  const detailAcct = (state.accounts || []).find((x) => x.uid === uid);
+  // ⚠️ 账号必须由 detailState.uid 取（本函数的单一数据源）：`uid` 是 showCreditDetail 的
+  // **形参**，不在本函数作用域内。此处曾写成 `x.uid === uid` ⇒ ReferenceError: uid is not
+  // defined，抛在下面的 `tip.innerHTML = html` 之前 ⇒ 浮窗 display:block 但内容为空，
+  // 用户看到的就是「点积分数字什么都不出现」（发布级回归，由 scripts/ui-static-check.mjs 锁死）。
+  const detailAcct = (state.accounts || []).find((x) => x.uid === detailState.uid);
   const detailIsToken = !!(detailAcct && detailAcct.credits_unit === "token");
   html += `<span class="detail-title">${detailIsToken ? "Token 额度明细" : "积分明细"}</span>`;
   // 关闭按钮：桌面与触屏共用同一入口（触屏没有 hover，只能靠显式按钮）
@@ -484,10 +529,15 @@ function varyColor(hex, i) {
 }
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
-// 千问办公无签到活动；MonkeyCode 无签到端点；Loomy 无签到端点；OpenCodeZen 与 Kilo 是免密渠道，
+// 千问办公无签到活动；OpenCodeZen 与 Kilo 是免密渠道，
 // 无账号概念（也无积分）。
 // 小浣熊已实现签到（setting_info 触发每日积分落账，见 internal/raccoon/checkin.go），支持手动按钮。
-const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "loomy", "oczen", "kilo", "zcode", "gemini", "cline"]);
+// MonkeyCode 已实现签到（POST {console}/api/v1/users/wallet/checkin，见 internal/monkeycode/checkin.go），
+// 故**不在**本名单内：它要有手动按钮，也要参与批量签到。
+// Loomy 同样已实现签到（宠物每日打工奖励，见 internal/loomy/checkin.go），故也在名单外。
+// 注意：Loomy 的奖励判据是「当日有效对话轮次」（上游算），未在官方客户端用过该账号时
+// 领取结果会是「未达档位」——那是如实状态，不是按钮坏了。
+const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "oczen", "kilo", "zcode", "gemini", "cline"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g) || isCustomGroup(g); // 自定义渠道无签到活动（R66）
 // isCustomGroup 该分组是否为用户自定义 OpenAI 兼容渠道（R66）。
 // 以 state.custom_channels（后端 /api/state 下发，保存即热更新）为准，勿在前端另维护一份。
@@ -500,7 +550,10 @@ const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 // 支持「网页版自动登录」的渠道：后端拉起独立 profile 的浏览器，用户在网页里登录，
 // 后端经 CDP 捕获凭据（小浣熊：Cookie 里的 xhx_token）。
 // 小浣熊两个集合都命中 —— 弹窗里同时给「网页版登录」与「从客户端导入」两个动作。
-const WEB_LOGIN_CHANNELS = new Set(["raccoon"]);
+// Loomy 也两个集合都命中，但机制不同：**不**拉浏览器、**不**用 CDP 捕获，而是起一个
+// 127.0.0.1 的本机登录引导页（手机号 + 短信验证码），由前端 window.open 打开
+// （见 internal/login_loomy）。故文案需按渠道区分，不能套用小浣熊那段。
+const WEB_LOGIN_CHANNELS = new Set(["raccoon", "loomy"]);
 const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
 // 粘贴凭据型渠道：没有浏览器登录编排，凭据由用户从官方站点自行创建后粘贴进来。
 // Cline：app.cline.bot → 注册账号 → Account / API Keys 建 sk_ Key（见 internal/cline）。
@@ -880,7 +933,7 @@ function renderFees(fees) {
     if (!m || !m.has_context || !m.context_window) return "";
     const hand = m.hand_measured ? "*" : "";
     const src = m.hand_measured ? "本工具实测值（仅供参考，非上游官方声明）" : "上游接口返回";
-    return ` <span class="ctx-tag${m.hand_measured ? " hand" : ""}" title="上下文窗口：${fmtTokens(m.context_window)} tokens（${src}）">(${fmtTokens(m.context_window)}${hand})</span>`;
+    return ` <span class="ctx-tag${m.hand_measured ? " hand" : ""}" title="上下文窗口：${fmtTokensCompact(m.context_window)} tokens（${src}）">(${fmtTokensCompact(m.context_window)}${hand})</span>`;
   };
 
   // 能力文字摘要，拼进模型 tooltip。
@@ -906,8 +959,8 @@ function renderFees(fees) {
     const parts = [`模型：${m.model}`];
     if (m.has_context && m.context_window) {
       const src = m.hand_measured ? "（本工具实测，非上游官方值）" : "";
-      parts.push(`上下文窗口：${fmtTokens(m.context_window)}${src}`);
-      if (m.max_tokens) parts.push(`最大输出：${fmtTokens(m.max_tokens)}`);
+      parts.push(`上下文窗口：${fmtTokensCompact(m.context_window)}${src}`);
+      if (m.max_tokens) parts.push(`最大输出：${fmtTokensCompact(m.max_tokens)}`);
     } else {
       parts.push("上下文窗口：未知");
       parts.push("最大输出：未知");
@@ -1038,8 +1091,16 @@ function bindFeesTabs() {
   });
 }
 
-// fmtTokens 把 token 数格式化为 1M / 192k 形式。
-function fmtTokens(n) {
+// fmtTokensCompact 把 token 数格式化为 1M / 192k 紧凑形式。
+//
+// ⚠️ 用途边界（2026-10-17 修「同名函数互相覆盖」后确立）：
+//   - 本函数（k/M）**只**用于「模型元数据」——上下文窗口、最大输出这类上游以
+//     k/M 口径描述的能力值，保持与官方文档一致（131072 -> 131k）。
+//   - **额度 / 用量数字**（账号卡片的 Token 计数、明细单元格、平台表）必须用
+//     `fmtTokens`（万/亿中文单位）—— 那些数字动辄上亿，`94539k` 用户读不出来。
+// 历史：本函数原名 `fmtTokens`，与后面新增的万/亿版**同名**，后者在前、本函数在后，
+// 于是本函数静默覆盖了它 ⇒ Token 卡片显示成 `94539k`。改名以消除覆盖。
+function fmtTokensCompact(n) {
   if (!n) return "-";
   if (n >= 1000000 && n % 1000000 === 0) return `${n / 1000000}M`;
   if (n >= 1000) return `${Math.round(n / 1000)}k`;
@@ -1194,6 +1255,25 @@ function promptLogin(channel) {
   if (hasWebLogin(channel)) {
     pendingAction = "login";
     $("lcTitle").textContent = "添加 " + name + " 账号";
+    if (channel === "loomy") {
+      // Loomy 的机制与小浣熊不同：不拉浏览器、不捕获凭据，而是由本工具起一个本机登录引导页，
+      // 用户在页面里填手机号 + 短信验证码（见 internal/login_loomy）。
+      // 另外它**没有 refresh 端点**，所以不存在「互踢 / 自动续期」那一段说明。
+      $("lcMsg").innerHTML = `点击「登录${name}」会打开一个<b>本机登录页</b>（地址在你的电脑上，不经过本工具的服务器），`
+        + `请在其中输入手机号、接收并填写短信验证码，登录完成后本工具会自动保存账号。`
+        + `<div class="glm-warn" style="margin-top:10px">`
+        + `<div class="glm-warn-title">⚠️ 关于登录有效期</div>`
+        + `Loomy 的登录态<b>约 14 天</b>到期，且上游<b>没有刷新接口</b> —— `
+        + `到期后需要重新点「登录${name}」再登一次，或改用「从客户端导入」重新读取已登录客户端的凭据。`
+        + `</div>`
+        + `也可以改用「从客户端导入」：直接读取本机已登录客户端的凭据。`;
+      $("btnLoginConfirm").textContent = "登录" + name;
+      altBtn.textContent = "从客户端导入";
+      altBtn.classList.remove("hidden");
+      altBtn.onclick = () => { pendingAction = "import"; confirmLogin(); };
+      $("loginConfirmOverlay").classList.remove("hidden");
+      return;
+    }
     $("lcMsg").innerHTML = `点击「登录${name}」会打开一个<b>独立的浏览器窗口</b>（不影响你日常浏览器的登录态），`
       + `请在其中正常登录（扫码 / 手机号 / 微信均可），登录完成后本工具会自动捕获凭据并保存账号。`
       + `<div class="glm-warn" style="margin-top:10px">`
@@ -1307,6 +1387,13 @@ async function startLogin(channel, accountLabel) {
     if (r.backend_opened) {
       $("loginMsg").textContent = `已为你打开一个**无痕窗口**，请在其中完成 ${chLabel(channel)} 登录；`
         + `登录完成后无需任何操作，本工具会自动添加账号。`;
+    } else if (channel === "loomy") {
+      // Loomy 与 ② 相反：后端**不**拉浏览器，返回的是本机登录引导页地址，
+      // 必须由前端 window.open 打开（见 internal/login_loomy）。它也不「捕获凭据」——
+      // 用户在引导页里填手机号 + 短信验证码，后端据此换 session。
+      $("loginMsg").textContent = `已为你打开 Loomy 登录页，请在其中输入手机号并填写短信验证码；`
+        + `登录完成后本工具会自动添加账号。登录态约 14 天后到期，届时需重新登录。`;
+      window.open(url, "_blank", "noopener,noreferrer");
     } else if (hasWebLogin(channel)) {
       $("loginMsg").textContent = `已为你打开一个独立的浏览器窗口，请在其中完成${chLabel(channel)}登录；`
         + `登录完成后无需任何操作，本工具会自动捕获凭据并添加账号。`;
