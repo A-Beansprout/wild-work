@@ -1254,8 +1254,9 @@ func (a *App) StartOfficeAceLogin() (string, error) {
 		return "", err
 	}
 	a.oaLogin = sess
-	// 尝试用系统浏览器打开授权页（失败不阻断：URL 已返回给前端，可手动打开）。
-	_ = sess.OpenInBrowser()
+	// 不在服务端开浏览器：授权页由前端 window.open 在「用户正在使用的设备」打开
+	//（捕获走云端轮询 state→code，与授权页在哪台设备打开无关；服务端弹窗对
+	// 局域网用户不可见，反而造成「点了没反应」的困惑）。前端有复制链接兜底。
 	return sess.URL(), nil
 }
 

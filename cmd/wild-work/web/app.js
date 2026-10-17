@@ -1277,11 +1277,16 @@ async function startOfficeAceWebLogin() {
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = "添加 OfficeAce 账号";
-    $("loginMsg").textContent = "已在浏览器打开华为云授权页，请在其中登录并授权；完成后本工具会自动捕获凭据。"
-      + "若浏览器未自动打开，可点「复制链接」手动打开。";
+    $("loginMsg").textContent = "已在本设备新标签页打开华为云授权页，请在其中登录并授权；"
+      + "完成后本工具会自动捕获凭据（捕获走云端轮询，与在哪台设备打开无关）。"
+      + "若浏览器拦截了弹窗未打开，可点「复制链接」手动打开。";
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
     if (r.warning) toast(r.warning, 6000);
+    // 在用户当前设备打开授权页（与其它渠道一致）；被弹窗拦截时提示走复制链接兜底。
+    if (!window.open(url, "_blank", "noopener,noreferrer")) {
+      toast("浏览器拦截了弹窗，请点「复制链接」手动打开", 6000);
+    }
     startOfficeAcePoll();
   } catch (e) {
     toast(e.message);
@@ -1321,7 +1326,9 @@ function cancelOfficeAceLogin() {
 function copyUrl() {
   const url = $("btnCopyUrl").dataset.url;
   if (!url) { toast("暂无链接"); return; }
-  navigator.clipboard.writeText(url).then(() => toast("链接已复制")).catch(() => toast("复制失败，请手动复制"));
+  // 必须走 copyText：局域网 http:// 是非安全上下文，navigator.clipboard 被浏览器
+  // 直接禁用，需降级 execCommand（与顶栏 API-Key 复制同一 helper）。
+  copyText(url, "链接");
 }
 
 // 登录轮询
