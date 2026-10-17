@@ -533,10 +533,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// agent 读 chunk.model / resp.model 即可感知实际执行模型）。
 	var fbApplied string
 	fbID, primaryAvail := h.pickModelFallback(rt, model)
-	// 口径说明：降级期间 ledger/stats 的 token 流水仍按**客户端请求名**记账（statRow.Model、
-	// AddUsage(clientModel)），因为该面向的口径是「客户端这一发花了多少」；实际执行模型
-	// 由上面的日志行 + 面板「降级记录」区块承担。不改成 dispModel 的另一个理由：
-	// 同渠道备胎（如 glm-5.2 顶 deepseek）会把消耗搬到另一行，历史趋势会失真。
+	// 口径说明：降级期间 ledger/stats 的 token 流水按**实际执行模型**记账
+	// （statRow.Model、AddUsage(acctModel)、ledgerModelOf(acctModel)）——谁实际工作、
+	// 谁实际消耗 token/积分，就记在谁名下（2026-10-16 口径变更，推翻原「按客户端
+	// 请求名记账」设计）。acctModel=记账归属模型（无降级=canonModel；降级=备胎的
+	// 规范对外 ID，归一函数同构，新旧写法仍归同一行）；原请求名→备胎的对照由
+	// 日志行 + 面板「降级记录」区块 + X-Model-Fallback 头/响应 model 字段承担。
+	acctModel := canonModel
 	if fbID != "" {
 		if rt2, m2, err := h.runtimeForModel(fbID); err == nil {
 			log.Printf("model fallback platform=%s from=%s to=%s", rt.Kind, clientModel, fbID)
@@ -544,6 +547,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Model-Fallback", clientModel+" -> "+fbID)
 			rt, model = rt2, m2
 			fbApplied = fbID
+			acctModel = provider.CanonicalModelID(fbID)
 		}
 	}
 	dispModel := clientModel
@@ -575,7 +579,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// TTFB 由 statWriter 记首字节，耗时/吞吐在出口由 defer 收口；
 	// Status 未显式赋值 = 成功写回（200）。
 	var statRow statsEngine.ReqRow
-	statRow.Model = canonModel
+	statRow.Model = acctModel
 	if peek.Stream {
 		statRow.Mode = "流"
 	} else {
@@ -596,12 +600,83 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
+	// 轮转选号 + 上游交互 + 耗尽出口整体平移至 serveRotation（方案 B：轮转耗尽且最后
+	// 错误是积分耗尽时，按降级链当场切备胎、以备胎重入同一轮转段——抽方法使重入=
+	// 再次调用；成功/错误出口与记账 defer 全留在本函数，「一个客户端请求一行」口径
+	// 不变）。serveRotation 保持纯轮转语义；降级状态同步（模型改写/档位注入/记账
+	// 归属/响应头）由本函数在重入前完成，与入口降级完全同构。
+	for fbAttempt := 0; ; fbAttempt++ {
+		res := h.serveRotation(w, sw, rt, model, body, clientModel, dispModel, acctModel, &statRow, peek.Stream)
+		if res.done {
+			return
+		}
+		// 候选耗尽待透传（res.lastStatus>0）：方案 B 判定——只对积分耗尽
+		// （ErrHardCredit：账号刚进 12h 硬冷却，本渠道容量已翻 false，此刻
+		// pickModelFallback 必然命中规则或返回空）；仅重入一次（防备胎再降备胎
+		// 死循环）；单账号渠道豁免（透传是惩罚豁免不变量的设计约束）；此刻未写过
+		// 任何字节（轮转失败路径天然成立——所有写出都发生在成功流式/非流式分支
+		// 内），降级头可安全补发；无规则/备胎无容量 → fb2 为空，维持原样透传，
+		// 与现状一致。
+		if fbAttempt == 0 && res.lastKind == provider.ErrHardCredit && !rt.SingleAccount {
+			if fb2, _ := h.pickModelFallback(rt, model); fb2 != "" {
+				if rt2, m2, err2 := h.runtimeForModel(fb2); err2 == nil {
+					nb, err3 := rewriteModel(body, m2)
+					if err3 == nil {
+						log.Printf("model fallback platform=%s from=%s to=%s", rt.Kind, clientModel, fb2)
+						// 响应头必须在任何 WriteHeader 之前（此刻未写过任何字节）；
+						// 改写成功才发——失败走透传时不得残留降级头（S1）。
+						w.Header().Set("X-Model-Fallback", clientModel+" -> "+fb2)
+						body = nb
+						body = h.applyEffort(body, clientModel) // 与入口同参数；键已存在不碰（双注入守卫）
+						rt, model = rt2, m2
+						dispModel = fb2
+						acctModel = provider.CanonicalModelID(fb2) // 记账归属=备胎（0021/PR #148 口径）
+						statRow.Model = acctModel
+						statRow.Status = 0 // 429 轮转已污染；出口 defer 靠 Status==0 记 200
+						if h.stats != nil {
+							h.stats.NoteFallback(clientModel, fb2, time.Now()) // 请求内降级也喂降级记录
+						}
+						continue
+					}
+					log.Printf("model fallback body rewrite failed platform=%s to=%s err=%v（维持原样透传）", rt.Kind, fb2, err3)
+				}
+			}
+		}
+		transparentError(w, res.lastStatus, res.lastBody)
+		return
+	}
+}
+
+// rotationResult：serveRotation 的判定结果。done=true=响应已完整写回（成功/请求级
+// 错误/耗尽诊断引导），调用方直接收尾；done=false 且 lastStatus>0=候选耗尽待透传，
+// 由调用方决定原样透传还是按降级链请求内重入（方案 B，只认 ErrHardCredit）。
+type rotationResult struct {
+	done       bool
+	lastKind   provider.ErrKind
+	lastStatus int
+	lastBody   []byte
+}
+
+// serveRotation：chatCompletions 的轮转选号 + 上游交互 + 耗尽出口段（原代码整体
+// 平移，零缩进变化；结果经命名返回值承载——done 默认 true，既有裸 return 语义
+// 原样保留：所有提前返回的出口都已把响应写完）。轮转中「账号级可轮换」错误
+// （kind.Rotatable()）换号续试并置位 lastKind；请求级/内容类错误在循环内提前
+// 透传返回。方案 B 重入时由调用方完成全部降级状态同步后再次调用本方法（tried
+// 随调用重建，备胎渠道天然全新）。
+func (h *Handler) serveRotation(
+	w http.ResponseWriter, sw *statWriter, rt *Runtime, model string, body []byte,
+	clientModel, dispModel, acctModel string, statRow *statsEngine.ReqRow, stream bool,
+) (res rotationResult) {
+	res.done = true // 默认：既有 return 出口都已把响应写完（成功/请求级错误/诊断引导）
 	tried := map[string]bool{}
 	var lastErr error
 	// 最后一次上游错误的原始 status+body：候选耗尽时原样透传（而非包装成 503），
 	// 客户端才能看到 6004 重置时间等上游细节。内容类错误在循环内已提前透传，不受影响。
 	var lastStatus int
 	var lastBody []byte
+	// lastKind：轮转中最后一个「账号级可轮换」错误的类别（Rotatable 分支置位）——
+	// 候选耗尽透传前交回调用方做方案 B 判定；成功/请求级错误不置位（零值 ErrNone）。
+	var lastKind provider.ErrKind
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		acct := h.pickWithSticky(rt, model)
 		if acct == nil {
@@ -725,6 +800,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				lastErr = fmt.Errorf("upstream %s (http %d): %s", kind, status, truncateBody(respBody))
 				lastStatus = status
 				lastBody = respBody
+				lastKind = kind
 				continue
 			}
 			transparentError(w, status, respBody)
@@ -733,7 +809,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		defer rc.Close()
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
-		if peek.Stream {
+		if stream {
 			usage, serr := rt.Upstream.Stream(w, rc, dispModel)
 			cu := cacheUsageOf(usage) // 缓存命中（上游未上报时 reported=false，面板显示「—」）
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
@@ -741,7 +817,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if h.ledger != nil {
 				pt, ct, src := usageTokens(usage)
 				h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-					Model: ledgerModelOf(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+					Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 			}
 			// 运行统计：模型维度记账（有 usage 才计，对齐 sidecar 的 u.found 语义）。
 			// 吞吐仅在流式下有意义：genSec = 总耗时 − TTFB；引擎内对 ≤50ms 的样本只计 TTFB。
@@ -749,7 +825,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				pt, ct, _ := usageTokens(usage)
 				if pt > 0 || ct > 0 {
 					gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
-					h.stats.AddUsage(canonModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
+					h.stats.AddUsage(acctModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 					statRow.Tok = ct
 					if gen > 0 {
 						statRow.TokPerSec = float64(ct) / gen
@@ -838,7 +914,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			pt, ct, src := usageTokens(u)
 			cu := cacheUsageOf(u)
 			h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-				Model: ledgerModelOf(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+				Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 		}
 		writeJSON(w, http.StatusOK, resp)
 		// 运行统计：必须在写回之后——此刻 statWriter 才记到首字节，TTFB 为真值；
@@ -850,7 +926,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if pt > 0 || ct > 0 {
 				gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
 				cu := cacheUsageOf(u)
-				h.stats.AddUsage(canonModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
+				h.stats.AddUsage(acctModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 				statRow.Tok = ct
 			}
 			statRow.Credit = usageCredit(u)
@@ -862,7 +938,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 候选耗尽但轮换中有上游错误：优先透传最后一个上游原始响应（保持上游语义，
 	// 如 429+6004 重置时间；本次请求确实逐号尝试过，包装成 503 反而丢信息）。
 	if lastStatus > 0 && lastBody != nil {
-		transparentError(w, lastStatus, lastBody)
+		// 候选耗尽：不在此透传——交回调用方判定（方案 B 积分耗尽时按降级链重入一次，
+		// 否则原样透传；透传语义见上方注释）。
+		res = rotationResult{done: false, lastKind: lastKind, lastStatus: lastStatus, lastBody: lastBody}
 		return
 	}
 	statRow.Status = http.StatusServiceUnavailable
@@ -938,6 +1016,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		msg += ": " + lastErr.Error()
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+	return // 裸 return：携带命名结果 res（done=true——诊断引导已把响应写完）
 }
 
 // formatUnfreeze 解冻时刻的可读格式：24h 内只报时刻（HH:MM），更远带日期。
