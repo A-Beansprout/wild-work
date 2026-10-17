@@ -712,18 +712,39 @@ function renderTimes() {
   $("nextCheckin").textContent = state.next_checkin || "-";
 }
 
-// channelCredits 汇总某渠道全部账号的可用积分（与积分汇总条同源 state.accounts）。
-// 无该渠道账号时返回 null（前端不渲染角标，避免显示误导性的 0）。
+// channelCredits 汇总某渠道全部账号的可用额度（与积分汇总条同源 state.accounts）。
+//
+// 返回 { bal, unit }：unit 为 ""（积分）或 "token"（Token 计数，如 ZCode）。
+// ⚠️ 调用方**必须**按 unit 选单位与格式化（token 用 fmtTokens、积分用 fmtNum）——
+// 否则会把上亿 token 显示成「N 分」（2026-10-17 用户截图报告：费率页 ZCode 角标
+// 显示「余额 8,000,000 分」，正是漏了这一步）。
+// 无该渠道账号时返回 null（不渲染角标，避免显示误导性的 0）。
 function channelCredits(kind) {
   if (!state || !state.accounts) return null;
-  let sum = 0, has = false;
+  let sum = 0, has = false, unit = "";
   for (const a of state.accounts) {
     if ((a.group || "workbuddy") !== kind) continue;
-    if (a.credits_na) return null; // 匿名渠道无积分概念
+    if (a.credits_na) return null; // 匿名渠道无额度概念
     has = true;
+    if (a.credits_unit === "token") unit = "token";
     sum += a.credits || 0;
   }
-  return has ? sum : null;
+  return has ? { bal: sum, unit } : null;
+}
+
+// tabBalText 渠道 tab 余额角标文案（按计量单位切换：token 与积分分开显示）。
+function tabBalText(v) {
+  if (!v) return "";
+  return v.unit === "token"
+    ? `余额 ${fmtTokens(v.bal)} tokens`
+    : `余额 ${fmtNum(v.bal)} 分`;
+}
+
+// tabBalTitle 角标 tooltip：明示单位与统计口径（token 不计入积分合计）。
+function tabBalTitle(v) {
+  return v && v.unit === "token"
+    ? "该渠道全部账号当前可用 Token 数（与积分分开统计，不计入积分合计）"
+    : "该渠道全部账号当前可用积分合计";
 }
 
 // fmtNum 千分位整数（与汇总条的 fmt 同口径，独立命名避免作用域冲突）。
@@ -745,9 +766,13 @@ function refreshTabBalances() {
       if (el) el.remove();
       return;
     }
-    const txt = `余额 ${fmtNum(bal)} 分`;
-    if (el) { if (el.textContent !== txt) el.textContent = txt; }
-    else { const s = document.createElement("span"); s.className = "fees-tab-bal"; s.textContent = txt; s.title = "该渠道全部账号当前可用积分合计"; tab.appendChild(s); }
+    const txt = tabBalText(bal);
+    const tip = tabBalTitle(bal);
+    if (el) {
+      if (el.textContent !== txt) el.textContent = txt;
+      if (el.title !== tip) el.title = tip;
+    }
+    else { const s = document.createElement("span"); s.className = "fees-tab-bal"; s.textContent = txt; s.title = tip; tab.appendChild(s); }
   });
 }
 
@@ -889,11 +914,11 @@ function renderFees(fees) {
   for (const ch of channels) {
     const n = (ch.models || []).length;
     const on = ch.channel === active ? " active" : "";
-    // 渠道积分余额角标：取自 state.accounts（与积分汇总条同源），
-    // 让用户在选择渠道时即可看到「这个渠道还有多少积分可用」。
+    // 渠道余额角标：取自 state.accounts（与积分汇总条同源），让用户在选择渠道时即可看到
+    // 「这个渠道还有多少可用」；单位随渠道计量单位切换（token / 积分，见 tabBalText）。
     const bal = channelCredits(ch.channel);
     const balHtml = bal === null ? ""
-      : `<span class="fees-tab-bal" title="该渠道全部账号当前可用积分合计">余额 ${fmtNum(bal)} 分</span>`;
+      : `<span class="fees-tab-bal" title="${esc(tabBalTitle(bal))}">${esc(tabBalText(bal))}</span>`;
     html += `<button class="fees-tab${on}" data-feech="${esc(ch.channel)}"
       title="${esc(chLabel(ch.channel))}">${esc(chLabel(ch.channel))}<span class="fees-tab-n">${n}</span>${balHtml}</button>`;
   }
@@ -979,7 +1004,11 @@ async function checkin(uid) {
 async function refreshOne(uid) {
   try {
     const r = await api("/api/account/refresh", { uid });
-    toast(`刷新成功：剩余积分 ${r.remain}`);
+    // 单位随账号切换：token 计量渠道（如 ZCode）不叫「积分」（否则上亿 token 被读成积分）。
+    const acc = (state.accounts || []).find((x) => x.uid === uid);
+    toast(acc && acc.credits_unit === "token"
+      ? `刷新成功：剩余 ${fmtTokens(r.remain)} tokens`
+      : `刷新成功：剩余积分 ${r.remain}`);
     delete detailCache[uid]; // 顶层已更新，旧明细缓存须作废，否则「新顶层+旧弹层」
     loadState();
   } catch (e) { toast(e.message); }
@@ -2885,18 +2914,28 @@ function stPlatTok(amount) {
 
 const ST_ROT_MARKS = ["①", "②", "③"];
 
+// groupUnit 渠道的计量单位（""=积分 / "token"=Token 计数）：从 state.accounts 同渠道账号取，
+// 保证与卡片、汇总条、费率页角标**同源**（单一来源仍是后端的 credits_unit）。
+function groupUnit(group) {
+  const a = (state.accounts || []).find((x) => (x.group || "workbuddy") === group);
+  return a && a.credits_unit === "token" ? "token" : "";
+}
+
 // 使用中 / 接棒顺序：当前=粘性账号；接棒=临期优先+余额排序推算的前 3
 function renderRotation(rot) {
   if (!rot.length) { $("stRotation").innerHTML = ""; $("stRotation").className = "st-rotation"; return; }
   let html = `<div class="st-block-title">使用中 / 接棒顺序<span class="st-hint">当前=粘性账号 · 接棒=临期优先+余额排序推算</span></div>`;
   for (const rv of rot) {
+    // 单位随渠道切换：token 计量渠道（如 ZCode）显示 tokens，不再一律写「分」。
+    const isTok = groupUnit(rv.group) === "token";
+    const bal = (v) => (isTok ? `${fmtTokens(v)} tokens` : `${fmtCredits(v)}分`);
     const cur = rv.current
-      ? `使用中 <b>${esc(rv.current.nickname)}</b>（粘性 ${esc(rv.current.sticky || "0")}，余额 ${fmtCredits(rv.current.credits)}分）`
+      ? `使用中 <b>${esc(rv.current.nickname)}</b>（粘性 ${esc(rv.current.sticky || "0")}，余额 ${bal(rv.current.credits)}）`
       : `<span class="st-rot-none">暂无使用记录</span>`;
     let nextHtml = "";
     (rv.next || []).forEach((n, j) => {
       nextHtml += `<span class="st-rot-next">${ST_ROT_MARKS[j]} ${esc(n.nickname)}` +
-        `（${fmtCredits(n.credits)}分${n.expiring > 0 ? "·临期" + fmtCredits(n.expiring) : ""}）</span>`;
+        `（${bal(n.credits)}${n.expiring > 0 ? "·临期" + bal(n.expiring) : ""}）</span>`;
     });
     html += `<div class="st-rot-row"><span class="badge ${chClass(rv.group)}">${esc(chLabel(rv.group))}</span>` +
       `<span class="st-rot-cur">${cur}</span>` +
