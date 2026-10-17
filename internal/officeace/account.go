@@ -232,11 +232,16 @@ func trimSlash(u string) string { return strings.TrimRight(strings.TrimSpace(u),
 // 导入产物（有 /v2）的控制面会落在 `{root}/v2/v1/subscription` ⇒ 同样 404。
 //
 // 归一规则保守：**仅当路径以整段 `/v2` 结尾时**才剥（大小写不敏感），其余路径（含
-// `/v2/v1` 这类意外形态）原样保留，避免把用户自定义网关上真实的路径段吃掉。
+// `/v2/v1` 这类意外形态）原样保留，避免把用户自定义网关上真实的路径段吃掉；
+// 剥完若为空（退化输入，例如 BaseURL 恰好就是 `"/v2"`）则**原样返回** ——
+// 不能让控制面 base 变成空串（那会拼出 `"/v1/subscription"` 这种无主机地址）。
+// 2026-10-17 独立复核指出该退化输入，此处按"宁可不剥也不产出空 base"处理。
 func gatewayRootOf(base string) string {
 	u := trimSlash(base)
 	if len(u) >= 3 && strings.EqualFold(u[len(u)-3:], "/v2") {
-		return strings.TrimRight(u[:len(u)-3], "/")
+		if root := strings.TrimRight(u[:len(u)-3], "/"); root != "" {
+			return root
+		}
 	}
 	return u
 }

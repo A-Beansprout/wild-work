@@ -180,20 +180,21 @@ func oauthProfileNameCandidates(uid string) []string {
 }
 
 // urlEscapeUID 把 uid 编码成桌面端落盘用的形式（'%3A' 而非小写 '%3a'）。
+//
+// 注意第 2 步必须在**已转义串** `esc` 上替换：若退回原串 `s` 上做 ReplaceAll，会丢掉
+// PathEscape 对 `/`、`%`、空格等字符的转义（2026-10-17 独立复核指出）。当前真实 uid 是
+// `<hex>:<hex>`，两种写法等价，但形状一旦变化（例如含 `%`）就会算出与桌面端不同的文件名。
 func urlEscapeUID(s string) string {
 	if s == "" {
 		return ""
 	}
 	esc := url.PathEscape(s)
-	if !strings.Contains(s, ":") {
+	if !strings.Contains(esc, ":") {
 		// 不含 ':' 的 uid 两种写法一致（PathEscape 对字母数字与 '-'/'_'/'.' 恒等）。
-		return s
+		return esc
 	}
-	// PathEscape 不转义 ':'，这里显式补上桌面端的编码形式（大小写与之保持一致）。
-	if !strings.Contains(esc, "%3A") {
-		esc = strings.ReplaceAll(s, ":", "%3A")
-	}
-	return esc
+	// PathEscape 不转义 ':'，这里显式补成桌面端的大写编码形式。
+	return strings.ReplaceAll(esc, ":", "%3A")
 }
 
 // urlPathUnescapeOrRaw 解码失败时原样返回（保持 decodeUID 的既有语义）。

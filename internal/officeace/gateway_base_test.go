@@ -80,3 +80,26 @@ func TestDefaultGatewayIsRoot(t *testing.T) {
 		t.Errorf("defaultGateway 不是网关根：%q ⇒ %q", defaultGateway, gatewayRootOf(defaultGateway))
 	}
 }
+
+// TestGatewayRootOfDegenerateInput 退化输入不得产出空 base（2026-10-17 独立复核补充）。
+//
+// 反例：BaseURL 恰好是 `"/v2"` 时，旧写法剥完得到空串 ⇒ 控制面会拼出 `"/v1/subscription"`
+// 这种无主机地址。约定「宁可不剥，也不产出空 base」。
+func TestGatewayRootOfDegenerateInput(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/v2", "/v2"},   // 剥完为空 ⇒ 原样返回
+		{"/v2/", "/v2"},  // trimSlash 后同上
+		{"v2", "v2"},     // 没有前导 '/'，不是整段 /v2 ⇒ 不剥
+		{"//v2", "//v2"}, // 剥完只剩 '/' ⇒ TrimRight 后为空 ⇒ 原样返回
+		{testHostV2, testHostNoV2},
+	}
+	for _, c := range cases {
+		if got := gatewayRootOf(c.in); got != c.want {
+			t.Errorf("gatewayRootOf(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// 退化输入下控制面 URL 也不得变成无主机地址
+	if u := trimSlash(gatewayRootOf("/v2")) + "/v1/subscription"; u != "/v2/v1/subscription" {
+		t.Errorf("退化输入下控制面 URL 异常：%q", u)
+	}
+}

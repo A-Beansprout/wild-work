@@ -238,12 +238,15 @@ func TestOfficeAceImportMergeTakesImportedWhenOldEmpty(t *testing.T) {
 	}
 
 	importedExpires := time.Now().AddDate(50, 0, 0).Unix()
+	// ⚠️ cred_expires 必须与导入侧的 +50 年哨兵**不同值**，否则本用例无法区分
+	// 「按 cred_expires 对齐」与「照抄哨兵」两种行为（独立复核曾指出这是自证式断言）。
+	realCredExpires := time.Now().Add(2 * time.Hour).Unix()
 	imported := importedDoc(uid, "https://gw-empty.example.invalid/v2", importedExpires)
 	imported.Auth.Extra["access_key"] = "AKFAKENEW"
 	imported.Auth.Extra["secret_key"] = "SKFAKENEW"
 	imported.Auth.Extra["security_token"] = "STSFAKENEW"
 	imported.Auth.Extra["project_id"] = "proj-fake-new"
-	imported.Auth.Extra["cred_expires"] = strconv.FormatInt(importedExpires, 10)
+	imported.Auth.Extra["cred_expires"] = strconv.FormatInt(realCredExpires, 10)
 	imported.Auth.RefreshToken = "rt-fake-new-0003"
 
 	file, info, err := a.writeOfficeAceAuth(uid, imported)
@@ -265,16 +268,22 @@ func TestOfficeAceImportMergeTakesImportedWhenOldEmpty(t *testing.T) {
 	if got.Auth.RefreshToken != "rt-fake-new-0003" {
 		t.Errorf("auth.refreshToken=%q，应为导入值（旧值为空）", got.Auth.RefreshToken)
 	}
-	if got.Auth.ExpiresAt != importedExpires {
-		t.Errorf("auth.expiresAt=%d，应为导入值 %d（无任何旧凭据被保留 ⇒ 采用导入侧远期值）",
-			got.Auth.ExpiresAt, importedExpires)
+	// 导入侧的临时凭据本次生效 ⇒ 到期时间必须与它们自己的 cred_expires 对齐（~2h），
+	// 而**不是**导入结构体里那个 +50 年哨兵（网关 Basic 不过期的表达）。
+	if got.Auth.ExpiresAt != realCredExpires {
+		t.Errorf("auth.expiresAt=%d，应为 cred_expires=%d（临时凭据生效时必须与它对齐）",
+			got.Auth.ExpiresAt, realCredExpires)
+	}
+	if got.Auth.ExpiresAt == importedExpires {
+		t.Errorf("auth.expiresAt 等于导入侧的 +50 年哨兵（%d）⇒ 通用自动续期路径对 officeace 永不触发（P1 回归）",
+			importedExpires)
 	}
 	// 本次保留了导入侧的临时凭据 ⇒ 到期时间必须与它们匹配（cred_expires）。
 	if got.Auth.Extra["cred_expires"] != imported.Auth.Extra["cred_expires"] {
 		t.Errorf("extra[cred_expires]=%q，应为导入值 %q", got.Auth.Extra["cred_expires"], imported.Auth.Extra["cred_expires"])
 	}
-	if !info.Merged || info.KeptCredential || info.KeptRefreshToken || info.KeptExpiresAt || !info.HasRefreshToken {
-		t.Errorf("合并信息不符：%+v（期望仅 Merged/HasRefreshToken 为 true）", info)
+	if !info.Merged || info.KeptCredential || info.KeptRefreshToken || !info.KeptExpiresAt || !info.HasRefreshToken {
+		t.Errorf("合并信息不符：%+v（期望 Merged/HasRefreshToken/KeptExpiresAt 为 true，KeptCredential/KeptRefreshToken 为 false）", info)
 	}
 }
 
@@ -341,6 +350,11 @@ func TestOfficeAceImportRefusesUnparsableExistingFile(t *testing.T) {
 }
 
 // ⑥ 提示文案必须能区分「导入本来就没有 refresh_token」与「已保留既有凭据」（要求 3）。
+//
+// ⚠️ 本用例是**源码文案检查**（grep import_local.go 的格式串），**不是行为守门人**——
+// 2026-10-17 独立复核指出它是恒真式断言（改文案即红，但改行为不红）。
+// 真正的行为守门人是 ①（KeptCredential 时凭据仍在）+ ③（导入凭据生效时 expiresAt 与
+// cred_expires 对齐）；本用例只保证两段文案都不被误删，别把它当成覆盖率。
 func TestOfficeAceImportNoteDistinguishesKeptCredentials(t *testing.T) {
 	src, err := os.ReadFile("import_local.go")
 	if err != nil {

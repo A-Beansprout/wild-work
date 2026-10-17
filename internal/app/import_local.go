@@ -646,17 +646,19 @@ func mergeOfficeAceDoc(prev, imported authDoc) (authDoc, officeAceMergeInfo) {
 	out.Account.EnterpriseID = pickNonEmpty(imported.Account.EnterpriseID, prev.Account.EnterpriseID)
 	out.Account.Nickname = pickNonEmpty(imported.Account.Nickname, prev.Account.Nickname)
 
-	// ---- expiresAt：保留旧凭据就保留与之匹配的旧到期时间 ----
-	switch {
-	case info.KeptCredential:
-		// 保留的是 OAuth **临时**凭据 ⇒ 到期时间取它自己的 cred_expires（~2h），
-		// 而不是导入侧的 +50 年（那会让 NeedsRefresh 恒假、临时凭据过期后不再续期）。
-		if ce := parseUnixSec(out.Auth.Extra["cred_expires"]); ce > 0 {
-			out.Auth.ExpiresAt = ce
-		} else if prev.Auth.ExpiresAt > 0 {
-			out.Auth.ExpiresAt = prev.Auth.ExpiresAt
-		}
-	case info.KeptRefreshToken && prev.Auth.ExpiresAt > 0:
+	// ---- expiresAt：与**本次实际生效的那批凭据**对齐（2026-10-17 独立复核修订）----
+	//
+	// 只要合并结果里带着临时凭据（无论它来自导入值还是被保留的旧值），expiresAt 就必须取
+	// 该凭据自己的 `extra.cred_expires`（约 2h），**不能**沿用导入侧的 +50 年哨兵 —— 否则
+	// 落盘值会与 cred_expires 自相矛盾，而通用自动续期路径（`auth.NeedsRefresh()` 只看
+	// `expiresAt`）对 officeace 将永不触发（积分/签到路径因为 refresh.go 的 `ensureCredential`
+	// 另行按 cred_expires 判定才没立刻坏，等于把「2 小时后失效」悄悄推到 refresh_token 到期那天）。
+	// 旧写法把这条对齐放在 `KeptCredential` 分支里，于是修复「导入能拿到凭据」之后的主路径
+	// （导入自带 access_key/cred_expires ⇒ KeptCredential=false）反而漏配 —— 正是复核指出的缺陷。
+	// 只有在**没有任何临时凭据**可对齐时才采用导入侧的远期哨兵（网关 Basic 凭据确实不过期）。
+	if ce := parseUnixSec(out.Auth.Extra["cred_expires"]); ce > 0 {
+		out.Auth.ExpiresAt = ce
+	} else if info.KeptRefreshToken && prev.Auth.ExpiresAt > 0 {
 		// 保留了旧 refresh_token（导入侧无）⇒ 旧 expiresAt 与它是同一批凭据的到期时间，一并保留。
 		out.Auth.ExpiresAt = prev.Auth.ExpiresAt
 	}
