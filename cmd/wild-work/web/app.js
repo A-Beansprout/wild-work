@@ -2456,6 +2456,15 @@ function fmtTokensFull(n) {
   return Number(n).toLocaleString("zh-CN");
 }
 
+// fmtAxisTokens 坐标轴专用紧凑刻度：万/亿取整不带小数（刻度无需精度，悬浮明细仍用 fmtTokensFull）。
+// 「8000.0万」这类长标签会撑爆 50px 网格边距、被画布裁成 0000.0万。
+function fmtAxisTokens(n) {
+  if (!n) return "0";
+  if (n >= 1e8) return Math.round(n / 1e8) + "亿";
+  if (n >= 1e4) return Math.round(n / 1e4) + "万";
+  return String(Math.round(n));
+}
+
 // cacheCell 渲染「缓存利用率」单元格。**优雅降级的三态**（后端约定）：
 //   cr_cov > 0 → 有上报样本，显示百分比（可准确到 0%，那是真没命中）
 //   cr_cov = 0 → 上游不提供该维度（glm / raccoon 等）→ 显示「—」，**绝不显示 0%**
@@ -2608,9 +2617,9 @@ function renderUsageChart(st) {
     },
     legend: { type: "scroll", data: series.map((s) => s.name),
       tooltip: { show: true } },
-    grid: { left: 50, right: 20, top: 36, bottom: 28 },
+    grid: { left: 8, right: 20, top: 36, bottom: 28, containLabel: true },
     xAxis: { type: "category", data: dates },
-    yAxis: { type: "value", axisLabel: { formatter: (v) => fmtTokensFull(v) } },
+    yAxis: { type: "value", axisLabel: { formatter: (v) => fmtAxisTokens(v) } },
     series,
   }, true);
   usageChart.resize();
@@ -2667,7 +2676,7 @@ function renderCreditChart(entries, names) {
     },
     legend: { type: "scroll", data: series.map((s) => s.name),
       tooltip: { show: true } },
-    grid: { left: 50, right: 20, top: 36, bottom: 28 },
+    grid: { left: 8, right: 20, top: 36, bottom: 28, containLabel: true },
     xAxis: { type: "category", data: dates },
     yAxis: { type: "value", axisLabel: { formatter: (v) => fmtCredits(v) } },
     series,
