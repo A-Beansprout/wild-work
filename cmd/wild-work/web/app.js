@@ -427,15 +427,52 @@ const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traewor
 const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", cline: "cline", officeace: "officeace" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
-// chColor 渠道识别色（图表 series 用）：读 :root 的 --ch-<class> 变量，
-// 与徽章/费率表头/按钮同一变量源，改 style.css 一处全局生效。
+// ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
+// 自定义渠道无品牌色，多个自定义渠道若共用 --ch-custom 会完全撞色；
+// 按渠道名稳定哈希从高区分度色板取色（刷新/重启不变，图表间一致）。
+const CUSTOM_PALETTE = ["#e07a1f", "#0ea5e9", "#d946ef", "#84cc16", "#f43f5e", "#14b8a6", "#a855f7", "#eab308", "#64748b", "#ec4899"];
+function stableHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
 const _chColorCache = {};
 function chColor(k) {
+  if (isCustomGroup(k)) return CUSTOM_PALETTE[stableHash(k) % CUSTOM_PALETTE.length];
   const cls = CH_CLASS[k] || "custom";
   if (_chColorCache[cls]) return _chColorCache[cls];
   let v = "";
-  try { v = getComputedStyle(document.documentElement).getPropertyValue(`--ch-${cls}`).trim(); } catch (e) { /* 非���览器环境忽略 */ }
+  try { v = getComputedStyle(document.documentElement).getPropertyValue(`--ch-${cls}`).trim(); } catch (e) { /* ignore */ }
   return (_chColorCache[cls] = v || "#6366f1");
+}
+// varyColor 同渠道第 i（0 起）个系列做颜色变体，避免同渠道多条线同色：
+// 明度阶梯 +14/-14/+28/-28... 封顶在 [22,78]；封顶后转色相偏移（每档 ±18°）继续拉开。
+function hexToHsl(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return { h: 0, s: 0, l: l * 100 };
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  let h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: h * 60, s: s * 100, l: l * 100 };
+}
+function hslToHex(h, s, l) {
+  const f = (n) => {
+    const k2 = (n + h / 30) % 12;
+    const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+    const c = l / 100 - a * Math.max(-1, Math.min(k2 - 3, Math.min(9 - k2, 1)));
+    return Math.round(c * 255).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+function varyColor(hex, i) {
+  if (!i || !/^#[0-9a-fA-F]{6}$/.test(hex)) return hex;
+  const { h, s, l } = hexToHsl(hex);
+  const k = Math.ceil(i / 2), dir = i % 2 ? 1 : -1;
+  const lRaw = l + k * 14 * dir;
+  const l2 = Math.min(78, Math.max(22, lRaw));
+  const hShift = (lRaw < 22 || lRaw > 78) && k >= 2 ? k * 18 * dir : 0;
+  return hslToHex(((h + hShift) % 360 + 360) % 360, s, l2);
 }
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
@@ -2598,6 +2635,13 @@ function renderCreditChart(entries, names) {
     totals[e.uid] = (totals[e.uid] || 0) + -e.amount;
   }
   const top10 = Object.keys(totals).sort((a, b) => totals[b] - totals[a]).slice(0, 10);
+  // 同渠道多个账号时做颜色变体，保证 10 条线互不相同
+  const colorByUid = {};
+  const vIdx = {};
+  for (const uid of top10) {
+    const ch = mainChOf(uid);
+    colorByUid[uid] = varyColor(chColor(ch), vIdx[ch] = (vIdx[ch] ?? -1) + 1);
+  }
   // 系列名带渠道前缀（跨渠道同名昵称可区分）：取该账号消耗条目中最多的渠道
   const mainChOf = (uid) => {
     const cnt = {};
@@ -2606,11 +2650,11 @@ function renderCreditChart(entries, names) {
   };
   const series = top10.map((uid) => ({
     name: `${chLabel(mainChOf(uid))} ${names[uid] || shortUid(uid)}`, type: "line", smooth: true,
-    itemStyle: { color: chColor(mainChOf(uid)) }, lineStyle: { color: chColor(mainChOf(uid)) },
+    itemStyle: { color: colorByUid[uid] }, lineStyle: { color: colorByUid[uid] },
     data: dates.map((d) => byAcct[uid][d] || 0),
   }));
   creditChart.setOption({
-    color: top10.map((uid) => chColor(mainChOf(uid))),
+    color: top10.map((uid) => colorByUid[uid]),
     tooltip: {
       trigger: "axis", valueFormatter: (v) => fmtCredits(v),
       formatter: (params) => {
