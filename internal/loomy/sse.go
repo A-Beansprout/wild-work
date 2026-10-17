@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -53,8 +54,20 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, e
 
 	sc := newSSEScanner(r)
 	for sc.Scan() {
-		payload, ok := ssePayload(sc.Text())
+		line := sc.Text()
+		payload, ok := ssePayload(line)
 		if !ok {
+			// 非 `data:` 行：可能是「HTTP 200 + 业务码」信封（上游鉴权失效就走这条形态）。
+			// 只对以 `{` 开头的行做判定——注释行/空行里偶然出现的数字不该触发误判。
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "{") {
+				if berr := errFromBusinessEnvelope(trimmed); berr != nil {
+					var pe *provider.Error
+					if errors.As(berr, &pe) {
+						writeErrorFrame(w, pe.Kind, pe.Msg)
+					}
+					return usage, berr
+				}
+			}
 			continue
 		}
 		if payload == "[DONE]" {
@@ -121,6 +134,11 @@ func aggregate(r io.Reader, model string) (map[string]any, error) {
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) > 0 && trimmed[0] == '{' {
+		// ⚠️ 先判业务信封：`{"code":"100002"}` 同样以 `{` 开头，直接当 chat.completion 返回
+		// 会让客户端收到一个**没有 choices 的假响应**（2026-10-17 修复 D1）。
+		if berr := errFromBusinessEnvelope(string(trimmed)); berr != nil {
+			return nil, berr
+		}
 		var out map[string]any
 		if err := json.Unmarshal(trimmed, &out); err == nil {
 			// 回填客户端模型名（上游常返回裸名或别名）。
@@ -294,4 +312,57 @@ func ssePayload(line string) (string, bool) {
 		return "", false
 	}
 	return payload, true
+}
+
+// ---------------------------------------------------------------------------
+// 「HTTP 200 + 业务码」信封识别（2026-10-17 修复 D1）
+// ---------------------------------------------------------------------------
+
+// errFromBusinessEnvelope 识别 Loomy 用 **HTTP 200** 表达的业务失败（如 `{"code":"100002"}`）。
+//
+// 为什么必须在这里再判一次：`ChatStream` 对 200 是**直接透传响应体**的，而下游解析只认
+// SSE 的 `data:` 行 —— 于是这个信封会被整行跳过，表现为：
+//   - 流式路径：一行有效帧都没有 → 写 `data: [DONE]` 后 `return nil, nil`
+//     ⇒ 客户端看到「空回答但成功」（用户以为模型不说话，实际是凭据失效）；
+//   - 非流式路径（aggregate）：见到 `{` 就当 chat.completion 返回
+//     ⇒ 一个**没有 choices 的假响应**（比空流更难查）。
+//
+// 命中时返回带语义的 *provider.Error（100002/020002 → ErrSessionDead），由调用方决定
+// 是写错误帧（流式）还是直接上抛（非流式）。未命中返回 nil。
+func errFromBusinessEnvelope(body string) error {
+	kind := businessErrKind(body)
+	if kind == provider.ErrNone {
+		return nil
+	}
+	return &provider.Error{Kind: kind, Status: http.StatusOK, Msg: truncateForFrame(body)}
+}
+
+// truncateForFrame 截断上游原文到 200 字符：错误帧会进客户端日志，塞入整个响应体会撑大它。
+func truncateForFrame(s string) string {
+	s = strings.TrimSpace(s)
+	rs := []rune(s)
+	if len(rs) <= 200 {
+		return s
+	}
+	return string(rs[:200])
+}
+
+// writeErrorFrame 在**已开始输出**的流里补写一帧 error（**不补 `[DONE]`**）并 flush。
+//
+// 形态与 `provider.WriteTruncationFrames` 一致（`data: {"error":{message,type,code}}`），
+// 便于客户端用同一套逻辑处理「流内错误」。R36 的纪律：失败不得伪装成正常收尾。
+func writeErrorFrame(w io.Writer, kind provider.ErrKind, msg string) {
+	frame, err := json.Marshal(map[string]any{"error": map[string]any{
+		"message": truncateForFrame(msg),
+		"type":    "upstream_error",
+		"code":    kind.String(),
+	}})
+	if err != nil {
+		// 纯字符串 map 不该序列化失败；退化成固定帧，仍保证收尾。
+		frame = []byte(`{"error":{"message":"upstream error","type":"upstream_error","code":"none"}}`)
+	}
+	_, _ = w.Write(append(append([]byte("data: "), frame...), []byte("\n\n")...))
+	if fl, ok := w.(interface{ Flush() }); ok {
+		fl.Flush()
+	}
 }

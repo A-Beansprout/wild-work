@@ -156,6 +156,8 @@ body {
 .cs-n { color: var(--muted); font-size: 11px; }
 .cs-num { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-exp { color: var(--danger); font-weight: 600; font-size: 11px; }
+/* Token 计量渠道的量纲标签（与积分的「分」区分开，明示单位是 token） */
+.cs-tok { color: var(--primary); font-size: 11px; font-weight: 600; margin-left: 2px; }
 .cs-unu { color: var(--muted); font-size: 11px; }
 .cs-stale { color: var(--warn); font-size: 11px; }
 .cs-total { background: #eef4ff; border-color: #c7d9ff; }
@@ -302,8 +304,9 @@ body {
 
 /* 模型查找入口：标题行内的放大镜按钮（比默认 icon-btn 小一号，避免抬胀标题行） */
 .panel-head h2 .search-btn {
-  width: 24px; height: 24px; font-size: 13px; border-radius: 6px;
-  vertical-align: middle; margin-left: 4px; padding: 0; line-height: 1;
+  width: auto; height: 24px; font-size: 13px; border-radius: 6px;
+  vertical-align: middle; margin-left: 4px; padding: 0 8px; line-height: 1;
+  white-space: nowrap; /* 文字入口（🔍 查询模型）不换行叠字 */
 }
 
 /* 模型查找对话框：紧凑固定尺寸（对话框本身不随结果跳变/变高，避免位置困扰）。
@@ -538,6 +541,12 @@ body {
   font-size: 13px; line-height: 1; padding: 0;
 }
 .credit-tip .detail-close:hover { color: var(--danger); border-color: var(--danger); background: #fef2f2; }
+/* 空明细 / 接口失败时的可见提示：替代「点了完全没反应」的静默失败。
+   必须留在浮窗里（贴用户刚点的位置），不依赖会自己消失的 toast。 */
+.credit-tip .detail-empty {
+  color: var(--muted); line-height: 1.6; padding: 6px 2px 10px;
+  word-break: break-word;
+}
 /* 积分标签变成点击入口：给出可点暗示 */
 .acct-card .acct-credits.clickable { cursor: pointer; }
 .acct-card .acct-credits.clickable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
@@ -622,6 +631,42 @@ body {
 /* oczen：OpenCodeZen 匿名通道（暗灰蓝，与其它紫/青系区分，弱化「固定账号」观感） */
 .badge.oczen { background: var(--ch-oczen); }
 .fees .ch-header.oczen td { color: var(--ch-oczen); }
+.badge.oczen { background: #475569; }
+.fees .ch-header.oczen td { color: #475569; }
+
+/* kilo：Kilo AI 免费池（深青绿；同为免密渠道，需与 oczen 的灰蓝区分开） */
+.badge.kilo { background: #0f766e; }
+.fees .ch-header.kilo td { color: #0f766e; }
+
+/* minimax：MiniMax Code（紫；账号渠道，与其它紫/青系渠道区分） */
+.btn.primary.alt.minimax { background: #7c3aed; border-color: #7c3aed; }
+.btn.primary.alt.minimax:hover { background: #6d28d9; }
+.badge.minimax { background: #7c3aed; }
+.fees .ch-header.minimax td { color: #7c3aed; }
+
+/* lobsterai：LobsterAI（有道龙虾，橙；与 officeace 的华为红区分开） */
+.btn.primary.alt.lobsterai { background: #ea580c; border-color: #ea580c; }
+.btn.primary.alt.lobsterai:hover { background: #c2410c; }
+.badge.lobsterai { background: #ea580c; }
+.fees .ch-header.lobsterai td { color: #ea580c; }
+
+/* zcode：ZCode（智谱，青蓝；与 glm 的色区分开） */
+.btn.primary.alt.zcode { background: #0891b2; border-color: #0891b2; }
+.btn.primary.alt.zcode:hover { background: #0e7490; }
+.badge.zcode { background: #0891b2; }
+.fees .ch-header.zcode td { color: #0891b2; }
+
+/* gemini：Gemini（Google，蓝；与其它渠道色区分开） */
+.btn.primary.alt.gemini { background: #2563eb; border-color: #2563eb; }
+.btn.primary.alt.gemini:hover { background: #1d4ed8; }
+.badge.gemini { background: #2563eb; }
+.fees .ch-header.gemini td { color: #2563eb; }
+
+/* codearts：CodeArts（华为云，玫红；与 officeace 的华为红区分开） */
+.btn.primary.alt.codearts { background: #db2777; border-color: #db2777; }
+.btn.primary.alt.codearts:hover { background: #be185d; }
+.badge.codearts { background: #db2777; }
+.fees .ch-header.codearts td { color: #db2777; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 
@@ -1126,4 +1171,95 @@ body {
   width: auto; height: 24px; font-size: 12px; border-radius: 6px;
   vertical-align: middle; margin-left: 6px; padding: 0 8px; line-height: 1;
   white-space: nowrap; font-family: inherit; font-weight: 400;
+}
+
+/* ---------- 配置区交互优化：combobox 模糊搜索下拉 + 规则卡片 + 备胎 chip 拖拽 ----------
+   覆盖「模型降级链」「思考强度」两区：
+   - .pk-wrap：输入框定位容器（下拉锚点，input 直接子元素）；.half2 底部行对半分。
+   - .pk-menu：下拉面板（渠道徽标 + 完整 ID + 价格两行富信息，字段与「查找模型」弹层同源）。
+   - .fb-rule-card：规则/映射卡片区块（custom-ch-card 同款设计语言）。
+   - .fb-to-chip：备胎链 chip（序号 + grip + ID + ×），可拖拽排序，drop-before/after 指示条。 */
+
+/* combobox 包装容器：position:relative 作下拉锚点 */
+.pk-wrap { position: relative; display: flex; min-width: 0; }
+.pk-wrap > input { min-width: 0; }
+
+/* 下拉面板：绝对定位贴输入框下沿，全局同时只开一个（pkOpenMenu 管理闭菜单）。
+   display:none / .open 才显示——渲染与显隐解耦，避免空菜单占位。 */
+.pk-menu {
+  display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 60;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.14);
+  max-height: 320px; overflow-y: auto; overflow-x: hidden;
+  font-size: 12.5px; padding: 4px;
+}
+.pk-menu.open { display: block; }
+.pk-item { padding: 5px 8px; border-radius: 6px; cursor: pointer; line-height: 1.45; }
+.pk-item:hover, .pk-item.pk-hl { background: #eff6ff; }
+.pk-item .pk-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pk-item .pk-line1 .id {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.pk-item .pk-line1 .rate { flex: none; font-weight: 600; font-size: 12px; color: var(--primary); font-variant-numeric: tabular-nums; }
+.pk-item .pk-line2 { color: var(--muted); font-size: 11px; margin-top: 1px; display: flex; gap: 6px; flex-wrap: wrap; }
+.pk-item .pk-ch-tag { flex: none; color: var(--muted); font-size: 11px; margin-left: auto; }
+.pk-menu mark { background: #fde68a; border-radius: 2px; padding: 0 1px; color: inherit; }
+.pk-empty { color: var(--muted); font-size: 12px; padding: 10px 8px; text-align: center; }
+
+/* 规则/映射卡片区块（custom-ch-card 同款） */
+.fb-rule-card {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+}
+.fb-rule-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fb-rule-badge {
+  flex: none; font-size: 11px; font-weight: 600; color: var(--primary);
+  background: #dbeafe; border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+.fb-rule-head .pk-wrap { flex: 1 1 320px; }
+.fb-rule-head .pk-wrap > input { width: 100%; box-sizing: border-box; }
+.fb-rule-body .pk-wrap { flex: 1 1 auto; }
+.fb-rule-body .pk-wrap > input { width: 100%; box-sizing: border-box; }
+.fb-rule-body { margin-top: 6px; }
+.fb-chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+
+/* 备胎 chip：序号 + grip + ID + 删除 */
+.fb-to-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 8px; font-size: 12px; font-family: ui-monospace, Consolas, monospace;
+  cursor: grab; user-select: none; max-width: 100%;
+}
+.fb-to-chip .chip-idx {
+  flex: none; font-size: 10px; font-weight: 700; color: var(--primary);
+  background: #dbeafe; border-radius: 999px; min-width: 16px; text-align: center; line-height: 14px;
+  font-family: inherit;
+}
+.fb-to-chip .chip-grip { flex: none; color: var(--muted); font-size: 11px; cursor: grab; }
+.fb-to-chip .chip-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fb-to-chip a[data-del-to] { flex: none; color: var(--muted); text-decoration: none; font-size: 13px; line-height: 1; }
+.fb-to-chip a[data-del-to]:hover { color: var(--danger); }
+.fb-to-chip.dragging { opacity: .45; }
+.fb-to-chip.drop-before { box-shadow: -2px 0 0 0 var(--primary); }
+.fb-to-chip.drop-after { box-shadow: 2px 0 0 0 var(--primary); }
+
+/* 思考强度映射卡片：档位 + 删除左对齐（不推最右） */
+.fb-map-card .fb-map-model {
+  flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.fb-map-card .fb-map-arrow { flex: none; color: var(--muted); }
+.fb-map-card .fb-map-eff {
+  flex: 0 1 120px; min-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--primary);
+}
+
+/* 底部添加行：主力/备选对半分，按钮组独立一行右对齐 */
+.fb-foot-row .half2 { flex: 1 1 calc(50% - 5px); min-width: 260px; }
+.fb-foot-actions { justify-content: flex-end; flex-wrap: wrap; }
+.fb-foot-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+/* 窄屏：对半分退化为整行堆叠 */
+@media (max-width: 640px) {
+  .fb-foot-row .half2 { flex: 1 1 100%; }
 }
