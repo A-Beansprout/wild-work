@@ -73,6 +73,9 @@ function mkNode(id) {
     // querySelector 供 renderModelTable 取 tbody；返回独立 stub（其 innerHTML
     // 会被断言读取，故必须与父节点区分开）。
     querySelector: (sel) => (nodes[id + sel] ||= mkNode(id + sel)),
+    // querySelectorAll 供积分明细浮窗的翻页绑定使用。必须在 stub 上返回真实数组：
+    // 旧 stub 靠「undefined.forEach 抛异常」掩盖了渲染成功与否，属侥幸通过，已改为显式空集合。
+    querySelectorAll: () => [],
   };
 }
 const document = {
@@ -108,7 +111,13 @@ const patched =
       { model: "cline-free/mimo-v2.6-flash", id: "cline-free/mimo-v2.6-flash", priced: true, rate: 0, free: true, has_context: true, context_window: 1000000 },
     ] },
   ] }) + ";"
-  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderFallbacks, renderEffList, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees };";
+  + "\n; globalThis.__T = { renderAccounts, renderSummary, loadStats, renderStats, renderPlatformTable, renderRotation, renderExpiry, renderModels, renderLogs, renderAbnormal, renderFallbacks, renderEffList, renderAppLog, handleToasts, renderModelSearch, collectAllModels, cacheCell, renderUsageCacheCard, renderModelTable, renderUsage, renderFees"
+  // 积分明细浮窗：函数 + 两个模块级 let 的注入器（detailState/detailCache 是 `let`，
+  // 只能在源码作用域内赋值，故由改写注入 setter 而不是靠 globalThis）。
+  // ⚠️ cache 必须按 uid 建键：真实代码是 detailCache[detailState.uid]，
+  //    直接塞「响应对象」会让 detailCache[uid] 为 undefined（静默走空明细分支）。
+  + ", renderCreditDetail, showCreditDetail, __setCreditDetailState: (st, resp) => { detailState = st; detailCache = { [st.uid]: resp }; }"
+  + " };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
   document,
@@ -452,6 +461,75 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- MonkeyCode 签到 + Loomy 浏览器登录/签到（2026-10-17）----
+// 与上面 raccoon 同族：漏改任意一处都**不报错**，只表现为「按钮是灰的」或「引导页打不开」。
+// Go 侧另有 internal/app/{monkeycode,loomy}_checkin_test.go 与 app.go 的 noExplicitCheckin 断言。
+{
+  const need = [
+    ["monkeycode 不在无签到集合（已实装签到，见 internal/monkeycode/checkin.go）",
+      !/NO_EXPLICIT_CHECKIN[^)]*"monkeycode"/.test(raw)],
+    ["loomy 不在无签到集合（已实装宠物打工领奖，见 internal/loomy/checkin.go）",
+      !/NO_EXPLICIT_CHECKIN[^)]*"loomy"/.test(raw)],
+    ["loomy 在网页版登录集合里（否则「＋Loomy」不弹登录框）",
+      /WEB_LOGIN_CHANNELS = new Set\(\[[^\]]*"loomy"/.test(raw)],
+    // Loomy 与 raccoon 相反：后端不拉浏览器，必须由前端 window.open 打开引导页。
+    ["loomy 的登录分支有 window.open（否则引导页打不开）",
+      /channel === "loomy"[\s\S]{0,600}?window\.open\(url/.test(raw)],
+    ["loomy 的弹窗文案不再套用「互踢/自动续期」（Loomy 无 refresh 端点）",
+      (() => {
+        // 只检查**用户可见的文案**（lcMsg 赋值段），并先剥掉注释 ——
+        // 否则分支里的说明性注释（「不存在互踢 / 自动续期」）会被自己的断言命中。
+        const i = raw.indexOf('channel === "loomy"');
+        if (i < 0) return false;
+        const seg = raw
+          .slice(i, raw.indexOf("return;", i) + 7)
+          .replace(/^\s*\/\/.*$/gm, "");
+        return !/自动续期|互踢/.test(seg);
+      })()],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- fmtTokens 只能有一个定义 + Token 额度必须用可读单位（2026-10-17 冒烟发现）----
+// 背景：Token 计数面板新增了一个「万/亿」版 fmtTokens，与上游原有的「k/M」版**同名**，
+// 且后者在文件更靠后 ⇒ 静默覆盖。后果：Token 卡片把 94539300 显示成 `94539k`
+//（用户读不出来的数字），而模型上下文窗口又确实需要 k/M 形态。
+// 修法：额度用 fmtTokens（万/亿），模型元数据用 fmtTokensCompact（k/M）。
+// 这里锁住三件事，防止再次互相覆盖：
+{
+  const decls = raw.match(/^\s*function\s+fmtTokens\s*\(/gm) || [];
+  const compact = raw.match(/^\s*function\s+fmtTokensCompact\s*\(/gm) || [];
+  const need = [
+    ["fmtTokens 只有一处定义（同名互相覆盖会让额度显示成 94539k）", decls.length === 1],
+    ["fmtTokensCompact 存在且唯一（模型元数据用 k/M，与上游口径一致）", compact.length === 1],
+    // 直接跑真实函数：额度数字必须落在「万/亿」口径上。
+    ["fmtTokens(94539300) 用万/亿（不是 94539k）", (() => {
+      const m = raw.match(/function\s+fmtTokens\s*\(n\)\s*\{[\s\S]*?\n\}/);
+      if (!m) return false;
+      try {
+        const fn = new Function("return (" + m[0] + ")")();
+        const out = String(fn(94539300));
+        return /万|亿/.test(out);
+      } catch { return false; }
+    })()],
+    ["fmtTokens(0) 不得是 '-'（那是紧凑版的占位，额度 0 要如实显示）", (() => {
+      const m = raw.match(/function\s+fmtTokens\s*\(n\)\s*\{[\s\S]*?\n\}/);
+      if (!m) return false;
+      try {
+        const fn = new Function("return (" + m[0] + ")")();
+        return String(fn(0)) !== "-";
+      } catch { return false; }
+    })()],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 // ---- 积分明细浮窗点击式 + 手机竖屏响应式 ----
 // 与 R34/R41 同族：这两处都是「改了交互/样式但没接线/被后写规则覆盖」就静默失效，
 // 且宽度断点一旦被人调大就会重新弄坏桌面端（本次就是靠像素级 diff 才发现过一次），故在此锁死。
@@ -697,6 +775,127 @@ for (const [label, re] of uniq) {
   ];
   for (const [label, pass] of need3) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 积分明细浮窗（发布级回归：点积分数字什么都不出现）----
+// 起因（2026-10-17 用户报告「账号面板里点积分数字，积分明细浮窗不显示」）：
+// Token 计数面板那次改动把 `uid` 从 renderCreditDetail 的作用域里带走了 ——
+// renderCreditDetail() 内部写成 `state.accounts.find((x) => x.uid === uid)`，
+// 而 `uid` 只是 showCreditDetail(e, uid) 的形参。ReferenceError 抛在
+// `tip.innerHTML = html` 之前 ⇒ 浮窗 display:block 但 innerHTML 是空串，用户看到「什么都没发生」。
+//
+// 这一族缺陷的共同点是「运行期才炸 / 静默 return」，纯 HTML 断言抓不到：
+//   ① 未定义标识符（ReferenceError，只在有 items 的真实响应上才会走到）；
+//   ② catch 静默 return（接口 400/网络错时零提示）；
+//   ③ 空 items 静默 return（渠道没下发明细时零提示）。
+// 故这里同时做「源码作用域检查」与「真跑一遍渲染」两层，避免只测到表面。
+{
+  const need3 = [];
+  const check3 = (label, pass, extra) => need3.push([label, pass, extra]);
+
+  // ---- ① renderCreditDetail 内不得出现裸 uid ----
+  // 取函数体：从 `function renderCreditDetail(` 起到下一个顶层 `}` 单独成行的位置。
+  const fnBody = (name) => {
+    const at = raw.indexOf(`function ${name}(`);
+    if (at < 0) return "";
+    const brace = raw.indexOf("{", at);
+    let depth = 0;
+    for (let i = brace; i < raw.length; i++) {
+      if (raw[i] === "{") depth++;
+      else if (raw[i] === "}" && --depth === 0) return raw.slice(brace, i + 1);
+    }
+    return "";
+  };
+  // 去注释与字符串/模板串，只留代码标识符（避免注释里写 `uid` 造成误判）。
+  const codeOnly = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ")
+    .replace(/`(?:[^`\\]|\\.)*`/g, '""')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, '""');
+
+  const rcd = fnBody("renderCreditDetail");
+  check3("renderCreditDetail 函数体可定位", rcd.length > 200, `len=${rcd.length}`);
+  const rcdCode = codeOnly(rcd);
+  // 裸 uid = 前面不是 `.`（成员访问）也不是标识符字符；排除 `uid=` 这类形参声明也不该有。
+  // 允许的出现形式只有 detailState.uid / xxx.uid。
+  const bareUidMatches = [...rcdCode.matchAll(/(^|[^.\w$])uid\b/g)].map((m) => m.index);
+  check3(
+    "renderCreditDetail 内无裸 uid（ReferenceError: uid is not defined 的根因）",
+    bareUidMatches.length === 0,
+    bareUidMatches.length ? `命中 ${bareUidMatches.length} 处：${rcdCode.slice(Math.max(0, bareUidMatches[0] - 40), bareUidMatches[0] + 40)}` : ""
+  );
+  check3(
+    "renderCreditDetail 用 detailState.uid 取账号（单一来源）",
+    /detailState\.uid/.test(rcdCode)
+  );
+
+  // ---- ② 真跑一遍 renderCreditDetail ----
+  // 用「有 items 的正常响应」喂进去：这正是用户点有积分账号时走到的路径。
+  // 旧实现会在 329 行抛 ReferenceError（此时 innerHTML 仍为空串）⇒ 断言失败；修复后应正常上屏。
+  // ⚠️ 必须断言**明细正文**（detail-table / 小计），不能只断言「innerHTML 非空」：
+  //    修复后失败路径会渲染提示条（也是非空），只判长度会放过「渲染了但渲染的是错误提示」。
+  {
+    const tipNode = document.getElementById("creditTip");
+    tipNode.innerHTML = "";
+    // 通过注入的 setter 直接摆好 detailState + detailCache（两者是 app.js 顶层 let）。
+    T.__setCreditDetailState({ uid: "4298452267967801", page: 0 }, {
+      items: [
+        { name: "每日签到", total: 2000, used: 100, remain: 1900, usable: true, expire_at: "2026-12-01" },
+        { name: "奖励积分", total: 800, used: 0, remain: 786, usable: true },
+      ],
+      usable_remain: 2686, unusable_remain: 0, expiring_remain: 100,
+    });
+    let threw = "";
+    try { T.renderCreditDetail(); } catch (e) { threw = `${e.constructor.name}: ${e.message}`; }
+    const html = tipNode.innerHTML;
+    check3("renderCreditDetail 在有明细时不抛异常", threw === "", threw);
+    check3("明细表格已上屏（detail-table）", html.includes("detail-table"), `htmlLen=${html.length}`);
+    check3("浮窗含明细标题「积分明细」", html.includes("积分明细"));
+    check3("浮窗含明细行（每日签到 / 奖励积分）", html.includes("每日签到") && html.includes("奖励积分"));
+    check3("浮窗含可用小计 2686", html.includes("2686"), html.slice(0, 200));
+    check3("明细渲染时不得退化成提示条", !html.includes("detail-empty"), html.slice(0, 200));
+  }
+
+  // ---- ②b 真跑一遍空明细分支 ----
+  // 空 items 以前是静默 return（用户点了没反应）；现在必须在浮窗里给出可见解释。
+  {
+    const tipNode = document.getElementById("creditTip");
+    tipNode.innerHTML = "";
+    T.__setCreditDetailState({ uid: "4298452267967801", page: 0 }, { items: [], usable_remain: 0, unusable_remain: 0 });
+    let threw = "";
+    try { T.renderCreditDetail(); } catch (e) { threw = `${e.constructor.name}: ${e.message}`; }
+    const html = tipNode.innerHTML;
+    check3("空明细：renderCreditDetail 不抛异常", threw === "", threw);
+    check3("空明细：浮窗显示可见提示（detail-empty）", html.includes("detail-empty"), html.slice(0, 160));
+    check3("空明细：提示文案说明「暂无…明细」", html.includes("暂无") && html.includes("明细"), html.slice(0, 160));
+  }
+
+  // ---- ③ showCreditDetail 的 catch 不得静默 return ----
+  // 接口报错（400/网络错）时必须 toast 出原因，否则用户点了永远「没反应」。
+  const scd = fnBody("showCreditDetail");
+  check3("showCreditDetail 函数体可定位", scd.length > 100, `len=${scd.length}`);
+  const scdCode = codeOnly(scd);
+  const catchIdx = scdCode.indexOf("catch");
+  check3("showCreditDetail 有 catch 分支", catchIdx >= 0);
+  if (catchIdx >= 0) {
+    // 取 catch 之后到函数体末尾的片段，断言里面有可见提示调用。
+    const tail = scdCode.slice(catchIdx);
+    check3("showCreditDetail 的 catch 不再静默 return（含 toast/可见提示）", /toast\(/.test(tail), tail.slice(0, 120));
+  }
+
+  // ---- ④ 空明细 / 无条目时也不能静默 ----
+  // 后端对 oczen/kilo/custom 直接 400，其余渠道若 items 为空也必须让用户看到解释。
+  // 判据用函数定义（不是正则字面量）：/creditTipNotice/ 那种写法会匹配到本文件自己的正则。
+  check3("空明细提示函数存在（renderCreditTipNotice）", /function renderCreditTipNotice\(/.test(raw));
+  check3("showCreditDetail 空 items 分支也给出提示（不再静默）",
+    /if \(!d \|\| !d\.items \|\| !d\.items\.length\) \{\s*renderCreditTipNotice\(/.test(raw));
+  check3(".detail-empty 有样式（提示条可读）", readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8").includes(".credit-tip .detail-empty"));
+
+  for (const [label, pass, extra] of need3) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
   }
 }

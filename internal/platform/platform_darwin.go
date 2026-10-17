@@ -30,6 +30,47 @@ func AskYesNo(title, msg string) bool {
 	return err == nil && strings.Contains(string(out), "button returned:是")
 }
 
+// 本 fork 说明：CodeArts 授权走「无痕窗口 + 用户点授权」（internal/app/app.go 调
+// DefaultBrowserIncognito/LaunchIncognito），故上游 1e25be4 的死代码清理在本分支不适用，
+// 这组函数必须保留；否则 internal/app 编译失败。
+var browserApps = []struct {
+	bundle string
+	name   string
+	flag   string
+}{
+	{"com.google.Chrome", "Google Chrome", "--incognito"},
+	{"com.microsoft.edgemac", "Microsoft Edge", "--inprivate"},
+	{"org.mozilla.firefox", "Firefox", "-private-window"},
+	{"com.apple.Safari", "Safari", ""},
+}
+
+// DefaultBrowserIncognito 返回系统默认浏览器的无痕启动方式。
+// 简化实现：探测已安装浏览器，按 Chrome→Edge→Firefox→Safari 顺序。
+func DefaultBrowserIncognito() (exePath, flag string, ok bool) {
+	for _, b := range browserApps {
+		if appExists(b.name) {
+			return b.name, b.flag, true
+		}
+	}
+	return "", "", false
+}
+
+func appExists(name string) bool {
+	_, err := os.Stat(filepath.Join("/Applications", name+".app"))
+	return err == nil
+}
+
+// LaunchIncognito 用 open -na 以无痕模式打开。
+func LaunchIncognito(app, flag, url string) error {
+	args := []string{"-na", app}
+	if flag != "" {
+		args = append(args, "--args", flag, url)
+	} else {
+		args = append(args, "--args", url)
+	}
+	return exec.Command("open", args...).Start()
+}
+
 // OpenURL 用系统默认方式打开 URL。
 func OpenURL(url string) error {
 	return exec.Command("open", url).Start()

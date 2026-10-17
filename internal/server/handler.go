@@ -775,9 +775,16 @@ func (h *Handler) serveRotation(
 				log.Printf("session dead marked platform=%s uid=%s", rt.Kind, acct.UID)
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
-			case provider.ErrContentBlocked, provider.ErrPromptTooLong, provider.ErrPassthrough:
-				// 内容拦截/上下文超限/请求级拒绝：不冷却不熔断不计错，直接透传原文回客户端。
+			case provider.ErrContentBlocked, provider.ErrPromptTooLong, provider.ErrImageInvalid,
+				provider.ErrBadParams, provider.ErrPassthrough:
+				// 内容拦截 / 上下文超限 / 图片无效 / 出站 body 不合格 / 请求级拒绝：
+				// 不冷却不熔断不计错，直接透传原文回客户端。
 				// 这些是请求内容或请求形态问题，与账号健康无关，轮转白费时间且浪费好号配额。
+				//
+				// ⚠️ ErrImageInvalid 与 ErrBadParams 是 2026-10-17 补入的：两者的 ErrKind 注释
+				// 早就写着「请求级错误，不罚号不轮转，透传原文」，但本 case 漏了它们 ⇒ 落到
+				// default 做 NoteError 计数，等于拿客户端的问题惩罚健康账号。本地拒绝型渠道
+				// （monkeycode / loomy / raccoon / minimax）最容易触发这条路径。
 				transparentError(w, status, respBody)
 				return
 			case provider.ErrWafBlock, provider.ErrAccountFault, provider.ErrModelBlocked:
@@ -1048,8 +1055,8 @@ func formatUnfreeze(t time.Time) string {
 
 // noLoginChannel 报告渠道是否「无登录概念」（不存在凭证文件、也无重登入口）。
 // 用于把「去面板重新登录」这类引导文案限定在真正适用的渠道上，
-// 避免匿名通道（oczen）被误导去找一个不存在的登录按钮。
-func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen }
+// 避免免密渠道（oczen / kilo）被误导去找一个不存在的登录按钮。
+func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen || k == provider.Kilo }
 
 // keyPasteChannel 报告渠道凭据是否「由用户从官方站点自行创建后粘贴进来」（而非登录编排取得）。
 // 这类渠道的引导文案必须指向「粘贴新 Key」而不能说「重新登录」：
@@ -1061,7 +1068,7 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	// 直通形态（`cline-free/*`）——后者首段不是渠道名，必须整串当上游模型名（决议 R59）。
 	kind, upstream, ok := provider.SplitModelID(model)
 	if !ok {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
+		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model> / kilo/<model> / minimax/<model> / lobsterai/<model> / zcode/<model> / gemini/<model> / codearts/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
 	}
 	rt := h.getRuntime(kind)
 	if rt == nil || rt.Pool == nil || rt.Upstream == nil {

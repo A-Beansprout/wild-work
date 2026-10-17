@@ -196,7 +196,7 @@ function renderModelSearch(q) {
       const eff = (m.reasoning_efforts && m.reasoning_efforts.length)
         ? `<span class="ms-eff" title="思考档位：${esc(m.reasoning_efforts.join("·"))}${m.default_reasoning_effort ? `（默认 ${m.default_reasoning_effort}）` : ""}">${esc(m.reasoning_efforts.join("·"))}</span>` : "";
       const ctx = (m.has_context && m.context_window)
-        ? `<span title="上下文窗口：${esc(fmtTokens(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokens(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
+        ? `<span title="上下文窗口：${esc(fmtTokensCompact(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokensCompact(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
       const rate = m.free ? "Free" : (m.priced ? `x${m.rate.toFixed(2)}` : "unknown");
       return `<div class="ms-row" data-mid="${esc(full)}" role="button" tabindex="0" title="点击复制完整模型 ID：${esc(full)}">`
         + `<span class="badge ${chClass(ch)}">${esc(chLabel(ch))}</span>`
@@ -447,7 +447,9 @@ function bindCreditDetailDismiss() {
 }
 
 async function showCreditDetail(e, uid) {
-  const el = e.currentTarget;
+  // e（内联 onclick 传入的 event）刻意只作占位：浮窗位置由 CSS 固定（水平居中、距顶 12vh），
+  // 不需要锚定元素。**不要**在这里取 `e.currentTarget` —— 它在下面第一个 `await` 之后恒为
+  // null（事件派发早已结束），留着只会误导后来者（2026-10-17 清理掉一处这样的死代码）。
   const seq = ++detailOpenSeq; // 本次打开的身份；被更晚的打开或关闭动作作废时不再上屏
 
   // 切换到另一个账号时重置页码；同一账号重复点击保留原页码。
@@ -461,9 +463,23 @@ async function showCreditDetail(e, uid) {
       if (seq !== detailOpenSeq) return;
       detailCache[uid] = d;
       syncCreditsFromDetail(uid, d);
-    } catch (err) { return; }
+    } catch (err) {
+      // 不再静默 return：接口失败以前什么都不显示，用户完全不知道发生了什么事。
+      // 后端对 oczen / kilo / 自定义渠道直接 400（「无积分，不适用」），其余是网络/
+      // 上游错误——两类都必须把原因摆到用户面前（浮窗 + toast 双通道：
+      // 浮窗贴在被点的位置、常驻；toast 兜住浮窗可能被下一次点击关掉的情形）。
+      if (seq !== detailOpenSeq) return;
+      const msg = (err && err.message) ? err.message : "积分明细获取失败";
+      renderCreditTipNotice(msg);
+      toast(`积分明细获取失败：${msg}`);
+      return;
+    }
   }
-  if (!d || !d.items || !d.items.length) return;
+  // 同理：请求成功但一件明细都没有（渠道没下发条目）也必须给出可见解释，不再静默返回。
+  if (!d || !d.items || !d.items.length) {
+    renderCreditTipNotice("该账号暂无可展示的积分明细（上游未下发条目）。");
+    return;
+  }
 
   let tip = $("creditTip");
   if (!tip) {
@@ -475,7 +491,6 @@ async function showCreditDetail(e, uid) {
 
   // 位置由 CSS 固定（水平居中、距顶 12vh）：不再跟着被点卡片算 left/top，
   // 这样后台重渲染、滚动都不会让浮窗跑偏，也避免窄屏越界。
-  void el;
   detailState = { uid, page };
   renderCreditDetail();
   tip.style.display = "block";
@@ -499,12 +514,38 @@ function syncCreditsFromDetail(uid, d) {
   renderSummary();
 }
 
+// renderCreditTipNotice 在浮窗里显示一条可见提示（替代「静默什么都不发生」）。
+// 为什么必须用浮窗而不用 toast：toast 3 秒后消失且位置在页面底部，用户点的是卡片上的
+// 某个数字，反馈必须出现在「他刚点的那个地方」，否则容易被当成没反应。
+// 提示条沿用浮窗壳子（关闭按钮/点外部/Esc 全部照常），只是正文换成一行说明。
+function renderCreditTipNotice(msg) {
+  let tip = $("creditTip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "creditTip";
+    tip.className = "credit-tip";
+    document.body.appendChild(tip);
+  }
+  tip.innerHTML = `<div class="detail-head">`
+    + `<span class="detail-count"></span>`
+    + `<span class="detail-pager"></span>`
+    + `<span class="detail-title">积分明细</span>`
+    + `<button type="button" class="detail-close" data-close-credit-tip="1" title="关闭" aria-label="关闭积分明细">✕</button>`
+    + `</div><div class="detail-empty">${esc(msg)}</div>`;
+  tip.style.display = "block";
+}
+
 // renderCreditDetail 按 detailState 重绘 tooltip（含分页控件与可用/不可用小计）。
 function renderCreditDetail() {
   const tip = $("creditTip");
   if (!tip || !detailState) return;
   const d = detailCache[detailState.uid];
-  if (!d || !d.items || !d.items.length) return;
+  // 空明细不能静默 return：此前这里直接返回，用户点了积分数字后浮窗不出现也没有任何解释
+  // （典型：渠道有积分但没有下发条目、或该账号额度桶为空）。改为在浮窗里说明。
+  if (!d || !d.items || !d.items.length) {
+    renderCreditTipNotice("该账号暂无可展示的积分明细（上游未下发条目）。");
+    return;
+  }
 
   const items = d.items.slice();
   // 临期判定与后端 ExpiringWithin 同口径：北京时间墙钟 now + 阈值天数，到期日当天零点前即临期。
@@ -538,7 +579,14 @@ function renderCreditDetail() {
     html += `<span class="detail-pg${page >= pages - 1 ? " off" : ""}" data-pg="${page + 1}">›</span>`;
     html += `</span>`;
   }
-  html += `<span class="detail-title">积分明细</span>`;
+  // 标题随计量单位切换：token 渠道不叫「积分明细」（避免把 token 数当积分读）。
+  // ⚠️ 账号必须由 detailState.uid 取（本函数的单一数据源）：`uid` 是 showCreditDetail 的
+  // **形参**，不在本函数作用域内。此处曾写成 `x.uid === uid` ⇒ ReferenceError: uid is not
+  // defined，抛在下面的 `tip.innerHTML = html` 之前 ⇒ 浮窗 display:block 但内容为空，
+  // 用户看到的就是「点积分数字什么都不出现」（发布级回归，由 scripts/ui-static-check.mjs 锁死）。
+  const detailAcct = (state.accounts || []).find((x) => x.uid === detailState.uid);
+  const detailIsToken = !!(detailAcct && detailAcct.credits_unit === "token");
+  html += `<span class="detail-title">${detailIsToken ? "Token 额度明细" : "积分明细"}</span>`;
   // 关闭按钮：桌面与触屏共用同一入口（触屏没有 hover，只能靠显式按钮）
   html += `<button type="button" class="detail-close" data-close-credit-tip="1" title="关闭" aria-label="关闭积分明细">✕</button>`;
   html += `</div>`;
@@ -551,8 +599,11 @@ function renderCreditDetail() {
     let tag = "";
     if (!it.usable) {
       tag = '<span class="detail-tag" title="该额度仅供官方客户端使用，本工具无法消耗">不可用</span>';
+    } else if (it.unit === "token") {
+      // Token 计量（ZCode 的额度桶、MonkeyCode 的每日 Token 额度）：明示单位，不计入积分合计。
+      tag = '<span class="detail-tag" title="以 token 计量，不计入积分合计">tokens</span>';
     } else if (it.info_only) {
-      // 单位与积分不同（如 MonkeyCode 的每日 Token 额度）：展示但不计入合计。
+      // 其它「单位与积分不同」的展示型条目：展示但不计入合计。
       tag = '<span class="detail-tag" title="单位与积分不同，仅作展示，不计入合计">仅展示</span>';
     }
     // 临期条目（可消耗且有剩余、窗口内到期，与后端 ExpiringWithin 余额口径一致）：
@@ -573,7 +624,9 @@ function renderCreditDetail() {
         expCell = esc(it.expire_at);
       }
     }
-    html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${it.total}</td><td>${it.used}</td><td>${it.remain}</td>`;
+    // Token 条目用紧凑单位显示（上亿数字直接铺开会撑破表格）。
+    const cellNum = (v) => (it.unit === "token" ? fmtTokens(v) : v);
+    html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${cellNum(it.total)}</td><td>${cellNum(it.used)}</td><td>${cellNum(it.remain)}</td>`;
     if (hasExpiry) html += `<td${expCellCls}>${expCell}</td>`;
     html += `</tr>`;
   }
@@ -647,8 +700,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", cline: "Cline", officeace: "OfficeAce" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", cline: "cline", officeace: "officeace" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts", cline: "Cline", officeace: "OfficeAce" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", cline: "cline", officeace: "officeace" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
 // ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
@@ -700,9 +753,15 @@ function varyColor(hex, i) {
 }
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
-// 千问办公无签到活动；MonkeyCode 无签到端点；Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
+// 千问办公无签到活动；OpenCodeZen 与 Kilo 是免密渠道，
+// 无账号概念（也无积分）。
 // 小浣熊已实现签到（setting_info 触发每日积分落账，见 internal/raccoon/checkin.go），支持手动按钮。
-const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "loomy", "oczen", "cline"]);
+// MonkeyCode 已实现签到（POST {console}/api/v1/users/wallet/checkin，见 internal/monkeycode/checkin.go），
+// 故**不在**本名单内：它要有手动按钮，也要参与批量签到。
+// Loomy 同样已实现签到（宠物每日打工奖励，见 internal/loomy/checkin.go），故也在名单外。
+// 注意：Loomy 的奖励判据是「当日有效对话轮次」（上游算），未在官方客户端用过该账号时
+// 领取结果会是「未达档位」——那是如实状态，不是按钮坏了。
+const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "oczen", "kilo", "zcode", "gemini", "cline"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g) || isCustomGroup(g); // 自定义渠道无签到活动（R66）
 // isCustomGroup 该分组是否为用户自定义 OpenAI 兼容渠道（R66）。
 // 以 state.custom_channels（后端 /api/state 下发，保存即热更新）为准，勿在前端另维护一份。
@@ -715,19 +774,22 @@ const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 // 支持「网页版自动登录」的渠道：后端拉起独立 profile 的浏览器，用户在网页里登录，
 // 后端经 CDP 捕获凭据（小浣熊：Cookie 里的 xhx_token）。
 // 小浣熊两个集合都命中 —— 弹窗里同时给「网页版登录」与「从客户端导入」两个动作。
-const WEB_LOGIN_CHANNELS = new Set(["raccoon"]);
+// Loomy 也两个集合都命中，但机制不同：**不**拉浏览器、**不**用 CDP 捕获，而是起一个
+// 127.0.0.1 的本机登录引导页（手机号 + 短信验证码），由前端 window.open 打开
+// （见 internal/login_loomy）。故文案需按渠道区分，不能套用小浣熊那段。
+const WEB_LOGIN_CHANNELS = new Set(["raccoon", "loomy"]);
 const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
 // 粘贴凭据型渠道：没有浏览器登录编排，凭据由用户从官方站点自行创建后粘贴进来。
 // Cline：app.cline.bot → 注册账号 → Account / API Keys 建 sk_ Key（见 internal/cline）。
 const PASTE_KEY_CHANNELS = new Set(["cline"]);
 const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
-const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持", cline: "无签到" };
+const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持", kilo: "不支持", zcode: "不支持", gemini: "不支持", cline: "无签到" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
-// 内建名单只有 oczen/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
+// 内建名单只有 oczen/kilo/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
 // 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
-const NO_CREDITS_BUILTIN = new Set(["oczen", "cline"]);
+const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline"]);
 // 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
 const RELOGIN_CHANNELS = new Set(["workbuddy", "workbuddyai", "traework", "qoder", "qodercn", "qodercom", "qwenwork", "raccoon"]);
 
@@ -738,12 +800,33 @@ const RELOGIN_CHANNELS = new Set(["workbuddy", "workbuddyai", "traework", "qoder
 // 不可用仅在 >0 时显示；临期同理，凭空多个灰/红 0 很吵。
 // 旧版本 state 文件（v2.2.0 及之前，无 unusable 字段）读入后 credits_stale=true，
 // 此时不把旧值当真值，改显示「待刷新」；自动刷新首刷成功后即变回真实拆分。
+// fmtTokens Token 数格式化：这类数字动辄上亿，直接铺开会撑破卡片与汇总条，
+// 故用中文紧凑单位（万/亿）显示；完整语义靠 title 说明。
+function fmtTokens(n) {
+  n = Number(n) || 0;
+  const trim = (s) => s.replace(/\.?0+$/, "");
+  if (Math.abs(n) >= 1e8) return trim((n / 1e8).toFixed(2)) + "亿";
+  if (Math.abs(n) >= 1e4) return trim((n / 1e4).toFixed(2)) + "万";
+  return n.toLocaleString("zh-CN");
+}
+
 function creditsText(a) {
   if (a.credits_na) {
     return `<span class="credit-na" title="该渠道无积分概念">不适用</span>`;
   }
   if (a.credits_stale) {
     return `<span class="credit-stale" title="余额口径已过期（旧版本状态文件），正在自动刷新…">待刷新</span>`;
+  }
+  // Token 计量渠道（credits_unit="token"，如 ZCode）：同一位置改显示 **Token 计数**。
+  // 与积分分开统计——它**不进**积分汇总合计（见 renderSummary），
+  // 但保留临期角标（token 桶同样有到期时间，来自内部 ResourceItem.ExpireAt）。
+  if (a.credits_unit === "token") {
+    let html = `<span class="credit-num">${fmtTokens(a.credits)}</span>`
+      + `<span title="本渠道额度以 token 计量，与积分分开统计">tokens</span>`;
+    if ((a.expiring_credits || 0) > 0) {
+      html += `<span class="credit-expiring"> (临期${fmtTokens(a.expiring_credits)})</span>`;
+    }
+    return html;
   }
   let html = `<span class="credit-num">${a.credits}</span><span>可用积分</span>`;
   if ((a.expiring_credits || 0) > 0) {
@@ -756,7 +839,7 @@ function creditsText(a) {
 }
 
 // 渠道汇总固定顺序（与添加按钮布局一致；traecode 是别名池不单独出现，qoder 下线仅存量兜底）
-const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "cline", "officeace", "oczen", "qoder"];
+const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "minimax", "lobsterai", "zcode", "gemini", "codearts", "cline", "officeace", "oczen", "kilo", "qoder"];
 
 // renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
 // 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
@@ -771,9 +854,11 @@ function renderSummary() {
   for (const a of state.accounts) {
     const g = a.group || "workbuddy";
     let c = byCh[g];
-    if (!c) { c = byCh[g] = { n: 0, credits: 0, expiring: 0, unusable: 0, stale: 0, na: false }; }
+    if (!c) { c = byCh[g] = { n: 0, credits: 0, expiring: 0, unusable: 0, stale: 0, na: false, isToken: false, tokens: 0 }; }
     c.n++;
     if (a.credits_na) { c.na = true; continue; }
+    // Token 计量渠道单列：只累加 token 数，**不并入**积分合计（与积分分开统计）。
+    if (a.credits_unit === "token") { c.isToken = true; c.tokens += a.credits || 0; c.expiring += a.expiring_credits || 0; continue; }
     c.credits += a.credits || 0;
     c.expiring += a.expiring_credits || 0;
     c.unusable += a.unusable_credits || 0;
@@ -792,11 +877,17 @@ function renderSummary() {
     const allStale = c.stale === c.n;
     // R17 口径：口径过期的数字不当真值——全渠道待刷新时不进合计
     // （否则"待刷新"的旧值会悄悄抬高合计，用户看到的数字无从解释）。
-    if (!c.na && !allStale) { total += c.credits; totalExp += c.expiring; }
-    if (!c.na && allStale) staleChs++;
+    // Token 计量渠道不进积分合计（这就是「和积分分开统计」的落点）。
+    if (!c.na && !c.isToken && !allStale) { total += c.credits; totalExp += c.expiring; }
+    if (!c.na && !c.isToken && allStale) staleChs++;
     let body;
     if (c.na) {
       body = `<span class="credit-na">不适用</span>`;
+    } else if (c.isToken) {
+      // Token 计数：以 tokens 为单位单列，明示它不是积分。
+      body = `<span class="cs-num">${fmtTokens(c.tokens)}</span>`
+        + `<span class="cs-tok" title="本渠道额度以 token 计量，不计入「合计」">tokens</span>`
+        + (c.expiring > 0 ? `<span class="cs-exp" title="24 小时内到期">临期${fmtTokens(c.expiring)}</span>` : "");
     } else if (allStale) {
       body = `<span class="credit-stale">待刷新</span>`;
     } else {
@@ -815,7 +906,7 @@ function renderSummary() {
     html += `<span class="cs-chip clickable cs-all" data-wg="" role="button" tabindex="0" title="显示全部账号">`
       + `<span class="cs-n">全部</span></span>`;
   }
-  html += `<span class="cs-chip cs-total" title="各渠道可用积分合计（不含「不可用」与匿名通道）">`
+  html += `<span class="cs-chip cs-total" title="各渠道可用积分合计（不含「不可用」、匿名通道与 Token 计量渠道）">`
     + `<span class="cs-title">合计</span><span class="cs-num">${fmt(total)}</span>`
     + (totalExp > 0 ? `<span class="cs-exp">临期${fmt(totalExp)}</span>` : "")
     + (staleChs > 0 ? `<span class="cs-stale" title="有渠道整体待刷新，未计入合计">${staleChs} 渠道待刷新</span>` : "")
@@ -917,6 +1008,9 @@ function renderAccounts() {
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
     const oczenHelp = `<span class="icon-op help" title="关于 OpenCodeZen 通道：&#10;1. 本工具仅反代其免费模型（绕过官方客户端限制）；付费账号可直接使用官方端点，无需经此通道&#10;2. 在 OpenCodeZen 获取的 API-Key 可在设置中配置，避免匿名账号共享限额超限&#10;3. 地域受限的免费模型（如 muse-spark 系）会经「备用上游通道」自动重发（设置里配置代理地址；未配置则原文透传 403）">?</span>`;
+    // kilo 的说明与 oczen 不同：没有私有 Key 可配，也没有备用通道重放。
+    const kiloHelp = `<span class="icon-op help" title="关于 Kilo 免费池：&#10;1. 上游是 api.kilo.ai 网关的免费模型池，**不需要任何凭据**（无账号、无 Key）&#10;2. 只反代免费池（模型清单里 isFree=true 的那些）；请求付费模型会返回 PAID_MODEL_AUTH_REQUIRED&#10;3. 无签到、无积分，故没有「刷新积分」入口">?</span>`;
+    const channelHelp = a.group === "kilo" ? kiloHelp : oczenHelp;
     // 登录态失效（401/登录已失效）：徽标 + 一键重新登录（#134）。
     const sessionDeadTag = a.session_dead
       ? `<span class="tag bad" title="${esc(a.session_dead_reason || "登录态已失效，请重新登录")}">需重新登录</span>`
@@ -925,7 +1019,7 @@ function renderAccounts() {
       ? `<span class="icon-op" title="重新登录（跳转登录页换新凭据，成功后自动补签）" onclick="startLogin('${a.group}')">⟳</span>`
       : "";
     const ops = fixedAcct
-      ? `${oczenHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
+      ? `${channelHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
           ${reloginBtn}
           ${noCredits ? "" : `<span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>`}
@@ -966,18 +1060,39 @@ function renderTimes() {
   $("nextCheckin").textContent = state.next_checkin || "-";
 }
 
-// channelCredits 汇总某渠道全部账号的可用积分（与积分汇总条同源 state.accounts）。
-// 无该渠道账号时返回 null（前端不渲染角标，避免显示误导性的 0）。
+// channelCredits 汇总某渠道全部账号的可用额度（与积分汇总条同源 state.accounts）。
+//
+// 返回 { bal, unit }：unit 为 ""（积分）或 "token"（Token 计数，如 ZCode）。
+// ⚠️ 调用方**必须**按 unit 选单位与格式化（token 用 fmtTokens、积分用 fmtNum）——
+// 否则会把上亿 token 显示成「N 分」（2026-10-17 用户截图报告：费率页 ZCode 角标
+// 显示「余额 8,000,000 分」，正是漏了这一步）。
+// 无该渠道账号时返回 null（不渲染角标，避免显示误导性的 0）。
 function channelCredits(kind) {
   if (!state || !state.accounts) return null;
-  let sum = 0, has = false;
+  let sum = 0, has = false, unit = "";
   for (const a of state.accounts) {
     if ((a.group || "workbuddy") !== kind) continue;
-    if (a.credits_na) return null; // 匿名渠道无积分概念
+    if (a.credits_na) return null; // 匿名渠道无额度概念
     has = true;
+    if (a.credits_unit === "token") unit = "token";
     sum += a.credits || 0;
   }
-  return has ? sum : null;
+  return has ? { bal: sum, unit } : null;
+}
+
+// tabBalText 渠道 tab 余额角标文案（按计量单位切换：token 与积分分开显示）。
+function tabBalText(v) {
+  if (!v) return "";
+  return v.unit === "token"
+    ? `余额 ${fmtTokens(v.bal)} tokens`
+    : `余额 ${fmtNum(v.bal)} 分`;
+}
+
+// tabBalTitle 角标 tooltip：明示单位与统计口径（token 不计入积分合计）。
+function tabBalTitle(v) {
+  return v && v.unit === "token"
+    ? "该渠道全部账号当前可用 Token 数（与积分分开统计，不计入积分合计）"
+    : "该渠道全部账号当前可用积分合计";
 }
 
 // fmtNum 千分位整数（与汇总条的 fmt 同口径，独立命名避免作用域冲突）。
@@ -999,9 +1114,13 @@ function refreshTabBalances() {
       if (el) el.remove();
       return;
     }
-    const txt = `余额 ${fmtNum(bal)} 分`;
-    if (el) { if (el.textContent !== txt) el.textContent = txt; }
-    else { const s = document.createElement("span"); s.className = "fees-tab-bal"; s.textContent = txt; s.title = "该渠道全部账号当前可用积分合计"; tab.appendChild(s); }
+    const txt = tabBalText(bal);
+    const tip = tabBalTitle(bal);
+    if (el) {
+      if (el.textContent !== txt) el.textContent = txt;
+      if (el.title !== tip) el.title = tip;
+    }
+    else { const s = document.createElement("span"); s.className = "fees-tab-bal"; s.textContent = txt; s.title = tip; tab.appendChild(s); }
   });
 }
 
@@ -1051,7 +1170,7 @@ function renderFees(fees) {
     if (!m || !m.has_context || !m.context_window) return "";
     const hand = m.hand_measured ? "*" : "";
     const src = m.hand_measured ? "本工具实测值（仅供参考，非上游官方声明）" : "上游接口返回";
-    return ` <span class="ctx-tag${m.hand_measured ? " hand" : ""}" title="上下文窗口：${fmtTokens(m.context_window)} tokens（${src}）">(${fmtTokens(m.context_window)}${hand})</span>`;
+    return ` <span class="ctx-tag${m.hand_measured ? " hand" : ""}" title="上下文窗口：${fmtTokensCompact(m.context_window)} tokens（${src}）">(${fmtTokensCompact(m.context_window)}${hand})</span>`;
   };
 
   // 能力文字摘要，拼进模型 tooltip。
@@ -1077,8 +1196,8 @@ function renderFees(fees) {
     const parts = [`模型：${m.model}`];
     if (m.has_context && m.context_window) {
       const src = m.hand_measured ? "（本工具实测，非上游官方值）" : "";
-      parts.push(`上下文窗口：${fmtTokens(m.context_window)}${src}`);
-      if (m.max_tokens) parts.push(`最大输出：${fmtTokens(m.max_tokens)}`);
+      parts.push(`上下文窗口：${fmtTokensCompact(m.context_window)}${src}`);
+      if (m.max_tokens) parts.push(`最大输出：${fmtTokensCompact(m.max_tokens)}`);
     } else {
       parts.push("上下文窗口：未知");
       parts.push("最大输出：未知");
@@ -1143,11 +1262,11 @@ function renderFees(fees) {
   for (const ch of channels) {
     const n = (ch.models || []).length;
     const on = ch.channel === active ? " active" : "";
-    // 渠道积分余额角标：取自 state.accounts（与积分汇总条同源），
-    // 让用户在选择渠道时即可看到「这个渠道还有多少积分可用」。
+    // 渠道余额角标：取自 state.accounts（与积分汇总条同源），让用户在选择渠道时即可看到
+    // 「这个渠道还有多少可用」；单位随渠道计量单位切换（token / 积分，见 tabBalText）。
     const bal = channelCredits(ch.channel);
     const balHtml = bal === null ? ""
-      : `<span class="fees-tab-bal" title="该渠道全部账号当前可用积分合计">余额 ${fmtNum(bal)} 分</span>`;
+      : `<span class="fees-tab-bal" title="${esc(tabBalTitle(bal))}">${esc(tabBalText(bal))}</span>`;
     html += `<button class="fees-tab${on}" data-feech="${esc(ch.channel)}"
       title="${esc(chLabel(ch.channel))}">${esc(chLabel(ch.channel))}<span class="fees-tab-n">${n}</span>${balHtml}</button>`;
   }
@@ -1209,8 +1328,16 @@ function bindFeesTabs() {
   });
 }
 
-// fmtTokens 把 token 数格式化为 1M / 192k 形式。
-function fmtTokens(n) {
+// fmtTokensCompact 把 token 数格式化为 1M / 192k 紧凑形式。
+//
+// ⚠️ 用途边界（2026-10-17 修「同名函数互相覆盖」后确立）：
+//   - 本函数（k/M）**只**用于「模型元数据」——上下文窗口、最大输出这类上游以
+//     k/M 口径描述的能力值，保持与官方文档一致（131072 -> 131k）。
+//   - **额度 / 用量数字**（账号卡片的 Token 计数、明细单元格、平台表）必须用
+//     `fmtTokens`（万/亿中文单位）—— 那些数字动辄上亿，`94539k` 用户读不出来。
+// 历史：本函数原名 `fmtTokens`，与后面新增的万/亿版**同名**，后者在前、本函数在后，
+// 于是本函数静默覆盖了它 ⇒ Token 卡片显示成 `94539k`。改名以消除覆盖。
+function fmtTokensCompact(n) {
   if (!n) return "-";
   if (n >= 1000000 && n % 1000000 === 0) return `${n / 1000000}M`;
   if (n >= 1000) return `${Math.round(n / 1000)}k`;
@@ -1238,7 +1365,11 @@ async function checkin(uid) {
 async function refreshOne(uid) {
   try {
     const r = await api("/api/account/refresh", { uid });
-    toast(`刷新成功：剩余积分 ${r.remain}`);
+    // 单位随账号切换：token 计量渠道（如 ZCode）不叫「积分」（否则上亿 token 被读成积分）。
+    const acc = (state.accounts || []).find((x) => x.uid === uid);
+    toast(acc && acc.credits_unit === "token"
+      ? `刷新成功：剩余 ${fmtTokens(r.remain)} tokens`
+      : `刷新成功：剩余积分 ${r.remain}`);
     delete detailCache[uid]; // 顶层已更新，旧明细缓存须作废，否则「新顶层+旧弹层」
     loadState();
   } catch (e) { toast(e.message); }
@@ -1314,11 +1445,28 @@ const NO_CHECKIN_LOGIN_HINT = {
   glm: "（登录后请按下方指引复制 refresh_token 粘贴回来）",
   cline: "（无需登录：在 app.cline.bot 注册账号，Account / API Keys → Create API Key 后粘贴即可；Key 不过期也不轮换）",
   officeace: "（凭据来自本机已登录的 OfficeAce 客户端；每日签到的临时凭据约 2 小时有效，本工具会自动续期）",
+  minimax: "（设备码授权：点「浏览器登录」后在新页面确认授权，本工具会自动轮询直到完成；可重复添加多个账号）",
+  lobsterai: "（本机回调授权：点「浏览器登录」后在有道页面完成登录，浏览器会跳回本机完成授权；支持多个账号）",
+  zcode: "（设备授权：点「浏览器登录」后在智谱页面完成授权，本工具会轮询直到完成；⚠️ 本渠道的积分领取依赖网页验证码，本工具不自动领取）",
+  gemini: "（本机回调授权：点「浏览器登录」后完成 Google 账号授权，浏览器会跳回本机；支持多个账号。⚠️ 额度以「配额窗口剩余百分比」呈现，不是积分数）",
+  codearts: "（PKCE 授权：点「浏览器登录」后在华为云授权页完成授权，浏览器会跳回本机；支持多个账号。⚠️ 免费额度按 UTC+8 自然日重置）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
   const name = chLabel(channel);
   pendingAction = isImportLocal(channel) ? "import" : "login";
+  // 「账号标识」输入行：只对**上游不提供稳定身份字段**的渠道显示（当前是 CodeArts）。
+  // 为什么要把区分账号的责任交给用户：上游不回传任何身份信息，账号 ID 只能落到每次新签发的
+  // 临时凭据上 ⇒ 既无法区分多个账号、重复登录又会被写成新条目（见 docs/渠道接入备忘.md）。
+  const labelRow = $("lcLabelRow");
+  if (labelRow) {
+    const need = channel === "codearts";
+    labelRow.classList.toggle("hidden", !need);
+    if (need) {
+      const inp = $("lcAccountLabel");
+      if (inp) inp.value = "";
+    }
+  }
   // 次按钮默认隐藏，只在「两条路都通」的渠道（小浣熊）里显示。
   const altBtn = $("btnLoginAlt");
   altBtn.classList.add("hidden");
@@ -1349,6 +1497,25 @@ function promptLogin(channel) {
   if (hasWebLogin(channel)) {
     pendingAction = "login";
     $("lcTitle").textContent = "添加 " + name + " 账号";
+    if (channel === "loomy") {
+      // Loomy 的机制与小浣熊不同：不拉浏览器、不捕获凭据，而是由本工具起一个本机登录引导页，
+      // 用户在页面里填手机号 + 短信验证码（见 internal/login_loomy）。
+      // 另外它**没有 refresh 端点**，所以不存在「互踢 / 自动续期」那一段说明。
+      $("lcMsg").innerHTML = `点击「登录${name}」会打开一个<b>本机登录页</b>（地址在你的电脑上，不经过本工具的服务器），`
+        + `请在其中输入手机号、接收并填写短信验证码，登录完成后本工具会自动保存账号。`
+        + `<div class="glm-warn" style="margin-top:10px">`
+        + `<div class="glm-warn-title">⚠️ 关于登录有效期</div>`
+        + `Loomy 的登录态<b>约 14 天</b>到期，且上游<b>没有刷新接口</b> —— `
+        + `到期后需要重新点「登录${name}」再登一次，或改用「从客户端导入」重新读取已登录客户端的凭据。`
+        + `</div>`
+        + `也可以改用「从客户端导入」：直接读取本机已登录客户端的凭据。`;
+      $("btnLoginConfirm").textContent = "登录" + name;
+      altBtn.textContent = "从客户端导入";
+      altBtn.classList.remove("hidden");
+      altBtn.onclick = () => { pendingAction = "import"; confirmLogin(); };
+      $("loginConfirmOverlay").classList.remove("hidden");
+      return;
+    }
     $("lcMsg").innerHTML = `点击「登录${name}」会打开一个<b>独立的浏览器窗口</b>（不影响你日常浏览器的登录态），`
       + `请在其中正常登录（扫码 / 手机号 / 微信均可），登录完成后本工具会自动捕获凭据并保存账号。`
       + `<div class="glm-warn" style="margin-top:10px">`
@@ -1388,6 +1555,23 @@ function promptLogin(channel) {
     $("loginConfirmOverlay").classList.remove("hidden");
     return;
   }
+  // CodeArts：授权页必须避开日常浏览器里的华为云登录态（否则永远被授权成已登录的那个账号），
+  // 后端会用**无痕窗口**打开；同时需要用户填「账号标识」来区分多个华为账号。
+  if (channel === "codearts") {
+    $("lcTitle").textContent = "添加 CodeArts 账号";
+    $("lcMsg").innerHTML = `点击「登录 CodeArts」会打开一个<b>无痕浏览器窗口</b> —— `
+      + `无痕会话不带日常浏览器的华为云登录态（否则你只会被授权成<b>已登录的那个</b>账号）。`
+      + `请在其中登录<b>你想要添加的那个</b>华为账号。`
+      + `<div class="glm-warn" style="margin-top:10px">`
+      + `<div class="glm-warn-title">为什么要填「账号标识」</div>`
+      + `华为云不回传账号身份信息，本工具无法自动分辨「同一账号重新登录」与「另一个账号」。`
+      + `所以：<b>留空</b> = 覆盖已有的 CodeArts 账号；<b>填写</b>（例如"工作号"）= 作为独立账号并存。`
+      + `以后重登同一个账号时填<b>同一个标识</b>，就会覆盖它而不是再新增一个。`
+      + `</div>`;
+    $("btnLoginConfirm").textContent = "登录 CodeArts";
+    $("loginConfirmOverlay").classList.remove("hidden");
+    return;
+  }
   $("lcTitle").textContent = "添加 " + name + " 账号";
   // 此处只会收到内建渠道名（自定义渠道走设置弹层，不经 promptLogin），
   // 故直接查内建名单，不走动态判定的 noExplicitCheckin()。
@@ -1403,7 +1587,16 @@ function confirmLogin() {
   // 按 pendingAction 分发：小浣熊两种动作都支持，不能只看渠道是否属于导入型。
   if (pendingAction === "import") importLocal(pendingChannel);
   else if (pendingChannel === "officeace") startOfficeAceWebLogin();
-  else startLogin(pendingChannel);
+  else startLogin(pendingChannel, loginLabelValue());
+}
+
+// loginLabelValue 读取登录弹窗里的「账号标识」：只对需要它的渠道（CodeArts）有意义，
+// 其余渠道那一行是隐藏的，恒返回空串。
+function loginLabelValue() {
+  const row = $("lcLabelRow");
+  if (!row || row.classList.contains("hidden")) return "";
+  const inp = $("lcAccountLabel");
+  return inp ? inp.value.trim() : "";
 }
 
 // importLocal 从本机已登录的官方客户端导入凭据（MonkeyCode / 小浣熊 / Loomy）。
@@ -1421,15 +1614,29 @@ async function importLocal(channel) {
   }
 }
 
-async function startLogin(channel) {
+async function startLogin(channel, accountLabel) {
   try {
-    const r = await api("/api/login/start", { channel });
+    const r = await api("/api/login/start", { channel, account_label: accountLabel || "" });
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = `添加 ${chLabel(channel)} 账号`;
-    // 网页版登录：浏览器已由后端拉起（独立 profile），这里只需提示，不能再 window.open
-    // （否则会在用户日常浏览器里再开一个标签页，且那个标签页没有调试端口、捕获不到）。
-    if (hasWebLogin(channel)) {
+    // 三种情形（顺序即优先级）：
+    //  ① 后端已用**无痕窗口**拉起（CodeArts）—— 绝不能 window.open：那会在日常浏览器里再开一个
+    //     带登录态的标签页，用户又会被授权成老账号，无痕那一步就白做了；
+    //  ② 网页版登录渠道（glm / 小浣熊）—— 后端用独立 profile + CDP 拉起，同理不能 open
+    //     （那个标签页没有调试端口，捕获不到）；
+    //  ③ 其余渠道 —— 由前端 window.open 打开（它们不需要隔离登录态）。
+    if (r.backend_opened) {
+      $("loginMsg").textContent = `已为你打开一个**无痕窗口**，请在其中完成 ${chLabel(channel)} 登录；`
+        + `登录完成后无需任何操作，本工具会自动添加账号。`;
+    } else if (channel === "loomy") {
+      // Loomy 与 ② 相反：后端**不**拉浏览器，返回的是本机登录引导页地址，
+      // 必须由前端 window.open 打开（见 internal/login_loomy）。它也不「捕获凭据」——
+      // 用户在引导页里填手机号 + 短信验证码，后端据此换 session。
+      $("loginMsg").textContent = `已为你打开 Loomy 登录页，请在其中输入手机号并填写短信验证码；`
+        + `登录完成后本工具会自动添加账号。登录态约 14 天后到期，届时需重新登录。`;
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else if (hasWebLogin(channel)) {
       $("loginMsg").textContent = `已为你打开一个独立的浏览器窗口，请在其中完成${chLabel(channel)}登录；`
         + `登录完成后无需任何操作，本工具会自动捕获凭据并添加账号。`;
     } else {
@@ -1827,7 +2034,7 @@ async function saveModelFallback() {
 // 同名时 server/app 两层会指向不同 Runtime，故前端先给即时反馈（后端同样会拒）。
 const RESERVED_CHANNEL_NAMES = new Set([
   "workbuddy", "workbuddyai", "traework", "traecode", "qoder", "qodercn", "qodercom",
-  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "glm", "cline", "cline-free",
+  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai", "zcode", "gemini", "codearts", "glm", "cline", "cline-free",
 ]);
 let editCustomChannels = [];
 
@@ -2283,6 +2490,7 @@ let renameUid = null;
 
 function openRename(uid, currentName) {
   if (uid === "oczen-anon") { toast("OpenCodeZen 匿名通道账号不可改名"); return; }
+  if (uid === "kilo-anonymous") { toast("Kilo 免费池账号不可改名"); return; }
   renameUid = uid;
   $("rnUid").textContent = shortUid(uid);
   $("rnInput").value = currentName === shortUid(uid) ? "" : (currentName || "");
@@ -2432,6 +2640,11 @@ function bind() {
   $("btnClineSubmit").onclick = submitClineKey;
   $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
   $("btnAddOfficeAce").onclick = () => promptLogin("officeace");
+  $("btnAddMiniMax").onclick = () => promptLogin("minimax");
+  $("btnAddLobsterAI").onclick = () => promptLogin("lobsterai");
+  $("btnAddZCode").onclick = () => promptLogin("zcode");
+  $("btnAddGemini").onclick = () => promptLogin("gemini");
+  $("btnAddCodeArts").onclick = () => promptLogin("codearts");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
@@ -2930,7 +3143,7 @@ function renderUsageCacheCard(t) {
 
 const CH_NAMES = {
   workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork",
-  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen",
+  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts",
 };
 
 async function loadUsage() {
@@ -3379,18 +3592,28 @@ function stPlatTok(amount) {
 
 const ST_ROT_MARKS = ["①", "②", "③"];
 
+// groupUnit 渠道的计量单位（""=积分 / "token"=Token 计数）：从 state.accounts 同渠道账号取，
+// 保证与卡片、汇总条、费率页角标**同源**（单一来源仍是后端的 credits_unit）。
+function groupUnit(group) {
+  const a = (state.accounts || []).find((x) => (x.group || "workbuddy") === group);
+  return a && a.credits_unit === "token" ? "token" : "";
+}
+
 // 使用中 / 接棒顺序：当前=粘性账号；接棒=临期优先+余额排序推算的前 3
 function renderRotation(rot) {
   if (!rot.length) { $("stRotation").innerHTML = ""; $("stRotation").className = "st-rotation"; return; }
   let html = `<div class="st-block-title">使用中 / 接棒顺序<span class="st-hint">当前=粘性账号 · 接棒=临期优先+余额排序推算</span></div>`;
   for (const rv of rot) {
+    // 单位随渠道切换：token 计量渠道（如 ZCode）显示 tokens，不再一律写「分」。
+    const isTok = groupUnit(rv.group) === "token";
+    const bal = (v) => (isTok ? `${fmtTokens(v)} tokens` : `${fmtCredits(v)}分`);
     const cur = rv.current
-      ? `使用中 <b>${esc(rv.current.nickname)}</b>（粘性 ${esc(rv.current.sticky || "0")}，余额 ${fmtCredits(rv.current.credits)}分）`
+      ? `使用中 <b>${esc(rv.current.nickname)}</b>（粘性 ${esc(rv.current.sticky || "0")}，余额 ${bal(rv.current.credits)}）`
       : `<span class="st-rot-none">暂无使用记录</span>`;
     let nextHtml = "";
     (rv.next || []).forEach((n, j) => {
       nextHtml += `<span class="st-rot-next">${ST_ROT_MARKS[j]} ${esc(n.nickname)}` +
-        `（${fmtCredits(n.credits)}分${n.expiring > 0 ? "·临期" + fmtCredits(n.expiring) : ""}）</span>`;
+        `（${bal(n.credits)}${n.expiring > 0 ? "·临期" + bal(n.expiring) : ""}）</span>`;
     });
     html += `<div class="st-rot-row"><span class="badge ${chClass(rv.group)}">${esc(chLabel(rv.group))}</span>` +
       `<span class="st-rot-cur">${cur}</span>` +
