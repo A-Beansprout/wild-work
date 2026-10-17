@@ -295,13 +295,11 @@ func (c *Client) DailyCheckinReport(a *auth.Auth) (provider.CheckinReport, error
 // ---------------------------------------------------------------------------
 
 type subscription struct {
-	SubscribeStatus string     `json:"subscribe_status"`
-	SKUs            []sku      `json:"skus"`
-	BonusSKUs       []bonusSKU `json:"bonus_skus"`
+	SKUs      []sku      `json:"skus"`
+	BonusSKUs []bonusSKU `json:"bonus_skus"`
 }
 
 type sku struct {
-	SKUCode     string  `json:"sku_code"`
 	SKUName     string  `json:"sku_name"`
 	ExpiredTime string  `json:"expired_time"`
 	Quotas      []quota `json:"quotas"`
@@ -315,11 +313,10 @@ type quota struct {
 }
 
 type bonusSKU struct {
-	ActivityName  string `json:"activity_name"`
-	Points        string `json:"points"`
-	CurrentValue  string `json:"current_value"`
-	ExpiredTime   string `json:"expired_time"`
-	CBCResourceID string `json:"cbc_resource_id"`
+	ActivityName string `json:"activity_name"`
+	Points       string `json:"points"`
+	CurrentValue string `json:"current_value"`
+	ExpiredTime  string `json:"expired_time"`
 }
 
 // parseISO 解析 ISO8601（含毫秒）为 Unix 毫秒。

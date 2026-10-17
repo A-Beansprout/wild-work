@@ -10,11 +10,6 @@ import (
 	"strings"
 )
 
-// WorkArea macOS：主屏可见区域（不含菜单栏/Dock）近似取全屏，供面板定位参考。
-func WorkArea() (int32, int32, int32, int32) {
-	return 0, 0, 1440, 900
-}
-
 // InfoBox macOS：用 osascript 弹对话框。
 func InfoBox(title, msg string) {
 	_ = exec.Command("osascript", "-e",
@@ -33,48 +28,6 @@ func AskYesNo(title, msg string) bool {
 		fmt.Sprintf(`display dialog %q with title %q buttons {"否","是"} default button "是" cancel button "否"`, msg, title)).
 		Output()
 	return err == nil && strings.Contains(string(out), "button returned:是")
-}
-
-// ---------------------------------------------------------------------------
-// 浏览器
-// ---------------------------------------------------------------------------
-
-var browserApps = []struct {
-	bundle string
-	name   string
-	flag   string
-}{
-	{"com.google.Chrome", "Google Chrome", "--incognito"},
-	{"com.microsoft.edgemac", "Microsoft Edge", "--inprivate"},
-	{"org.mozilla.firefox", "Firefox", "-private-window"},
-	{"com.apple.Safari", "Safari", ""},
-}
-
-// DefaultBrowserIncognito 返回系统默认浏览器的无痕启动方式。
-// 简化实现：探测已安装浏览器，按 Chrome→Edge→Firefox→Safari 顺序。
-func DefaultBrowserIncognito() (exePath, flag string, ok bool) {
-	for _, b := range browserApps {
-		if appExists(b.name) {
-			return b.name, b.flag, true
-		}
-	}
-	return "", "", false
-}
-
-func appExists(name string) bool {
-	_, err := os.Stat(filepath.Join("/Applications", name+".app"))
-	return err == nil
-}
-
-// LaunchIncognito 用 open -na 以无痕模式打开。
-func LaunchIncognito(app, flag, url string) error {
-	args := []string{"-na", app}
-	if flag != "" {
-		args = append(args, "--args", flag, url)
-	} else {
-		args = append(args, "--args", url)
-	}
-	return exec.Command("open", args...).Start()
 }
 
 // OpenURL 用系统默认方式打开 URL。

@@ -321,28 +321,24 @@ func unknownModelBody(m string) string {
 // 模型与费率
 // ---------------------------------------------------------------------------
 
-type modelsResp struct {
-	ReasoningEnabled        bool         `json:"reasoning_enabled"`
-	ReasoningCatalogVersion string       `json:"reasoning_catalog_version"`
-	Data                    []loomyModel `json:"data"`
-}
-
 type loomyModel struct {
 	ID                     string   `json:"id"`
 	Name                   string   `json:"name"`
-	Protocol               string   `json:"protocol"`
 	ContextLength          int64    `json:"context_length"`
 	MaxOutputTokens        int64    `json:"max_output_tokens"`
 	ReasoningEfforts       []string `json:"reasoning_efforts"`
 	DefaultReasoningEffort string   `json:"default_reasoning_effort"`
-	IsDefaultModel         bool     `json:"is_default_model"`
 	Capabilities           struct {
 		Reasoning       bool     `json:"reasoning"`
 		Vision          bool     `json:"vision"`
 		FunctionCalling bool     `json:"function_calling"`
-		Streaming       bool     `json:"streaming"`
 		InputModalities []string `json:"input_modalities"`
 	} `json:"capabilities"`
+}
+
+// modelsResp /models 信封：只保留被消费的字段。
+type modelsResp struct {
+	Data []loomyModel `json:"data"`
 }
 
 // fetchModels 拉取上游模型目录。

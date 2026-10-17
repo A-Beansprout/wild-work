@@ -609,10 +609,6 @@ func normalizePlatform(g string) string {
 	return g
 }
 
-// noExpiryChannel 判定渠道是否无临期/到期概念（oczen 匿名免费：上游对其
-// resource_detail 恒返拒绝，临期数据喂入方须跳过，否则每轮恒报失败噪音）。
-func noExpiryChannel(g string) bool { return g == string(provider.Oczen) }
-
 // platformRowsLocked 生成平台表行（调用方须持锁）：按 group 聚合账号数/余额/今日
 // 收入/今日花费/作废与净值/今日 Token，并按各账号 expireAt 归入 7 日内/今日/明日
 // 到期额。排序=余额降序（再按渠道名升序稳定）。

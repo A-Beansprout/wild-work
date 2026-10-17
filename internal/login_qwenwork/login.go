@@ -359,11 +359,6 @@ func writeState(path string, st state) error {
 	return os.WriteFile(path, raw, 0o600)
 }
 
-func htmlEscape(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;")
-	return r.Replace(s)
-}
-
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	rs := []rune(s)

@@ -310,16 +310,6 @@ func (a *App) firstRuntime() *Runtime {
 	return nil
 }
 
-func (a *App) totalAccounts() int {
-	n := 0
-	for _, rt := range a.runtimesSnapshot() {
-		if rt != nil && rt.Pool != nil && !rt.Alias {
-			n += len(rt.Pool.List())
-		}
-	}
-	return n
-}
-
 func (a *App) allStatuses() []pool.Status {
 	out := []pool.Status{}
 	for _, rt := range a.runtimesSnapshot() {
@@ -1348,16 +1338,6 @@ func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
 			}
 		}
 	})
-}
-
-// mustLoadQwenWork 重新扫描千问办公凭证目录（错误仅记日志）。
-func mustLoadQwenWork(dir string) []*auth.Auth {
-	auths, err := auth.LoadQwenWorkDir(dir)
-	if err != nil {
-		log.Printf("reload qwenwork accounts: %v", err)
-		return nil
-	}
-	return auths
 }
 
 func (a *App) finishLogin() {

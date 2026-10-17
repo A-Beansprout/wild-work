@@ -7,9 +7,6 @@ import (
 	"os/exec"
 )
 
-// WorkArea 其他平台：返回 0,0,0,0（未实现）。
-func WorkArea() (int32, int32, int32, int32) { return 0, 0, 0, 0 }
-
 // InfoBox 其他平台：输出到 stderr。
 func InfoBox(title, msg string) { Notify(title, msg) }
 
@@ -20,12 +17,6 @@ func Notify(title, msg string) {
 
 // AskYesNo 其他平台：默认否。
 func AskYesNo(title, msg string) bool { return false }
-
-// DefaultBrowserIncognito 其他平台：不探测，走系统默认。
-func DefaultBrowserIncognito() (exePath, flag string, ok bool) { return "", "", false }
-
-// LaunchIncognito 其他平台：直接 open url。
-func LaunchIncognito(exe, flag, url string) error { return OpenURL(url) }
 
 // OpenURL 其他平台：xdg-open。
 func OpenURL(url string) error { return exec.Command("xdg-open", url).Start() }
