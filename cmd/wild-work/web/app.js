@@ -1030,6 +1030,12 @@ function renderAccounts() {
     const reloginTitle = missingRT
       ? "重新登录（本账号缺 refresh_token，积分/签到不可用；登录成功后自动补签）"
       : "重新登录（跳转登录页换新凭据，成功后自动补签）";
+    // 一键重新登录：沿用既有内联 onclick 形态（本仓无 CSP 头，全文件已有 10 处同款写法）。
+    // 渠道差异由 `startLogin` 内部**分派**：OfficeAce 是「华为云授权码 + 云端轮询捕获」的
+    // 两步流程，必须走 startOfficeAceWebLogin（→ POST /api/login/officeace_auto），不能走
+    // 一次性的 POST /api/login/start。2026-10-18 修正：先前 OfficeAce 的 ⟳ 直接打
+    // /api/login/start，而后端 StartLoginFor 未登记 officeace ⇒ 点了只弹
+    // `unknown login provider officeace`（死按钮，独立复核抓出）。
     const reloginBtn = needRelogin && RELOGIN_CHANNELS.has(a.group)
       ? `<span class="icon-op" title="${reloginTitle}" onclick="startLogin('${a.group}')">⟳</span>`
       : "";
@@ -1630,6 +1636,13 @@ async function importLocal(channel) {
 }
 
 async function startLogin(channel, accountLabel) {
+  // 渠道分派：OfficeAce 是**两步**流程（华为云授权码 + 云端轮询捕获），专属入口是
+  // startOfficeAceWebLogin（→ POST /api/login/officeace_auto）。它与下面
+  // `POST /api/login/start` 的形态不同——后者一次调用就返回 auth_url，且后端
+  // StartLoginFor 不会为 officeace 拉起轮询。这里收口成一个入口，卡片上的 ⟳
+  // 与「添加账号」都走同一条路，避免再出现「前端能点、后端不认」的死按钮。
+  // （2026-10-18：卡片 ⟳ 曾直接 startLogin('officeace') 而只弹 unknown login provider。）
+  if (channel === "officeace") return startOfficeAceWebLogin();
   try {
     const r = await api("/api/login/start", { channel, account_label: accountLabel || "" });
     const url = r.auth_url;

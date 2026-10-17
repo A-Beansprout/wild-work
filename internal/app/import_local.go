@@ -508,7 +508,7 @@ type officeAceMergeInfo struct {
 	Merged           bool // 目标文件已存在，本次走了按字段合并（而非全新写入）
 	KeptCredential   bool // 保留了既有的 OAuth 临时凭据（见 officeAceOAuthCredKeys）
 	KeptRefreshToken bool // 保留了既有的 refresh_token（导入侧为空）
-	KeptExpiresAt    bool // 保留了既有 expiresAt（未被导入侧的远期哨兵覆盖）
+	KeptExpiresAt    bool // 最终 expiresAt ≠ 导入侧给的值（即被合并规则改写过；仅用于测试断言与提示）
 	HasRefreshToken  bool // 写盘后该账号是否仍有 refresh_token
 }
 
@@ -543,13 +543,15 @@ var officeAceOAuthCredKeys = []string{
 //	  officeAceOAuthCredKeys）与 dead_tokens   导入值；导入为空/缺失 → 保留旧值
 //	account.uid / enterpriseId / nickname      导入值；导入为空 → 保留旧值
 //
-// **空值绝不覆盖已有值**；expiresAt 的特殊规则：导入侧恒为 +50 年远期哨兵（网关 Basic 不过期），
-// 而它只对「没有临时凭据的导入账号」成立。故 ——
-//   - 若本次保留了 OAuth 临时凭据：expiresAt 取该凭据自己的 extra.cred_expires（~2h）；
-//     缺失则沿用旧 expiresAt。否则 +50 年会让 NeedsRefresh 恒假，临时凭据过期后再也不续期；
-//   - 若本次保留了旧 refresh_token（导入侧为空）而旧 expiresAt>0：沿用旧 expiresAt，
-//     让它与那一批凭据对齐（否则同样会误导续期判定）；
-//   - 其余情况才采用导入侧的远期值。
+// **空值绝不覆盖已有值**；expiresAt 的特殊规则（它必须与**本次实际生效的那批凭据**自洽，
+// 不能沿用导入侧的 +50 年远期哨兵）—— 四级优先，与 mergeOfficeAceDoc 里的实现逐条对应：
+//   - ① 本次生效的 extra 里有临时凭据（access_key 非空）**且有** cred_expires
+//     ⇒ 取 cred_expires（唯一与手里这批 AK/SK 真实匹配的值，约 2h）；
+//   - ② 有临时凭据但**缺** cred_expires ⇒ 取一个 1 小时的保守值，让它尽快续期去补出真值
+//     （**不得**落哨兵：那等于宣称一个约 2h 就过期的凭据永不过期）；
+//   - ③ 无临时凭据但有 refresh_token ⇒ 取 min(extra.refresh_expire, 旧的非哨兵 expiresAt)，
+//     两者都是真值口径时取更早的（宁早刷新，不把真值往后推）；
+//   - ④ 都没有（纯网关 Basic 导入）⇒ 采用导入侧的远期值（网关凭据确实不过期）。
 //
 // 目标文件存在但读不出/解析不了时返回错误**中止导入**（绝不静默覆盖）：宁可让用户看见失败，
 // 也不能把登录成果悄悄清掉。
@@ -660,19 +662,28 @@ func mergeOfficeAceDoc(prev, imported authDoc) (authDoc, officeAceMergeInfo) {
 	// 旧写法把这条对齐放在 `KeptCredential` 分支里，于是修复「导入能拿到凭据」之后的主路径
 	// （导入自带 access_key/cred_expires ⇒ KeptCredential=false）反而漏配 —— 正是复核指出的缺陷。
 	//
-	// 三级优先级（2026-10-17 用户实测再补一级）：
-	//   ① 有临时凭据 ⇒ 用它的 cred_expires（唯一与「手里这批 AK/SK」真实匹配的值）；
-	//   ② 没有临时凭据、但保留了 refresh_token ⇒ 用 refresh_expire（该凭据链的真实生命周期；
-	//      此前回落到「旧 expiresAt」，而旧值恰恰可能就是导入哨兵 ⇒ 哨兵被**永久固化**，
-	//      实测某账号即如此：cred_expires 每 2h 在走，auth.expiresAt 却停在 +50 年）；
-	//   ③ 两者都没有（纯网关 Basic 导入）⇒ 才写远期哨兵（网关凭据确实不过期）。
-	if ce := parseUnixSec(out.Auth.Extra["cred_expires"]); ce > 0 {
+	// 三级优先级（2026-10-17 用户实测补强；2026-10-18 独立复核再补两处）：
+	//   ① 有临时凭据 + 有 cred_expires ⇒ 取 cred_expires（唯一与「手里这批 AK/SK」真实匹配的值）；
+	//   ② 有临时凭据但**缺 cred_expires** ⇒ **不得落哨兵**：手里握着一个真实但寿命未知的
+	//      AK/SK，写 +50 年等于宣称「它永不过期」——事实相反。取一个较短的到期（见
+	//      `officeAceCredWithoutExpiryGrace`）让它尽快走一次续期去补出真实到期时刻；
+	//      （复核指出的漏洞：闸门只要求 access_key 非空而 cred_expires 可以缺失，此时
+	//       旧写法会落哨兵，面板还会宣称「到期时间已按保留凭据自己的到期对齐」——假话。
+	//       INV「有 access_key ⇒ 非哨兵」在真实写路径上曾可复现，本分支就是补它。）
+	//   ③ 无临时凭据但保留了 refresh_token ⇒ 取 `min(refresh_expire, 旧真值 expiresAt)`：
+	//      两者都是真值口径时取**更早**的，避免把真值往后推成「欠刷新窗口」
+	//      （复核 MED-3：旧写法一律取 refresh_expire，会把一个真实 2h 的 expiresAt 推到 30 天后）。
+	//   ④ 都没有（纯网关 Basic 导入）⇒ 才写远期哨兵，且**沿用导入值本身**（不再跨秒重算）。
+	hasCred := strings.TrimSpace(out.Auth.Extra["access_key"]) != ""
+	ce := parseUnixSec(out.Auth.Extra["cred_expires"])
+	re := parseUnixSec(out.Auth.Extra["refresh_expire"])
+	prevExp := prev.Auth.ExpiresAt
+	if hasCred && ce > 0 {
 		out.Auth.ExpiresAt = ce
-	} else if re := parseUnixSec(out.Auth.Extra["refresh_expire"]); re > 0 && strings.TrimSpace(out.Auth.RefreshToken) != "" {
-		out.Auth.ExpiresAt = re
-	} else if info.KeptRefreshToken && prev.Auth.ExpiresAt > 0 && !isFarFutureExpiry(prev.Auth.ExpiresAt) {
-		// 保留了旧 refresh_token（导入侧无）且旧 expiresAt **不是哨兵** ⇒ 它与那批凭据同源，一并保留。
-		out.Auth.ExpiresAt = prev.Auth.ExpiresAt
+	} else if hasCred {
+		out.Auth.ExpiresAt = time.Now().Unix() + officeAceCredWithoutExpiryGrace
+	} else if strings.TrimSpace(out.Auth.RefreshToken) != "" && (re > 0 || (prevExp > 0 && !isFarFutureExpiry(prevExp))) {
+		out.Auth.ExpiresAt = minPositive(re, prevExp)
 	} else {
 		// 纯网关 Basic 导入（无临时凭据、也无 refresh_expire 可对齐）：哨兵是本场景的正确取值
 		// ——网关凭据确实不过期，写它可避免误触「必然失败的刷新」。
@@ -751,6 +762,32 @@ func isFarFutureExpiry(exp int64) bool {
 		return false
 	}
 	return exp-time.Now().Unix() > officeAceSentinelMinSeconds
+}
+
+// officeAceCredWithoutExpiryGrace：手里有临时凭据（access_key 非空）却**没有**
+// `extra.cred_expires` 时，给 expiresAt 取一个较短的保守值（1 小时）。
+//
+// 为什么不落哨兵：哨兵的语义是「这条凭据不会自己过期」，而网关 Basic 才是那种凭据；
+// 临时 AK/SK 约 2 小时必过期。写成哨兵会让 `NeedsRefresh()` 永不触发，等于把一个
+// 「寿命未知的真实凭据」长期当成永不过期（独立复核用 512 组合穷举 + 真实写路径样本
+// 复现过这一组合）。取 1 小时是为了**尽快触发一次续期**，由 refresh 路径把真实到期
+// （`cred_expires`）补出来——那之后本函数不再参与。
+const officeAceCredWithoutExpiryGrace = 3600
+
+// minPositive 返回两个值中**更早**的那个正数（都非正时返回 0）。
+// 用于「取更保守的到期」：宁可早刷新，也不要把真实到期往后推（欠刷新窗口）。
+func minPositive(a, b int64) int64 {
+	switch {
+	case a > 0 && b > 0:
+		if a < b {
+			return a
+		}
+		return b
+	case a > 0:
+		return a
+	default:
+		return b
+	}
 }
 
 // officeAceImportedSentinel 返回「本次导入」给 auth.expiresAt 写的远期哨兵值。

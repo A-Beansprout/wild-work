@@ -657,6 +657,18 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		// 智谱清言无编程式登录：凭据只能由用户从浏览器 Cookie 里取出后粘贴。
 		// 故这里不发起轮询流程，只返回登录页地址；用户粘贴后走 SubmitGLMToken。
 		return loginglm.LoginURL, nil
+	case provider.OfficeAce:
+		// OfficeAce：华为云授权码 + PKCE + DPoP 的**两步**流程，与上面那张 case 列表里
+		// 「一次调用就返回 auth_url」的渠道形态不同——授权结果由云端轮询捕获，故真正的
+		// 流程在 `POST /api/login/officeace_auto`（见 StartOfficeAceLogin）。
+		//
+		// 这里登记它、而不是靠 default 拒绝，是因为 R76 已把「面板显示 ⟳ 一键重新登录」
+		// 的适用面定义为「**有登录编排的渠道**」，而本函数的 switch 就是这一定义的落点；
+		// 前端 `RELOGIN_CHANNELS` 必须与它对齐（回归：TestReloginChannelSetMatchesBackend）。
+		// ⚠️ 2026-10-18 修正：先前只往前端 `RELOGIN_CHANNELS` 加了 officeace、没在这里登记，
+		// 于是卡片上那个 ⟳ 点下去只会弹 `unknown login provider officeace` —— 一个**死按钮**
+		// （独立复核抓出）。现在两侧同时登记，且前端对 officeace 直接走专属入口。
+		return "", fmt.Errorf("OfficeAce 登录是两步流程（华为云授权码 + 云端轮询捕获），请用面板的「浏览器登录」入口")
 	default:
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
@@ -3137,17 +3149,47 @@ func (a *App) accountGroup(uid string) string {
 //
 // 返回 (是否缺失, 面板提示文案)。文案带**补救路径**，因为用户看到徽标后最想知道的就是
 // 「我该做什么」；两条路径都实测可用（2026-10-17：浏览器登录补齐、客户端重登后重导入补齐）。
+//
+// 两种「等效于没有 refresh_token」的形态都要报（2026-10-18 独立复核补第二种）：
+//   - 字段为空：本地根本没这条凭据；
+//   - 字段非空但**已在死名单**：该 token 被上游明确拒过（STS5.1806/1807 "has been used"），
+//     `internal/officeace/refresh.go` 会直接短路、`ensureCredential` 不会被调用 ⇒ 续期
+//     **必然失败**。只判空会让这种账号在面板上看起来完全正常（复核用探针实证）。
 func (a *App) refreshTokenMissing(uid string) (bool, string) {
 	_, au := a.findRuntimeAuth(uid)
 	if au == nil || au.Kind != string(provider.OfficeAce) {
 		return false, ""
 	}
-	if strings.TrimSpace(au.RefreshTokenValue()) != "" {
-		return false, ""
+	rt := strings.TrimSpace(au.RefreshTokenValue())
+	if rt == "" {
+		return true, "缺 refresh_token：积分/签到不可用（本工具不会自动恢复）。" +
+			"补救一：先在 OfficeAce 客户端登录该账号，再回面板「从客户端导入」；" +
+			"补救二：直接在本工具用「浏览器登录」重新添加该账号。"
 	}
-	return true, "缺 refresh_token：积分/签到不可用（本工具不会自动恢复）。" +
-		"补救一：先在 OfficeAce 客户端登录该账号，再回面板「从客户端导入」；" +
-		"补救二：直接在本工具用「浏览器登录」重新添加该账号。"
+	// 只读一次 Extra（持锁快照，避免与续期写路径并发读 map）。
+	au.RLock()
+	dead := au.Extra["dead_tokens"]
+	au.RUnlock()
+	if csvContains(dead, rt) {
+		return true, "refresh_token 已被上游拒绝（本工具已拉黑、不再重放）：积分/签到不可用，需重新登录。" +
+			"补救一：先在 OfficeAce 客户端登录该账号，再回面板「从客户端导入」；" +
+			"补救二：直接在本工具用「浏览器登录」重新添加该账号。"
+	}
+	return false, ""
+}
+
+// csvContains 判断 CSV 串里是否含某个值（逐项 TrimSpace 后精确比较）。
+// 与 officeace 内部 splitCSV/containsCSV 同口径；这里只需判定、无需解析成切片以外的东西。
+func csvContains(csv, want string) bool {
+	if csv == "" || want == "" {
+		return false
+	}
+	for _, part := range strings.Split(csv, ",") {
+		if strings.TrimSpace(part) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // OpenLogFile 用系统默认编辑器打开日志文件。

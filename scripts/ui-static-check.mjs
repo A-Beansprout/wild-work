@@ -62,6 +62,25 @@ const FAKE_STATE = {
       refresh_token_missing: true,
       refresh_token_missing_reason: "缺 refresh_token：积分/签到不可用（测试用文案）",
     },
+    // #134「登录态失效」假数据：2026-10-18 独立复核指出这条路**零覆盖**——
+    // 把 needRelogin 里的 session_dead 去掉、或整块删掉 sessionDeadTag，UI 检查仍「全部通过」。
+    // 故这里补一张 session_dead 卡片，锁住原行为（红徽标 + ⟳），与 officeace 的琥珀徽标并存。
+    {
+      uid: "qwenwork-session-dead-1",
+      group: "qwenwork",
+      nickname: "失效号",
+      credits: 0,
+      expiring_credits: 0,
+      unusable_credits: 0,
+      cooling: false,
+      until: "",
+      reason: "",
+      disabled: false,
+      last_checkin_at: "",
+      last_checkin_ok: false,
+      session_dead: true,
+      session_dead_reason: "登录态已失效（测试用文案）",
+    },
     {
       uid: "01a13f3d3ee6741d832a05b19fb0c028:01a13f3d3ee67da097f2cae2d1415761",
       group: "officeace",
@@ -193,6 +212,17 @@ check("缺凭据号给出一键重新登录入口（⟳ + startLogin('officeace'
   /onclick="startLogin\('officeace'\)"/.test(cards));
 check("重新登录入口的 title 点明缺 refresh_token 场景",
   cards.includes("本账号缺 refresh_token，积分/签到不可用"));
+// ⟳ 的**渠道分派**必须存在：OfficeAce 是两步流程（云端轮询捕获），不能打
+// `POST /api/login/start`（后端 StartLoginFor 不会为它拉起轮询）——2026-10-18 独立复核
+// 抓到的死按钮就是这个。这条断言把「卡片 ⟳ → startLogin → 分派到 OfficeAce 专属入口」
+// 这段接线锁住（真正的端到端对齐在 Go 侧 TestReloginChannelSetMatchesBackend）。
+{
+  const appSrc = readFileSync(new URL("../cmd/wild-work/web/app.js", import.meta.url), "utf8");
+  check("startLogin 对 officeace 分派到专属入口（防死按钮复发）",
+    /if \(channel === "officeace"\) return startOfficeAceWebLogin\(\);/.test(appSrc));
+  check("OfficeAce 专属入口打的是 officeace_auto 端点（而非 /api/login/start）",
+    appSrc.includes('api("/api/login/officeace_auto"'));
+}
 // 反例（防「徽标恒亮」这种假通过）：同渠道、只差该字段的账号不得带徽标与 ⟳。
 // 按 `<div class="acct-card` 切分取**该账号自己那张卡**，避免跨卡片误判。
 {
@@ -202,15 +232,33 @@ check("重新登录入口的 title 点明缺 refresh_token 场景",
   const normalCard = cardOf("正常号");
   check("两张 OfficeAce 卡片都渲染出来了", missingCard !== "" && normalCard !== "");
   check("缺凭据那张卡带徽标", missingCard.includes("缺续期凭据"));
+  check("缺凭据那张卡带 ⟳ 入口", missingCard.includes("startLogin('officeace')"));
   check("正常号那张卡不带徽标（防徽标恒亮）", !normalCard.includes("缺续期凭据"));
   check("正常号那张卡不带 ⟳ 重新登录入口", !normalCard.includes("startLogin('officeace')"));
 }
 check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免误标）",
   (cards.match(/缺续期凭据/g) || []).length === 1,
   `实际 ${(cards.match(/缺续期凭据/g) || []).length} 个`);
-check("⟳ 重新登录入口只在需要重登的账号上出现一次",
-  (cards.match(/startLogin\('officeace'\)/g) || []).length === 1,
-  `实际 ${(cards.match(/startLogin\('officeace'\)/g) || []).length} 个`);
+
+// ---- 场景 1.6：#134「登录态失效」原行为（2026-10-18 补，此前零覆盖）----
+// 独立复核用两个破坏性变异证明这条路没被守住：把 needRelogin 里的 session_dead 去掉、
+// 或整块删掉 sessionDeadTag，UI 检查都仍「全部通过」。故补这张 session_dead 卡片与断言。
+{
+  const cardOf = (name) =>
+    cards.split('<div class="acct-card').find((seg) => seg.includes(name)) || "";
+  const deadCard = cardOf("失效号");
+  const healthyCard = cardOf("健康号");
+  check("登录态失效账号渲染出来了", deadCard !== "");
+  check("失效号带「需重新登录」徽标（#134 不回归）", deadCard.includes("需重新登录"));
+  check("失效号徽标用 bad 样式（与缺凭据的 warn 区分）", /tag bad"[^>]*>需重新登录/.test(deadCard));
+  check("失效号徽标 title 用 session_dead_reason", deadCard.includes("登录态已失效（测试用文案）"));
+  check("失效号带 ⟳ 一键重新登录（#134 不回归）", deadCard.includes("startLogin('qwenwork')"));
+  check("失效号不带「缺续期凭据」徽标（两种状态互不串味）", !deadCard.includes("缺续期凭据"));
+  check("普通健康号既无「需重新登录」也无 ⟳", !healthyCard.includes("需重新登录") && !healthyCard.includes("startLogin("));
+  check("「需重新登录」全文只出现一次（不误标他人）",
+    (cards.match(/需重新登录/g) || []).length === 1,
+    `实际 ${(cards.match(/需重新登录/g) || []).length} 个`);
+}
 
 // ---- 场景 2：渠道汇总条 ----
 T.renderSummary();

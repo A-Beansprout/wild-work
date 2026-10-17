@@ -236,7 +236,109 @@ func TestOfficeAceMergeCorrectsLegacySentinel(t *testing.T) {
 	// 反向验证（已做）：删掉 mergeOfficeAceDoc 的 tier①（cred_expires 对齐），本用例变红。
 }
 
-// ④e 判定函数本身：边界口径（>10 年为哨兵；0/负值不算哨兵）。
+// ④e 「有临时凭据却缺 cred_expires」不得落哨兵（2026-10-18 独立复核抓出的 HIGH 缺口）。
+//
+// 现实产生者：`officeace/account.go` 只在 `CredExpiresAt>0` 时才写 `cred_expires`，而
+// login.go 的 `parseISO(credentials.expiration)`、档案的 `expires_at` 都可能解析不出来 ⇒
+// 「AK/SK 在手、到期时刻未知」。此时写 +50 年等于宣称一个约 2h 就过期的凭据永不过期，
+// 而 `NeedsRefresh()` 也就永不触发。约定：取一个**短线**到期（1 小时），尽快让续期去补真值。
+func TestOfficeAceKeepsCredButNoExpiryOutOfSentinel(t *testing.T) {
+	a := newOfficeAceImportApp(t)
+	uid := "acct-cred-noexp:user-cred-noexp"
+	apiHost := "https://gw-cred-noexp.example.invalid/v2"
+
+	// 旧文件被直接写入：临时凭据齐全，但**没有** cred_expires（模拟解析失败）。
+	prev := authDoc{
+		Auth: authSection{
+			AccessToken:  fakeBasic("cred-noexp"),
+			RefreshToken: "rt-fake-cred-noexp-0001",
+			// 注意：这个旧 expiresAt 是真值（2h 内），不是哨兵——用来确认新分支不被旧值左右。
+			ExpiresAt: time.Now().Unix() + 600,
+			ApiHost:   apiHost,
+			Extra: map[string]string{
+				"base_url":       apiHost,
+				"access_key":     "AKFAKEREAL",
+				"secret_key":     "SKFAKEREAL",
+				"security_token": "STSFAKEREAL",
+				"dpop_priv":      `{"kty":"EC","crv":"P-256","kid":"fake"}`,
+				"source":         "oauth-login",
+			},
+		},
+		Account: accountSection{UID: uid},
+	}
+	if _, err := a.writeAuthFile("officeace", uid, prev); err != nil {
+		t.Fatalf("准备旧凭据失败：%v", err)
+	}
+
+	imported := importedDoc(uid, apiHost, time.Now().AddDate(50, 0, 0).Unix())
+	file, info, err := a.writeOfficeAceAuth(uid, imported)
+	if err != nil {
+		t.Fatalf("合并导入失败：%v", err)
+	}
+	got, _ := readOfficeAceFile(t, file)
+
+	if !info.KeptCredential {
+		t.Fatalf("前置条件不成立：应当保留旧临时凭据（info=%+v）", info)
+	}
+	if isFarFutureExpiry(got.Auth.ExpiresAt) {
+		t.Errorf("手里有真实 AK/SK 时不得落远期哨兵（会宣称它永不过期）：expiresAt=%d", got.Auth.ExpiresAt)
+	}
+	// 短线到期：应落在「现在 + 1 小时」附近（允许 5 分钟执行窗口）。
+	want := time.Now().Unix() + officeAceCredWithoutExpiryGrace
+	if d := got.Auth.ExpiresAt - want; d > 300 || d < -300 {
+		t.Errorf("缺 cred_expires 时应取短线到期（now+%d），实际 %d（差 %d 秒）",
+			officeAceCredWithoutExpiryGrace, got.Auth.ExpiresAt, d)
+	}
+	// 反向验证（已做）：把 tier① 的条件改成恒假，本用例变红（会落到哨兵分支）。
+}
+
+// ④f tier③ 取更早的真值：旧 expiresAt 是真值（2h）而 refresh_expire 在 30 天后时，
+// **不得**把 expiresAt 往后推（那会制造「欠刷新窗口」）。
+func TestOfficeAceImportKeepsEarlierRealExpiry(t *testing.T) {
+	a := newOfficeAceImportApp(t)
+	uid := "acct-earlier:user-earlier"
+	apiHost := "https://gw-earlier.example.invalid/v2"
+
+	now := time.Now().Unix()
+	prevExp := now + 2*3600           // 旧真值：2 小时后
+	refreshExpire := now + 30*24*3600 // refresh_token：30 天后
+	// 旧文件：**没有**临时凭据（access_key 空）、**没有** cred_expires，但有真值 expiresAt
+	// 与 refresh_expire，且保留了 refresh_token。
+	prev := authDoc{
+		Auth: authSection{
+			AccessToken:  fakeBasic("earlier"),
+			RefreshToken: "rt-fake-earlier-0001",
+			ExpiresAt:    prevExp,
+			ApiHost:      apiHost,
+			Extra: map[string]string{
+				"base_url":       apiHost,
+				"access_key":     "", // 临时凭据已被上游轮换掉
+				"secret_key":     "",
+				"refresh_expire": strconv.FormatInt(refreshExpire, 10),
+				"dpop_priv":      `{"kty":"EC","crv":"P-256","kid":"fake"}`,
+				"source":         "disk",
+			},
+		},
+		Account: accountSection{UID: uid},
+	}
+	if _, err := a.writeAuthFile("officeace", uid, prev); err != nil {
+		t.Fatalf("准备旧凭据失败：%v", err)
+	}
+
+	file, _, err := a.writeOfficeAceAuth(uid, importedDoc(uid, apiHost, time.Now().AddDate(50, 0, 0).Unix()))
+	if err != nil {
+		t.Fatalf("合并导入失败：%v", err)
+	}
+	got, _ := readOfficeAceFile(t, file)
+
+	if got.Auth.ExpiresAt != prevExp {
+		t.Errorf("应取更早的真值：expiresAt = %d，want %d（旧真值）而非 refresh_expire=%d",
+			got.Auth.ExpiresAt, prevExp, refreshExpire)
+	}
+	// 反向验证（已做）：把 tier③ 改成直接取 refresh_expire，本用例变红。
+}
+
+// ④g 判定函数本身：边界口径（>10 年为哨兵；0/负值不算哨兵）。
 func TestIsFarFutureExpiry(t *testing.T) {
 	now := time.Now().Unix()
 	cases := []struct {
