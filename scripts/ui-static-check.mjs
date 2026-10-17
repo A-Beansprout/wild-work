@@ -670,6 +670,28 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 局域网/无头部署的剪贴板降级（issue #142 / PR #143）----
+// 明文 http:// 是非安全上下文，navigator.clipboard 被浏览器直接禁用。这类缺陷在桌面
+// localhost（安全上下文）**测不出来**，只在局域网部署暴露，故静态锁住：copyUrl 必须
+// 走带 execCommand 降级的 copyText，且不得裸调 navigator.clipboard。
+{
+  const body = (raw.match(/function copyUrl\(\)[\s\S]*?\n}/) || [""])[0]
+    .replace(/\/\/.*$/gm, ""); // 去行注释：注释里会提到 navigator.clipboard（不得误判）
+  const need3 = [
+    ["copyUrl 函数存在", body.length > 0],
+    ["copyUrl 走 copyText（含 execCommand 降级）", /copyText\(/.test(body)],
+    ["copyUrl 不得裸调 navigator.clipboard（局域网 http 下静默失效）", !/navigator\.clipboard/.test(body)],
+    ["copyText 内部有 execCommand 降级分支", /document\.execCommand\("copy"\)/.test(raw)],
+    // noopener 下 window.open 返回恒为 null（MDN），拿返回值判拦截会每次误报。
+    ["OfficeAce 打开授权页不得用 noopener 的返回值判弹窗拦截",
+      !/window\.open\([^)]*noopener[^)]*\)\s*\)/.test(raw)],
+  ];
+  for (const [label, pass] of need3) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 

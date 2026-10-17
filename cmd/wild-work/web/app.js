@@ -1283,8 +1283,14 @@ async function startOfficeAceWebLogin() {
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
     if (r.warning) toast(r.warning, 6000);
-    // 在用户当前设备打开授权页（与其它渠道一致）；被弹窗拦截时提示走复制链接兜底。
-    if (!window.open(url, "_blank", "noopener,noreferrer")) {
+    // 在用户当前设备打开授权页（与其它渠道一致）。
+    // 注意：带 noopener 时 window.open 的返回值**恒为 null**（MDN windowFeatures），
+    // 不能拿它判断是否被弹窗拦截（否则每次登录都误报「被拦截」）。故：先开、后断链——
+    // 不带 feature 打开才能拿到窗口句柄，随后手动置 opener=null 兼顾安全。
+    const w = window.open(url, "_blank");
+    if (w) {
+      try { w.opener = null; } catch (e) { /* 跨域时可能被拒，忽略 */ }
+    } else {
       toast("浏览器拦截了弹窗，请点「复制链接」手动打开", 6000);
     }
     startOfficeAcePoll();
