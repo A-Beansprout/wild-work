@@ -730,12 +730,22 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.QwenWork:
 		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
 	case provider.Raccoon:
-		// 网页版登录：拉起独立 profile 的浏览器并返回登录页地址（跨平台，无需注册表/客户端）。
+		// 小浣熊：网页版自动登录 —— 拉起独立 profile 的浏览器，用户在网页登录后
+		// 经 CDP 捕获 Cookie 里的 refresh_token 并换取凭据（见 internal/login_raccoon/web.go）。
+		// 面板同时保留「从本机客户端导入」作为替代路径。
+		//
+		// 签名与其余 login_* 包同构（两个参数本包不用），故此处与其它渠道写法一致。
+		// 2026-10-18 深档排障 H1：本 case 曾只有注释、无调用 ⇒ authURL="" 且 err=nil，
+		// 前端弹「无法获取登录链接」，整条网页登录形同虚设。
+		authURL, err = loginraccoon.Start(a.loginClient, a.loginStateFP)
 	case provider.Loomy:
 		// 浏览器登录：起本机登录引导页并**立即**返回其地址（前端 window.open 只在用户
 		// 点击后的短暂窗口内有效），用户在里面完成短信验证码登录后由 pollLogin 收尾。
+		//
+		// 2026-10-18 深档排障 H2：本 case 曾多出一行 `loginraccoon.Start()`（复制粘贴残留），
+		// 把这里刚拿到的 Loomy 地址**整个覆盖**掉 ⇒ 用户被送去小浣熊登录页、凭据错配，
+		// 且被误拉起的小浣熊浏览器因 loginKind==Loomy 而在收尾时不被 Shutdown（资源泄漏）。
 		authURL, err = loginloomy.Start(a.loginClient, a.loginStateFP)
-		authURL, err = loginraccoon.Start()
 	case provider.Minimax:
 		// 设备码 + PKCE：Start **立即**返回授权链接（前端 window.open 只在用户点击后的
 		// 短暂窗口内有效），随后由 pollLogin 轮询换 token。
@@ -1036,7 +1046,7 @@ func (a *App) pollLogin(ctx context.Context) {
 			continue
 		}
 		if a.loginKind == provider.Raccoon {
-			r, err := loginraccoon.Poll()
+			r, err := loginraccoon.Poll(a.loginClient, a.loginStateFP)
 			if err == nil {
 				a.completeRaccoonLogin(r)
 				return
