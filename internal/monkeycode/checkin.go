@@ -92,7 +92,7 @@ type captchaChallengeResp struct {
 	Challenge struct {
 		C int `json:"c"` // 挑战数（默认 50）
 		S int `json:"s"` // salt 长度（hex 字符，默认 32）
-		D int `json:"d"` // 难度（target 前缀 hex 位数，默认 4）
+		D int `json:"d"` // 难度（target 前缀 hex 位数；Cap 官方默认 4，MonkeyCode 实测下发 3）
 	} `json:"challenge"`
 	Expires int64  `json:"expires"`
 	Token   string `json:"token"`

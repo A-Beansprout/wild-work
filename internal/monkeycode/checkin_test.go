@@ -135,8 +135,7 @@ func newCapUpstream(t *testing.T, u *capUpstream) *Client {
 				Solutions []int64 `json:"solutions"`
 			}
 			uerr := json.Unmarshal(raw, &body)
-			if uerr != nil || body.Token != fakeChallengeToken ||
-				!verifyCapSolutions(body.Token, body.Solutions, fakeC, fakeS, fakeD) {
+			if uerr != nil || !verifyCapSolutions(body.Token, body.Solutions) {
 				// 与真实上游同款的失败应答（实测：HTTP 500 + invalid solutions）。
 				w.WriteHeader(http.StatusInternalServerError)
 				fmt.Fprint(w, `{"success":false,"message":"invalid solutions"}`)
@@ -155,16 +154,32 @@ func newCapUpstream(t *testing.T, u *capUpstream) *Client {
 	return c
 }
 
-// verifyCapSolutions 假上游的**独立**校验：不调用被测实现的内部函数。
-func verifyCapSolutions(token string, solutions []int64, c, s, d int) bool {
-	if len(solutions) != c {
+// fakeSalt / fakeTarget 是**假上游自己那套** salt/target，由 Node 侧 Cap 官方
+// `prng.js` 预先算好并在此硬编码（token=`fakeChallengeToken`，c=4、s=32、d=3）。
+//
+// 为什么不在这里调 capPRNG 现算：那会让"独立校验"名不副实——实现的 PRNG 一旦写错，
+// 假上游会**跟着一起错**，两边仍然自洽，整合用例照样全绿（2026-10-17 独立复核
+// 用变异实测确认过这个盲区）。硬编码常量后，这两条整合用例真正独立于实现。
+// ⚠️ 改动 fakeChallengeToken / fakeC / fakeS / fakeD 时必须同步重算本表。
+var (
+	fakeSalt = []string{
+		"feae69ad40e1dc6016d1db169bd2b42f",
+		"89de6070ffd81198408682cd8b323ee2",
+		"abe9392c1553160a85dfd5a3921ac8d6",
+		"2768d36f9da0904d7a8784b9c80cd791",
+	}
+	fakeTarget = []string{"cb0", "325", "7bb", "22e"}
+)
+
+// verifyCapSolutions 假上游的**独立**校验：只用上面的预计算常量 + 标准 sha256/hex，
+// 不调用被测实现的任何内部函数（capPRNG / capHexPrefixOK 都不用）。
+func verifyCapSolutions(token string, solutions []int64) bool {
+	if token != fakeChallengeToken || len(solutions) != len(fakeSalt) {
 		return false
 	}
-	for i := 1; i <= c; i++ {
-		salt := capPRNG(token+strconv.Itoa(i), s)
-		target := capPRNG(token+strconv.Itoa(i)+"d", d)
-		sum := sha256.Sum256([]byte(salt + strconv.FormatInt(solutions[i-1], 10)))
-		if !strings.HasPrefix(hex.EncodeToString(sum[:]), target) {
+	for i, salt := range fakeSalt {
+		sum := sha256.Sum256([]byte(salt + strconv.FormatInt(solutions[i], 10)))
+		if !strings.HasPrefix(hex.EncodeToString(sum[:]), fakeTarget[i]) {
 			return false
 		}
 	}
@@ -277,12 +292,14 @@ func TestCheckinAlreadySkipsClaim(t *testing.T) {
 	}
 }
 
-// TestCheckinUsesSnakeCaseCaptchaToken 字段名回归。
+// TestCheckinCaptchaRejectionIsRetryable 上游拒绝凭证时，必须如实落成**可重试**的 error。
 //
-// `captcha_token` 是实测字段名；实现若退回 `captcha` / `token` / 裸 body，
-// 真实上游会回 10701。这里断言「只在收到正确字段名时才发放」——
-// 也就是把「字段名」这个最容易写错的点钉死。
-func TestCheckinUsesSnakeCaseCaptchaToken(t *testing.T) {
+// ⚠️ 命名说明（2026-10-17 独立复核发现）：本用例**不是**字段名的守门人。
+// 它的断言是「拿到 10701 就得失败且报文里看得见 10701」——把字段名改错同样满足这个断言，
+// 所以对「字段名写错」这种回归它是**不会变红**的。
+// **真正锁字段名的是 `TestCheckinFullFlowClaimed`**：它直接断言第三步请求体里的键名与取值
+// （`{"captcha_token":"<redeem 换来的那枚>"}`），改名字立即变红。
+func TestCheckinCaptchaRejectionIsRetryable(t *testing.T) {
 	u := &capUpstream{checkedInBefore: false, requireToken: "only-this-one"}
 	c := newCapUpstream(t, u)
 
@@ -293,6 +310,30 @@ func TestCheckinUsesSnakeCaseCaptchaToken(t *testing.T) {
 	}
 	if !strings.Contains(rep.Msg, "10701") && !strings.Contains(fmt.Sprint(err), "10701") {
 		t.Errorf("失败信息里应能看出是 10701，实际 msg=%q err=%v", rep.Msg, err)
+	}
+}
+
+// TestCheckinBodyKeyIsExactlyCaptchaToken 直接锁第三步请求体的**键集合**。
+//
+// 与 FullFlowClaimed 的复合断言互补：这里不关心值，只要求顶层键**恰好**是
+// `captcha_token` 一个——任何改名（captcha / token / captchaToken）立即变红。
+func TestCheckinBodyKeyIsExactlyCaptchaToken(t *testing.T) {
+	u := &capUpstream{checkedInBefore: false}
+	c := newCapUpstream(t, u)
+	if _, err := c.DailyCheckinReport(checkinAuth("sess-key")); err != nil {
+		t.Fatalf("前置领取流程应成功: %v", err)
+	}
+	calls := u.snapshot()
+	body := calls[len(calls)-1].body
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatalf("第三步 body 不是 JSON 对象: %v（%s）", err, body)
+	}
+	if len(m) != 1 {
+		t.Errorf("第三步 body 应只有一个键，实际 %v", m)
+	}
+	if _, ok := m["captcha_token"]; !ok {
+		t.Errorf("第三步 body 的键名必须是 captcha_token，实际 %v", m)
 	}
 }
 
