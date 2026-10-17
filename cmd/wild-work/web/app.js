@@ -1675,8 +1675,30 @@ function renderCustomChList() {
   $("customChOk").textContent = "";
 }
 
+// addPendingCustomInputs 自定义渠道输入行有内容但未点「＋新增渠道」时，在保存前自动收录
+// 进编辑列表。返回 "" 表示无需收录或收录成功；否则返回错误提示。
+// 背景：此前直接点「保存全部配置」只提交内存列表——用户填完输入行没点「＋新增渠道」就点
+// 保存，会把空列表存进后端（toast 显示已保存但渠道实际未创建），重开弹层输入也会丢。
+function addPendingCustomInputs() {
+  const name = $("inCustomName").value.trim().toLowerCase();
+  const url = $("inCustomURL").value.trim();
+  const key = $("inCustomKey").value.trim();
+  if (!name && !url && !key) return "";
+  if (!name) return "输入行有未添加的渠道：请填入渠道标识";
+  if (!/^[a-zA-Z0-9_\-]+$/.test(name)) return "渠道标识仅允许字母、数字、下划线、短横线";
+  if (RESERVED_CHANNEL_NAMES.has(name)) return `渠道标识 ${name} 与内建渠道同名，请另取一个`;
+  if (!url) return "输入行有未添加的渠道：请填入 Base URL";
+  if (editCustomChannels.some(c => c.name.toLowerCase() === name)) return `已存在同名渠道 ${name}`;
+  editCustomChannels.push({ name, base_url: url, api_key: key, models: [], enabled: true });
+  renderCustomChList();
+  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = "";
+  return "";
+}
+
 async function saveCustomChannels() {
   try {
+    const pendingErr = addPendingCustomInputs(); // 输入行有内容但没点「＋新增渠道」时自动收录
+    if (pendingErr) { $("customChErr").textContent = pendingErr; $("customChOk").textContent = ""; return; }
     await api("/api/config/custom_channels", { channels: editCustomChannels });
     toast("自定义渠道已保存（热生效）");
     $("customChErr").textContent = "";
@@ -1941,7 +1963,9 @@ async function saveSettings() {
     } catch (e) { toast(e.message); return; }
   }
 
-  // 4.6) 自定义渠道（R66）
+  // 4.6) 自定义渠道（R66）——输入行有未点「＋新增渠道」的内容时先收录再存
+  const customPendingErr = addPendingCustomInputs();
+  if (customPendingErr) { toast(customPendingErr); return; }
   try {
     await api("/api/config/custom_channels", { channels: editCustomChannels });
   } catch (e) { toast(e.message); return; }
@@ -2419,26 +2443,16 @@ function bind() {
   };
 
   $("btnCustomAdd").onclick = () => {
-    const name = $("inCustomName").value.trim().toLowerCase();
-    const url = $("inCustomURL").value.trim();
-    const key = $("inCustomKey").value.trim();
-    if (!name) { $("customChErr").textContent = "请填入渠道标识"; $("customChOk").textContent = ""; return; }
-    if (!/^[a-zA-Z0-9_\-]+$/.test(name)) { $("customChErr").textContent = "渠道标识仅允许字母、数字、下划线、短横线"; $("customChOk").textContent = ""; return; }
-    // 与内建渠道/上游命名空间同名时两层会指向不同 Runtime，后端也会拒；此处先给即时反馈。
-    if (RESERVED_CHANNEL_NAMES.has(name)) { $("customChErr").textContent = `渠道标识 ${name} 与内建渠道同名，请另取一个`; $("customChOk").textContent = ""; return; }
-    if (!url) { $("customChErr").textContent = "请填入 Base URL"; $("customChOk").textContent = ""; return; }
-    if (editCustomChannels.some(c => c.name.toLowerCase() === name)) {
-      $("customChErr").textContent = `已存在同名渠道 ${name}`;
+    if (!$("inCustomName").value.trim() && !$("inCustomURL").value.trim() && !$("inCustomKey").value.trim()) {
+      $("customChErr").textContent = "请先填入渠道标识、Base URL 与 API 密钥";
       $("customChOk").textContent = "";
       return;
     }
-    editCustomChannels.push({ name, base_url: url, api_key: key, models: [], enabled: true });
-    renderCustomChList();
-    $("inCustomName").value = "";
-    $("inCustomURL").value = "";
-    $("inCustomKey").value = "";
+    const err = addPendingCustomInputs();
+    if (err) { $("customChErr").textContent = err; $("customChOk").textContent = ""; return; }
     $("customChErr").textContent = "";
-    $("customChOk").textContent = `已创建渠道 [${name}]，现在可在其下方配置模型 ID、上下文大小、思考等级与能力`;
+    const added = editCustomChannels[editCustomChannels.length - 1];
+    $("customChOk").textContent = `已创建渠道 [${added.name}]，现在可在其下方配置模型 ID、上下文大小、思考等级与能力`;
   };
 
   $("btnCustomSave").onclick = saveCustomChannels;
