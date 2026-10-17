@@ -8,7 +8,8 @@
 //	"campaignKey":"act-20261013-119","actionType":"CLAIM_BENEFIT",
 //	"startAt":1792202400,"endAt":1792288740,"claimStatus":"CLAIMED"
 //
-// endAt=1792288740 = 2026-10-18 05:59:00 +08，探测发生在 01:10 +08 —— 该活动**当时仍有效**，
+// endAt=1792288740 = 2026-10-18 09:59 +08（= 01:59 UTC），startAt=1792202400 = 2026-10-17 10:00 +08，
+// 探测发生在 2026-10-18 01:10 +08 —— 该活动**当时确实仍在有效窗口内**（离 endAt 还有约 8.8 小时），
 // 所以「窗口」这条在 10-18 的探测里只是**结构证据**（字段确实存在、取值语义清楚），
 // 而桌面端 0.4.8 日志给出了同一条活动的**状态随窗口迁移**：
 //
@@ -67,7 +68,7 @@ func TestEndedClaimBenefitDoesNotMaskNoCampaign(t *testing.T) {
 	if rep.Status != provider.CheckinNoCampaign || !rep.Status.Retryable() {
 		t.Fatalf("report = %+v, want no_campaign (retryable)：已结束的残留活动不得判成今日已领", rep)
 	}
-	for _, want := range []string{"已结束", "CLAIM_BENEFIT=CLAIMED[已结束]", "（等上游刷新今日活动）"} {
+	for _, want := range []string{"已结束", "CLAIM_BENEFIT=CLAIMED[已结束]", "（等上游刷新今日活动）", "本机时间"} {
 		if !strings.Contains(rep.Msg, want) {
 			t.Errorf("诊断文案缺 %q：%s", want, rep.Msg)
 		}

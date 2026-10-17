@@ -1023,6 +1023,11 @@ for (const [label, re] of uniq) {
       /toast\(checkinToast\(r\)\)/.test(raw) && !/toast\(r\.ok \? `签到成功：/.test(raw)],
     ["checkinToast 区分「今日已领过」", /今日已领过/.test(raw)],
     ["checkinToast 区分「暂未领到」", /暂未领到/.test(raw)],
+    // 独立复核（2026-10-18）抓到：ok=true 但 msg 是「领取失败 http 400」时旧实现仍说「暂未领到」，
+    // 等于换了说法的假成功。断言失败判据存在且排在「含 +N」之前。
+    ["checkinToast 有失败档（ok=true 的真失败不得说成「暂未领到」）", /签到失败：/.test(raw) && /CHECKIN_FAIL_RE = \/.+\/i;/.test(raw)],
+    ["失败判据先于 \\+N 判据（否则「领取失败 http 400」会被数字命中）",
+      raw.indexOf('CHECKIN_FAIL_RE.test(msg)') > 0 && raw.indexOf('CHECKIN_FAIL_RE.test(msg)') < raw.indexOf('/\\+-?\\d+/.test(msg)')],
     ["qodercom 不在无签到集合（campaigns 活动路径已实装）", !/NO_EXPLICIT_CHECKIN[^)]*"qodercom"/.test(raw)],
     ["qodercn 不在无签到集合", !/NO_EXPLICIT_CHECKIN[^)]*"qodercn"/.test(raw)],
   ];

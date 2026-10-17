@@ -236,8 +236,10 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 // noCampaignMsg 组装 no_campaign 的诊断文案（进面板 last_checkin_msg）。
 // 目的是让用户一眼分清「上游本次没下发可领取活动」与「本工具解析/请求出错」。
 // showCampaign=false 表示上游连活动体系都没开——这是与「活动尚未创建」不同的信号，故一并带上。
-// ended/notStarted 两个计数单独报出：上游会把**已结束的旧活动**留在列表里（实测，
-// 其 endAt 早于本次请求时刻），若把它们混进「N 条活动」摘要，用户会以为今天已经领过了。
+// ended/notStarted 两个计数单独报出：窗口外的活动不参与可领/已领判定，若混进「N 条活动」
+// 摘要，用户会把残留的 CLAIMED 读成「今天已经领过了」。
+// 末尾带上本机探测时刻：窗口判断用的是本机时钟，与上游时间对不上时（本机快/慢钟）
+// 只有把「我们的 now」摆出来才查得出来。
 func noCampaignMsg(list campaignsList, now int64, ended, notStarted int) string {
 	head := fmt.Sprintf("上游未下发可领取活动（showCampaign=%t, claimable=%t", list.ShowCampaign, list.Claimable)
 	switch {
@@ -248,11 +250,18 @@ func noCampaignMsg(list campaignsList, now int64, ended, notStarted int) string 
 	case notStarted > 0:
 		head += fmt.Sprintf("；CLAIM_BENEFIT 活动未开始 %d 条（到点后可领）", notStarted)
 	}
+	// 本机探测时刻（UTC+8 墙钟）：窗口判据两侧都是 epoch 秒，跨时区不受影响；
+	// 但本机时钟偏快会把「刚开放」判成未开始，偏慢会把「刚结束」当成可领，故把它摆出来。
+	tail := fmt.Sprintf("；本机时间 %s", time.Unix(now, 0).In(beijingLoc).Format("01-02 15:04"))
 	if len(list.Campaigns) == 0 {
-		return head + "）上游未下发任何活动"
+		return head + "）上游未下发任何活动" + tail
 	}
-	return head + "；" + campaignsSummary(list.Campaigns, now) + "）"
+	return head + "；" + campaignsSummary(list.Campaigns, now) + tail + "）"
 }
+
+// beijingLoc 固定的 UTC+8 时区（中国无夏令时）。诊断文案里的时刻一律按它换算，
+// 不用 time.Local —— 与仓库既有口径一致（见 AGENTS.md 不变式 18「按 UTC+8 墙钟解析」）。
+var beijingLoc = time.FixedZone("UTC+8", 8*3600)
 
 // campaignsSummary 把活动列表压成一行「动作=状态」摘要，形如
 // "2 条活动：CLAIM_BENEFIT=CLAIMED[已结束], VIEW_DETAILS=CLAIMED"。
@@ -360,7 +369,13 @@ func sessionDead(status int, raw []byte) error {
 }
 
 // campaignWindow 判断某一活动在 now 时刻的窗口位置，返回 "ended"/"pending"/"active"。
-// 只在发现阶段用于诊断与过滤（0 值意为上游未下发该字段 → 恒 "active"，保持旧行为）。
+// 只在发现阶段用于诊断与过滤。0 值意味着上游没下发该字段（→ 恒 "active"，保持旧行为）；
+// 两个 >0 前置条件缺一不可：少了它们，缺字段的回包会被当成「已结束/未开始」，
+// 那才是真的整天不领（见 checkin_window_test.go 的兼容用例）。
+//
+// 时钟口径：两侧都是 Unix 秒（与 time.Local 无关），所以跨时区不会误判；
+// 但本机时钟快/慢会影响边界附近的活动（快 → 刚开放判成 pending；慢 → 刚结束判成
+// active 而多一次无效 POST）。noCampaignMsg 会带上本机探测时刻，便于发现这种偏差。
 func campaignWindow(cp campaignNode, now int64) string {
 	switch {
 	case cp.EndAt > 0 && cp.EndAt <= now:

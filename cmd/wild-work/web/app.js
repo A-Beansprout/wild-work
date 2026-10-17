@@ -1376,11 +1376,18 @@ function friendlyCheckinMsg(m) {
 // 真领到（msg「签到成功 +100」）/ 今日已领（msg「今日已领取 +100」）/ 上游还没发可领活动
 // （no_campaign，msg 是诊断摘要）。旧文案把第三种也说成「签到成功：上游未下发可领取活动…」，
 // 读起来像领到了，是 10-17「签到没实现」误判的来源之一。这里按 msg 区分，绝不越权声称。
+//
+// 第三档再分「失败」与「暂未领到」：后端在 ok=true 下也可能给出失败形态的 msg
+// （如「领取失败 http 400: …」「claim parse: …」），那是**真失败**，说成「暂未领到」
+// 等于换了说法的假成功。判据放在兜底分支之前，不给「先被 +N 命中」的机会。
+const CHECKIN_FAIL_RE = /失败|http \d{3}|error|无法解析|parse|未知状态|401|403|500/i;
 function checkinToast(r) {
   const msg = r.msg || "";
   if (!r.ok) return `签到：${friendlyCheckinMsg(msg)}`;
   if (/^今日已领取/.test(msg)) return `今日已领过：${msg}（剩余 ${r.remain}）`;
-  if (/^签到成功/.test(msg) || /^\+/.test(msg) || /\+\d+/.test(msg)) return `签到成功：${msg}（剩余 ${r.remain}）`;
+  // 注意「领取失败 http 400」里也可能带数字，故失败判据必须先于「含 +N」判据。
+  if (CHECKIN_FAIL_RE.test(msg)) return `签到失败：${friendlyCheckinMsg(msg)}`;
+  if (/^签到成功/.test(msg) || /\+-?\d+/.test(msg)) return `签到成功：${msg}（剩余 ${r.remain}）`;
   return `暂未领到：${msg}（剩余 ${r.remain}）`;
 }
 async function checkin(uid) {
