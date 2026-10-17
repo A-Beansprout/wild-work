@@ -2635,6 +2635,12 @@ function renderCreditChart(entries, names) {
     totals[e.uid] = (totals[e.uid] || 0) + -e.amount;
   }
   const top10 = Object.keys(totals).sort((a, b) => totals[b] - totals[a]).slice(0, 10);
+  // 系列名带渠道前缀（跨渠道同名昵称可区分）：取该账号消耗条目中最多的渠道
+  const mainChOf = (uid) => {
+    const cnt = {};
+    for (const e of spends) if (e.uid === uid) cnt[e.channel] = (cnt[e.channel] || 0) + 1;
+    return Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || "";
+  };
   // 同渠道多个账号时做颜色变体，保证 10 条线互不相同
   const colorByUid = {};
   const vIdx = {};
@@ -2642,12 +2648,6 @@ function renderCreditChart(entries, names) {
     const ch = mainChOf(uid);
     colorByUid[uid] = varyColor(chColor(ch), vIdx[ch] = (vIdx[ch] ?? -1) + 1);
   }
-  // 系列名带渠道前缀（跨渠道同名昵称可区分）：取该账号消耗条目中最多的渠道
-  const mainChOf = (uid) => {
-    const cnt = {};
-    for (const e of spends) if (e.uid === uid) cnt[e.channel] = (cnt[e.channel] || 0) + 1;
-    return Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || "";
-  };
   const series = top10.map((uid) => ({
     name: `${chLabel(mainChOf(uid))} ${names[uid] || shortUid(uid)}`, type: "line", smooth: true,
     itemStyle: { color: colorByUid[uid] }, lineStyle: { color: colorByUid[uid] },
