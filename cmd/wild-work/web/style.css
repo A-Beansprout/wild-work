@@ -630,6 +630,12 @@ body {
 .btn.primary.alt.gemini:hover { background: #1d4ed8; }
 .badge.gemini { background: #2563eb; }
 .fees .ch-header.gemini td { color: #2563eb; }
+
+/* codearts：CodeArts（华为云，玫红；与 officeace 的华为红区分开） */
+.btn.primary.alt.codearts { background: #db2777; border-color: #db2777; }
+.btn.primary.alt.codearts:hover { background: #be185d; }
+.badge.codearts { background: #db2777; }
+.fees .ch-header.codearts td { color: #db2777; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 

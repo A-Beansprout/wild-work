@@ -575,6 +575,7 @@ var (
 		string(provider.LobsterAI): true,
 		string(provider.ZCode):     true,
 		string(provider.Gemini):    true,
+		string(provider.CodeArts):  true,
 		string(provider.Cline):     true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
 		string(provider.OfficeAce): true,
 	}

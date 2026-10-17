@@ -41,6 +41,7 @@ import (
 	"wild-work/internal/loomy"
 	"wild-work/internal/loopguard"
 	"wild-work/internal/monkeycode"
+	"wild-work/internal/codearts"
 	"wild-work/internal/gemini"
 	"wild-work/internal/kilo"
 	"wild-work/internal/lobsterai"
@@ -220,8 +221,14 @@ func main() {
 	if err != nil {
 		fatal("读取 Gemini 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), cfg.AuthDir)
+	// CodeArts（华为云 CodeArts Agent）：正常多账号渠道，凭据为 AK/SK + SecurityToken
+	// （由 PKCE OAuth 登录写入 auths/codearts-*.json）。
+	caAuths, err := auth.LoadCodeArtsDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 CodeArts 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d, codearts=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), len(caAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -321,6 +328,11 @@ func main() {
 	for _, a := range gemAuths {
 		gemPool.Add(a)
 	}
+	// CodeArts：真多账号池（每个华为账号一份 AK/SK + SecurityToken），不置 SingleAccount。
+	caPool := pool.New(filepath.Join(stateDir, "state-codearts.json"))
+	for _, a := range caAuths {
+		caPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -381,6 +393,11 @@ func main() {
 	gemUp := gemini.New()
 	gemUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	gemUp.StreamHTTP.Transport = gemUp.HTTP.Transport
+	// CodeArts：对话走华为 snap-access（HMAC 签名）且长思考常见；非流式 client 留总超时兜底，
+	// StreamHTTP 不设 Timeout（R35），两者共用 Transport。
+	caUp := codearts.New()
+	caUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	caUp.StreamHTTP.Transport = caUp.HTTP.Transport
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -422,6 +439,7 @@ func main() {
 		provider.LobsterAI.String():   {lobUp.HTTP, lobUp.StreamHTTP},
 		provider.ZCode.String():       {zcdUp.HTTP, zcdUp.StreamHTTP},
 		provider.Gemini.String():      {gemUp.HTTP, gemUp.StreamHTTP},
+		provider.CodeArts.String():    {caUp.HTTP, caUp.StreamHTTP},
 		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -531,6 +549,11 @@ func main() {
 	gemSch := scheduler.New(scheduler.Config{Pool: gemPool, Upstream: gemUp, Name: "gemini",
 		CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours,
 		ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// CodeArts：有每日签到（三步，走 HMAC 签名；本包实现了 CheckinReporter/CheckinGranter，
+	// 签到结果按结构化状态上报），也需要 token 保活（续期后必须落盘，不变量 20）。
+	caSch := scheduler.New(scheduler.Config{Pool: caPool, Upstream: caUp, Name: "codearts",
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -584,6 +607,8 @@ func main() {
 		provider.ZCode: {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, StaticModels: zcode.StaticModels()},
 		// Gemini：真多账号渠道 ⇒ 不置 SingleAccount。
 		provider.Gemini: {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, StaticModels: gemini.StaticModels()},
+		// CodeArts：真多账号渠道 ⇒ 不置 SingleAccount。
+		provider.CodeArts: {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, StaticModels: codearts.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -606,6 +631,7 @@ func main() {
 		provider.LobsterAI:   {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
 		provider.ZCode:       {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
 		provider.Gemini:      {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
+		provider.CodeArts:    {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
@@ -777,6 +803,8 @@ func main() {
 	go zcdSch.Run(sctx)
 	// Gemini 的 Run 不可漏（R34）：本渠道有 token 保活任务。
 	go gemSch.Run(sctx)
+	// CodeArts 的 Run 不可漏（R34）：本渠道有签到与保活两条定时任务。
+	go caSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -801,6 +829,8 @@ func main() {
 		provider.ZCode,
 		// Gemini **不**纳入：它的 UserResource 恒 0——真实信息是「配额窗口剩余百分比」，
 		// 已按 InfoOnly 呈现在明细里、不参与积分算术，纳入只会刷出一个无意义的 0。
+		// CodeArts 有 benefit 额度（按 UTC+8 自然日重置）与积分账户形态，必须纳入。
+		provider.CodeArts,
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
@@ -828,7 +858,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d zcode=%d gemini=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d zcode=%d gemini=%d codearts=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), len(caAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

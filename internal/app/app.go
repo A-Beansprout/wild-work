@@ -25,6 +25,7 @@ import (
 	"wild-work/internal/custom"
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
+	logincodearts "wild-work/internal/login_codearts"
 	logingemini "wild-work/internal/login_gemini"
 	"wild-work/internal/login_glm"
 	loginlobsterai "wild-work/internal/login_lobsterai"
@@ -306,7 +307,7 @@ func (a *App) runtimesSnapshot() []*Runtime {
 func (a *App) firstRuntime() *Runtime {
 	// oczen 排在末位：它无调度器活动，不应成为「签到时间/下次签到」的展示来源。
 	// 顺序即展示优先级：新渠道追加在 Oczen 之前（Oczen 恒末位）。
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Minimax, provider.LobsterAI, provider.ZCode, provider.Gemini, provider.Kilo, provider.Oczen} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Minimax, provider.LobsterAI, provider.ZCode, provider.Gemini, provider.CodeArts, provider.Kilo, provider.Oczen} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -348,6 +349,7 @@ var channelOrder = map[provider.Kind]int{
 	provider.LobsterAI: 11,
 	provider.ZCode:     12,
 	provider.Gemini:    13,
+	provider.CodeArts:  14,
 }
 
 // feeChannelOrder 「模型列表和费率」面板的渠道分组顺序。
@@ -364,6 +366,7 @@ var feeChannelOrder = []provider.Kind{
 	provider.LobsterAI,
 	provider.ZCode,
 	provider.Gemini,
+	provider.CodeArts,
 	provider.OfficeAce,
 }
 
@@ -605,7 +608,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		k = provider.WorkBuddy
 	}
 	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Minimax, provider.LobsterAI, provider.ZCode, provider.Gemini:
+	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Minimax, provider.LobsterAI, provider.ZCode, provider.Gemini, provider.CodeArts:
 		// 这些渠道已有登录编排
 	case provider.MonkeyCode:
 		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
@@ -660,6 +663,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.loginClient = loginzcode.NewClient()
 	case provider.Gemini:
 		a.loginClient = logingemini.NewClient()
+	case provider.CodeArts:
+		a.loginClient = logincodearts.NewClient()
 	case provider.Raccoon:
 		// 网页版登录靠 CDP，不用 HTTP client；置 nil 即可（pollLogin 里也不再用它）。
 	default:
@@ -703,6 +708,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		// loopback OAuth：Start 先监听 127.0.0.1 的动态端口再拼授权 URL 并**立即**返回
 		// （前端 window.open 只在用户点击后的瞬态激活窗口内有效），回调到达后由 pollLogin 收尾。
 		authURL, err = logingemini.Start(a.loginClient, a.loginStateFP)
+	case provider.CodeArts:
+		// PKCE OAuth + 本机回调：Start 起 127.0.0.1 回调监听并**立即**返回授权链接，
+		// 用户授权后由 pollLogin 收尾（回调端口由 Shutdown 关闭）。
+		authURL, err = logincodearts.Start(a.loginClient, a.loginStateFP)
 	case provider.Oczen, provider.Kilo:
 		// 免密渠道没有登录流程。正常情况下上面第一张 switch 已拒绝并返回，走不到这里；
 		// 这条 case 是**防御**：若将来有人把第一张的拒绝删掉，default 会把用户导向
@@ -752,6 +761,10 @@ func (a *App) CancelLogin() error {
 	if kind == provider.Gemini {
 		logingemini.Shutdown()
 	}
+	// CodeArts 的 PKCE OAuth 同样持有本机回调端口。
+	if kind == provider.CodeArts {
+		logincodearts.Shutdown()
+	}
 	// 小浣熊网页版登录：取消时关闭浏览器（幂等；pollLogin 的 defer 还会再兜一次）
 	if kind == provider.Raccoon {
 		loginraccoon.Shutdown()
@@ -780,6 +793,10 @@ func (a *App) pollLogin(ctx context.Context) {
 		if a.loginKind == provider.Gemini {
 			logingemini.Shutdown()
 		}
+		// CodeArts 的 PKCE OAuth 同样持有本机回调端口。
+		if a.loginKind == provider.CodeArts {
+			logincodearts.Shutdown()
+		}
 		a.finishLogin()
 	}()
 	deadline := time.Now().Add(loginTimeout)
@@ -798,6 +815,17 @@ func (a *App) pollLogin(ctx context.Context) {
 			log.Printf("登录超时，请重新发起")
 			a.setLoginError("登录超时（未收到授权回调），请重新发起登录")
 			return
+		}
+		if a.loginKind == provider.CodeArts {
+			r, err := logincodearts.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeCodeArtsLogin(r)
+				return
+			}
+			if !errors.Is(err, logincodearts.ErrPending) {
+				log.Printf("codearts login poll failed: %v", err)
+			}
+			continue
 		}
 		if a.loginKind == provider.Gemini {
 			r, err := logingemini.Poll(a.loginClient, a.loginStateFP)
@@ -1094,6 +1122,23 @@ func (a *App) completeWbaiLogin(r loginwbai.Result) {
 // completeGeminiLogin Gemini loopback OAuth 登录成功后的收尾。
 //
 // 与其他渠道一致**不**登录即签到：Gemini 本渠道就没有签到（DailyCheckin 返回「不支持」）。
+// completeCodeArtsLogin CodeArts PKCE OAuth 登录成功后的收尾。
+//
+// 本渠道**有**每日签到（三步、走 HMAC 签名，渠道包实现了 CheckinReporter/CheckinGranter），
+// 但与其他渠道一致**不**在登录时顺手签到：定时任务会在签到时间自行领取，少发一次上游请求。
+func (a *App) completeCodeArtsLogin(r logincodearts.Result) {
+	log.Printf("codearts 登录成功 uid=%s nickname=%s expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresAt, r.RefreshToken != "")
+	fp, err := logincodearts.SaveAuth(a.cfg.AuthDir, r)
+	if err != nil {
+		log.Printf("codearts 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	log.Printf("codearts 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.CodeArts)
+}
+
 func (a *App) completeGeminiLogin(r logingemini.Result) {
 	log.Printf("gemini 登录成功 uid=%s nickname=%s expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresAt, r.RefreshToken != "")
 	fp, err := logingemini.SaveAuth(a.cfg.AuthDir, r)
@@ -1645,6 +1690,14 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadGeminiDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload gemini accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.CodeArts); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadCodeArtsDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload codearts accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}

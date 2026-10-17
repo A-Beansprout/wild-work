@@ -423,8 +423,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", cline: "Cline", officeace: "OfficeAce" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", cline: "cline", officeace: "officeace" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts", cline: "Cline", officeace: "OfficeAce" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", cline: "cline", officeace: "officeace" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
 // 不支持显式签到（手动按钮）的渠道：
@@ -477,7 +477,7 @@ function creditsText(a) {
 }
 
 // 渠道汇总固定顺序（与添加按钮布局一致；traecode 是别名池不单独出现，qoder 下线仅存量兜底）
-const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "minimax", "lobsterai", "zcode", "gemini", "cline", "officeace", "oczen", "kilo", "qoder"];
+const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "minimax", "lobsterai", "zcode", "gemini", "codearts", "cline", "officeace", "oczen", "kilo", "qoder"];
 
 // renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
 // 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
@@ -1019,6 +1019,7 @@ const NO_CHECKIN_LOGIN_HINT = {
   lobsterai: "（本机回调授权：点「浏览器登录」后在有道页面完成登录，浏览器会跳回本机完成授权；支持多个账号）",
   zcode: "（设备授权：点「浏览器登录」后在智谱页面完成授权，本工具会轮询直到完成；⚠️ 本渠道的积分领取依赖网页验证码，本工具不自动领取）",
   gemini: "（本机回调授权：点「浏览器登录」后完成 Google 账号授权，浏览器会跳回本机；支持多个账号。⚠️ 额度以「配额窗口剩余百分比」呈现，不是积分数）",
+  codearts: "（PKCE 授权：点「浏览器登录」后在华为云授权页完成授权，浏览器会跳回本机；支持多个账号。⚠️ 免费额度按 UTC+8 自然日重置）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
@@ -1427,7 +1428,7 @@ async function saveModelFallback() {
 // 同名时 server/app 两层会指向不同 Runtime，故前端先给即时反馈（后端同样会拒）。
 const RESERVED_CHANNEL_NAMES = new Set([
   "workbuddy", "workbuddyai", "traework", "traecode", "qoder", "qodercn", "qodercom",
-  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai", "zcode", "gemini", "glm", "cline", "cline-free",
+  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai", "zcode", "gemini", "codearts", "glm", "cline", "cline-free",
 ]);
 let editCustomChannels = [];
 
@@ -2006,6 +2007,7 @@ function bind() {
   $("btnAddLobsterAI").onclick = () => promptLogin("lobsterai");
   $("btnAddZCode").onclick = () => promptLogin("zcode");
   $("btnAddGemini").onclick = () => promptLogin("gemini");
+  $("btnAddCodeArts").onclick = () => promptLogin("codearts");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
@@ -2435,7 +2437,7 @@ function renderUsageCacheCard(t) {
 
 const CH_NAMES = {
   workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork",
-  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini",
+  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts",
 };
 
 async function loadUsage() {
