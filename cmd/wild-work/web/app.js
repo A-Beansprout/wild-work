@@ -791,7 +791,10 @@ const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
 const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline"]);
 // 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
-const RELOGIN_CHANNELS = new Set(["workbuddy", "workbuddyai", "traework", "qoder", "qodercn", "qodercom", "qwenwork", "raccoon"]);
+// officeace 一并纳入（2026-10-17）：它除了「登录态失效」，还有「缺 refresh_token」
+// 这种**不能自愈**的形态（客户端导入只拿得到不过期的网关 Basic），此时同样只能重新登录
+// 才能恢复积分/签到 —— 徽标与 ⟳ 入口由同一处逻辑驱动（见 renderAccounts 的 needRelogin）。
+const RELOGIN_CHANNELS = new Set(["workbuddy", "workbuddyai", "traework", "qoder", "qodercn", "qodercom", "qwenwork", "raccoon", "officeace"]);
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
@@ -1015,8 +1018,20 @@ function renderAccounts() {
     const sessionDeadTag = a.session_dead
       ? `<span class="tag bad" title="${esc(a.session_dead_reason || "登录态已失效，请重新登录")}">需重新登录</span>`
       : "";
-    const reloginBtn = a.session_dead && RELOGIN_CHANNELS.has(a.group)
-      ? `<span class="icon-op" title="重新登录（跳转登录页换新凭据，成功后自动补签）" onclick="startLogin('${a.group}')">⟳</span>`
+    // 凭据缺 refresh_token（目前只有 OfficeAce，见后端 refreshTokenMissing）：
+    // 性质与「登录态失效」不同 —— 不是被上游拒了，而是本地根本没这条凭据，
+    // **不会自愈**，所以徽标要**持久**显示（原先只在导入那一刻弹一次提示，事后无从复查）。
+    // 用 warn 色与 bad 区分：前者「还能对话，但积分/签到不可用」，后者「登录已失效」。
+    const missingRT = Boolean(a.refresh_token_missing);
+    const missingRTTag = missingRT
+      ? `<span class="tag warn" title="${esc(a.refresh_token_missing_reason || "凭据缺 refresh_token：积分/签到不可用，需重新登录或重新导入")}">缺续期凭据</span>`
+      : "";
+    const needRelogin = Boolean(a.session_dead) || missingRT;
+    const reloginTitle = missingRT
+      ? "重新登录（本账号缺 refresh_token，积分/签到不可用；登录成功后自动补签）"
+      : "重新登录（跳转登录页换新凭据，成功后自动补签）";
+    const reloginBtn = needRelogin && RELOGIN_CHANNELS.has(a.group)
+      ? `<span class="icon-op" title="${reloginTitle}" onclick="startLogin('${a.group}')">⟳</span>`
       : "";
     const ops = fixedAcct
       ? `${channelHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
@@ -1047,7 +1062,7 @@ function renderAccounts() {
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
         <div class="acct-credits${noCredits ? "" : " clickable"}" data-uid="${a.uid}"${noCredits ? "" : ` onclick="showCreditDetail(event,'${a.uid}')" title="点击查看积分明细（含分页）" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showCreditDetail(event,'${a.uid}')}"`}>${creditsText(a)}</div>
-        <div class="acct-checkin">${coolingTag}${sessionDeadTag}${checkinTag}</div>
+        <div class="acct-checkin">${coolingTag}${sessionDeadTag}${missingRTTag}${checkinTag}</div>
       </div>
     </div>`;
   }).join("");

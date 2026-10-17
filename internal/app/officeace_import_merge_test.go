@@ -355,6 +355,10 @@ func TestOfficeAceImportRefusesUnparsableExistingFile(t *testing.T) {
 // 2026-10-17 独立复核指出它是恒真式断言（改文案即红，但改行为不红）。
 // 真正的行为守门人是 ①（KeptCredential 时凭据仍在）+ ③（导入凭据生效时 expiresAt 与
 // cred_expires 对齐）；本用例只保证两段文案都不被误删，别把它当成覆盖率。
+//
+// 2026-10-17 晚更新：保留凭据那句补了「到期时间已按保留凭据对齐」——因为改进1 之后
+// expiresAt 会被**纠正**（不再原样沿用旧值），原措辞会与此不符。文案系行为的一部分：
+// 它是对用户解释「我为什么没覆盖你的凭据」的唯一出口。
 func TestOfficeAceImportNoteDistinguishesKeptCredentials(t *testing.T) {
 	src, err := os.ReadFile("import_local.go")
 	if err != nil {
@@ -362,7 +366,8 @@ func TestOfficeAceImportNoteDistinguishesKeptCredentials(t *testing.T) {
 	}
 	code := string(src)
 	for _, want := range []string{
-		"沿用了本工具已保存的 OAuth 登录凭据",              // 已保留既有凭据
+		"保留了本工具已保存的 OAuth 凭据",                 // 已保留既有凭据
+		"其到期时间已按保留凭据自己的到期对齐",              // 且说明了 expiresAt 被纠正（改进1）
 		"未取得 refresh_token，积分/签到需在本工具重新登录一次", // 导入本来就没有
 	} {
 		if !strings.Contains(code, want) {

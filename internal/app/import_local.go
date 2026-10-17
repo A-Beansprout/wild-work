@@ -463,8 +463,9 @@ func (a *App) importOfficeAce() (*ImportLocalResult, error) {
 				// 若本工具已登录过该账号，writeOfficeAceAuth 会保留既有的 refresh_token。
 				RefreshToken: ex.RefreshToken,
 				// 网关 Basic 凭据不过期；续期是临时凭据的事，故这里用远期到期避免误触刷新。
-				// （目标文件已存在且留有 OAuth 临时凭据/refresh_token 时，合并会改用与它们匹配的到期时间。）
-				ExpiresAt: time.Now().AddDate(50, 0, 0).Unix(),
+				// （目标文件已存在且留有 OAuth 临时凭据/refresh_token 时，合并会改用与它们匹配的到期时间；
+				// 该哨兵只对「纯网关 Basic 导入」生效——见 mergeOfficeAceDoc 的三级优先级。）
+				ExpiresAt: officeAceImportedSentinel(),
 				ApiHost:   ex.ApiHost,
 				Extra:     ex.Extra,
 			},
@@ -488,11 +489,14 @@ func (a *App) importOfficeAce() (*ImportLocalResult, error) {
 	a.afterAccountAdded(provider.OfficeAce)
 	note := fmt.Sprintf("已导入 %d 个 OfficeAce 账号", len(accs))
 	if keptCred > 0 {
-		// 区分「导入本来就没有」与「已保留既有凭据」：保留下来的账号不需要重新登录。
-		note += fmt.Sprintf("（其中 %d 个沿用了本工具已保存的 OAuth 登录凭据，未被本次导入覆盖）", keptCred)
+		// 区分「导入本来就没有」与「已保留既有凭据」：保留下来的账号通常不需要重新登录
+		// （其 refresh_token/临时凭据仍在）。措辞精确到「凭据」，因为 expiresAt 会被**纠正**为
+		// 那批凭据自己的到期时间（而不是原样沿用），这点差异对排障有意义（见 mergeOfficeAceDoc）。
+		note += fmt.Sprintf("（其中 %d 个保留了本工具已保存的 OAuth 凭据，未被本次导入的网关凭据覆盖；其到期时间已按保留凭据自己的到期对齐）", keptCred)
 	}
 	if noRT > 0 {
 		// 无 refresh_token 的账号只能对话，积分/签到会退化成「无临时凭据」（需在本工具重新登录）。
+		// 判据是**合并后**的结果（info.HasRefreshToken），故「本次导入没带、但旧文件里有」的账号不计入。
 		note += fmt.Sprintf("（其中 %d 个未取得 refresh_token，积分/签到需在本工具重新登录一次）", noRT)
 	}
 	note += "；每日签到的临时凭据约 2 小时有效，wild-work 会自动续期"
@@ -646,7 +650,7 @@ func mergeOfficeAceDoc(prev, imported authDoc) (authDoc, officeAceMergeInfo) {
 	out.Account.EnterpriseID = pickNonEmpty(imported.Account.EnterpriseID, prev.Account.EnterpriseID)
 	out.Account.Nickname = pickNonEmpty(imported.Account.Nickname, prev.Account.Nickname)
 
-	// ---- expiresAt：与**本次实际生效的那批凭据**对齐（2026-10-17 独立复核修订）----
+	// ---- expiresAt：与**本次实际生效的那批凭据**对齐（2026-10-17 独立复核修订 + 用户实测补强）----
 	//
 	// 只要合并结果里带着临时凭据（无论它来自导入值还是被保留的旧值），expiresAt 就必须取
 	// 该凭据自己的 `extra.cred_expires`（约 2h），**不能**沿用导入侧的 +50 年哨兵 —— 否则
@@ -655,12 +659,30 @@ func mergeOfficeAceDoc(prev, imported authDoc) (authDoc, officeAceMergeInfo) {
 	// 另行按 cred_expires 判定才没立刻坏，等于把「2 小时后失效」悄悄推到 refresh_token 到期那天）。
 	// 旧写法把这条对齐放在 `KeptCredential` 分支里，于是修复「导入能拿到凭据」之后的主路径
 	// （导入自带 access_key/cred_expires ⇒ KeptCredential=false）反而漏配 —— 正是复核指出的缺陷。
-	// 只有在**没有任何临时凭据**可对齐时才采用导入侧的远期哨兵（网关 Basic 凭据确实不过期）。
+	//
+	// 三级优先级（2026-10-17 用户实测再补一级）：
+	//   ① 有临时凭据 ⇒ 用它的 cred_expires（唯一与「手里这批 AK/SK」真实匹配的值）；
+	//   ② 没有临时凭据、但保留了 refresh_token ⇒ 用 refresh_expire（该凭据链的真实生命周期；
+	//      此前回落到「旧 expiresAt」，而旧值恰恰可能就是导入哨兵 ⇒ 哨兵被**永久固化**，
+	//      实测某账号即如此：cred_expires 每 2h 在走，auth.expiresAt 却停在 +50 年）；
+	//   ③ 两者都没有（纯网关 Basic 导入）⇒ 才写远期哨兵（网关凭据确实不过期）。
 	if ce := parseUnixSec(out.Auth.Extra["cred_expires"]); ce > 0 {
 		out.Auth.ExpiresAt = ce
-	} else if info.KeptRefreshToken && prev.Auth.ExpiresAt > 0 {
-		// 保留了旧 refresh_token（导入侧无）⇒ 旧 expiresAt 与它是同一批凭据的到期时间，一并保留。
+	} else if re := parseUnixSec(out.Auth.Extra["refresh_expire"]); re > 0 && strings.TrimSpace(out.Auth.RefreshToken) != "" {
+		out.Auth.ExpiresAt = re
+	} else if info.KeptRefreshToken && prev.Auth.ExpiresAt > 0 && !isFarFutureExpiry(prev.Auth.ExpiresAt) {
+		// 保留了旧 refresh_token（导入侧无）且旧 expiresAt **不是哨兵** ⇒ 它与那批凭据同源，一并保留。
 		out.Auth.ExpiresAt = prev.Auth.ExpiresAt
+	} else {
+		// 纯网关 Basic 导入（无临时凭据、也无 refresh_expire 可对齐）：哨兵是本场景的正确取值
+		// ——网关凭据确实不过期，写它可避免误触「必然失败的刷新」。
+		// 用导入值本身（而非重新算一次 now+50 年）以保证**确定性**：两者正常情况下同值，
+		// 但跨秒重算会产生 1 秒差异，让 `KeptExpiresAt` 变成偶发 true（测试会随机红）。
+		if imported.Auth.ExpiresAt > 0 {
+			out.Auth.ExpiresAt = imported.Auth.ExpiresAt
+		} else {
+			out.Auth.ExpiresAt = officeAceImportedSentinel()
+		}
 	}
 	info.KeptExpiresAt = out.Auth.ExpiresAt != imported.Auth.ExpiresAt
 	return out, info
@@ -701,6 +723,39 @@ func parseUnixSec(s string) int64 {
 	}
 	return v
 }
+
+// ---------------------------------------------------------------------------
+// 远期哨兵（auth.expiresAt）——「这条凭据不会自己过期」的显式标记
+// ---------------------------------------------------------------------------
+
+// officeAceFarFutureExpiry 是导入型渠道给 `auth.expiresAt` 写的**远期哨兵值**：
+// 表示「该凭据本身不过期，不要按 expiresAt 触发刷新」。
+//
+// 取值（`time.Now().AddDate(50, 0, 0).Unix()`）刻意保留为动态表达式（见调用处），
+// 本常量只用于**识别**，不用于写入。
+//
+// 为什么需要识别（2026-10-17 实机取证，issue 现场）：
+// OfficeAce 有**两层**凭据——网关 Basic（不过期）与临时 AK/SK（约 2h）。导入只拿得到
+// 网关 Basic 时写哨兵是正确的；但同一账号随后若被 OAuth 登录或合并补上临时凭据，
+// **哨兵值必须让位给 `extra.cred_expires`**，否则 `auth.NeedsRefresh()` 恒为假，
+// 通用续期路径对该账号永不触发（实测：某账号 `expiresAt` 停在 +50 年、而临时凭据
+// 每 2 小时被 officeace 自己的 `ensureCredential` 轮换，两者长期自相矛盾）。
+//
+// 判定口径偏保守：只要**明显超出正常生命周期**（> 10 年）就视为哨兵——这样连**历史
+// 遗留**的哨兵值（含未来可能换个表达式的写法）也能被识别并纠正，而不必精确等值匹配。
+const officeAceSentinelMinSeconds = 10 * 365 * 24 * 3600
+
+// isFarFutureExpiry 判断 expiresAt 是否属于「远期哨兵」（>10 年）。0/负值不算。
+func isFarFutureExpiry(exp int64) bool {
+	if exp <= 0 {
+		return false
+	}
+	return exp-time.Now().Unix() > officeAceSentinelMinSeconds
+}
+
+// officeAceImportedSentinel 返回「本次导入」给 auth.expiresAt 写的远期哨兵值。
+// 与调用处同源，避免识别与写入两处各写一份表达式而漂移。
+func officeAceImportedSentinel() int64 { return time.Now().AddDate(50, 0, 0).Unix() }
 
 // authFilePath 返回渠道凭据文件路径（writeAuthFile 与「写前读旧值合并」共用同一命名规则，
 // 避免两处各拼一次路径而漂移）。

@@ -200,12 +200,23 @@ func TestLoadOAuthProfilePlaintextInstallKeyOnWindows(t *testing.T) {
 }
 
 // TestLoadOAuthProfileKeepsGoingWhenNoProfile：某安装根缺档案/缺密钥时不报错，且不影响其它根。
+//
+// ⚠️ 2026-10-17 修正一处**断言写反**的缺陷（测试自引入起就是红的，`go test ./...` 在
+// internal/officeace 包上从未真正绿过）：原文案写「有密钥文件但无档案的根**不应**触碰
+// DPAPI（先在磁盘层排除）」，而代码是 `if !pr.probed() { t.Fatal(...) }` —— 断言的是
+// **必须**被探测过，与文案相反、也与实现相反（loadOAuthProfile 先找档案文件，miss 就
+// `continue`，根本走不到读密钥那一步）。当时之所以没被发现，是因为它只在**包级全量跑**
+// 时才暴露，容易被「看结尾 ok」的习惯漏掉。
+//
+// 现在的两条断言都与设计一致，并且**互相区分**：
+//   - 只有密钥、没有档案 ⇒ 一次也不能读密钥（磁盘层排除，避免对每个候选根做无谓 DPAPI 调用）；
+//   - 有档案 ⇒ 必须真的读过密钥（否则「能读出档案」就是靠别的路径蒙对的）。
 func TestLoadOAuthProfileKeepsGoingWhenNoProfile(t *testing.T) {
 	restoreTestReadProtectedText(t)
 	keylessRoot := emptySecureRoot(t) // 有密钥文件、没有档案
 	accRoot := t.TempDir()
 	writeTestProfile(t, accRoot, expectedProfileName, testInstallSecret)
-	emptyRoot := emptySecureRoot(t) // 档案与密钥都没有
+	emptyRoot := emptySecureRoot(t) // 有密钥文件、没有档案（同 keylessRoot，但顺序在后）
 
 	pr := newProbeReadProtectedText(testInstallSecret)
 	readProtectedTextFn = pr.fn
@@ -213,13 +224,16 @@ func TestLoadOAuthProfileKeepsGoingWhenNoProfile(t *testing.T) {
 	if prof := loadOAuthProfile(testProfileUID, []string{keylessRoot, emptyRoot}); prof != nil {
 		t.Fatal("无档案的安装根不应返回档案")
 	}
-	if !pr.probed() {
-		t.Fatal("有密钥文件但无档案的根，不应触碰 DPAPI（先在磁盘层排除）")
+	if pr.probed() {
+		t.Fatal("无档案的根不得去读密钥（应在磁盘层先排除，避免无谓的 DPAPI 调用）")
 	}
 	pr.reset()
 	prof := loadOAuthProfile(testProfileUID, []string{keylessRoot, emptyRoot, accRoot})
 	if prof == nil {
 		t.Fatal("前面的安装根无档案时，应继续向后找（不得提前放弃）")
+	}
+	if !pr.probed() {
+		t.Fatal("命中档案的根必须真的读过密钥（否则「解出档案」是假的）")
 	}
 	if prof.Credential.RefreshToken != testFakeRefreshTok {
 		t.Fatal("续找命中的档案内容不正确")
