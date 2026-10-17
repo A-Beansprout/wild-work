@@ -59,7 +59,7 @@ func NewWithTimeout(timeout time.Duration) *Client {
 	return &Client{
 		HTTP:        &http.Client{Timeout: timeout, Transport: tr},
 		StreamHTTP:  &http.Client{Transport: tr}, // 共用 Transport，不设 Timeout
-		IdleTimeout: idle.DefaultTimeout,          // 流中空闲监控兜底（见 internal/idle）
+		IdleTimeout: idle.DefaultTimeout,         // 流中空闲监控兜底（见 internal/idle）
 		Gateway:     GatewayBase,
 		Web:         WebBase,
 	}
@@ -528,8 +528,7 @@ func (c *Client) userResource(a *auth.Auth) (int64, []provider.ResourceItem, err
 		return 0, nil, err
 	}
 	var bal struct {
-		Balance      float64 `json:"balance"`
-		FreezeCredit float64 `json:"freeze_credit"`
+		Balance float64 `json:"balance"`
 	}
 	if err := json.Unmarshal(data, &bal); err != nil {
 		return 0, nil, fmt.Errorf("balance parse: %w", err)

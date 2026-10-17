@@ -211,11 +211,6 @@ func (s *Scheduler) NextFire() time.Time {
 	return nextFireMinutes(time.Now(), all)
 }
 
-// nextFire 保留旧测试/API语义：hours 为本地小时（0-23）。
-func nextFire(now time.Time, hours []int) time.Time {
-	return nextFireMinutes(now, hoursToMinutes(hours))
-}
-
 func hoursToMinutes(hours []int) []int {
 	out := make([]int, 0, len(hours))
 	for _, h := range hours {

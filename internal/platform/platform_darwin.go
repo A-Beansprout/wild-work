@@ -10,11 +10,6 @@ import (
 	"strings"
 )
 
-// WorkArea macOS：主屏可见区域（不含菜单栏/Dock）近似取全屏，供面板定位参考。
-func WorkArea() (int32, int32, int32, int32) {
-	return 0, 0, 1440, 900
-}
-
 // InfoBox macOS：用 osascript 弹对话框。
 func InfoBox(title, msg string) {
 	_ = exec.Command("osascript", "-e",
@@ -35,10 +30,9 @@ func AskYesNo(title, msg string) bool {
 	return err == nil && strings.Contains(string(out), "button returned:是")
 }
 
-// ---------------------------------------------------------------------------
-// 浏览器
-// ---------------------------------------------------------------------------
-
+// 本 fork 说明：CodeArts 授权走「无痕窗口 + 用户点授权」（internal/app/app.go 调
+// DefaultBrowserIncognito/LaunchIncognito），故上游 1e25be4 的死代码清理在本分支不适用，
+// 这组函数必须保留；否则 internal/app 编译失败。
 var browserApps = []struct {
 	bundle string
 	name   string

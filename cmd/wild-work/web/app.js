@@ -435,13 +435,65 @@ const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traewor
 const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", cline: "cline", officeace: "officeace" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
+// ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
+// 自定义渠道无品牌色，多个自定义渠道若共用 --ch-custom 会完全撞色；
+// 按渠道名稳定哈希从高区分度色板取色（刷新/重启不变，图表间一致）。
+const CUSTOM_PALETTE = ["#e07a1f", "#0ea5e9", "#d946ef", "#84cc16", "#f43f5e", "#14b8a6", "#a855f7", "#eab308", "#64748b", "#ec4899"];
+function stableHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+const _chColorCache = {};
+function chColor(k) {
+  if (isCustomGroup(k)) return CUSTOM_PALETTE[stableHash(k) % CUSTOM_PALETTE.length];
+  const cls = CH_CLASS[k] || "custom";
+  if (_chColorCache[cls]) return _chColorCache[cls];
+  let v = "";
+  try { v = getComputedStyle(document.documentElement).getPropertyValue(`--ch-${cls}`).trim(); } catch (e) { /* ignore */ }
+  return (_chColorCache[cls] = v || "#6366f1");
+}
+// varyColor 同渠道第 i（0 起）个系列做颜色变体，避免同渠道多条线同色：
+// 明度阶梯 +14/-14/+28/-28... 封顶在 [22,78]；封顶后转色相偏移（每档 ±18°）继续拉开。
+function hexToHsl(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return { h: 0, s: 0, l: l * 100 };
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  let h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: h * 60, s: s * 100, l: l * 100 };
+}
+function hslToHex(h, s, l) {
+  const f = (n) => {
+    const k2 = (n + h / 30) % 12;
+    const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+    const c = l / 100 - a * Math.max(-1, Math.min(k2 - 3, Math.min(9 - k2, 1)));
+    return Math.round(c * 255).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+function varyColor(hex, i) {
+  if (!i || !/^#[0-9a-fA-F]{6}$/.test(hex)) return hex;
+  const { h, s, l } = hexToHsl(hex);
+  const k = Math.ceil(i / 2), dir = i % 2 ? 1 : -1;
+  const lRaw = l + k * 14 * dir;
+  const l2 = Math.min(78, Math.max(22, lRaw));
+  const hShift = (lRaw < 22 || lRaw > 78) && k >= 2 ? k * 18 * dir : 0;
+  return hslToHex(((h + hShift) % 360 + 360) % 360, s, l2);
+}
 // 不支持显式签到（手动按钮）的渠道：
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；
 // 千问办公无签到活动；MonkeyCode 无签到端点；Loomy 无签到端点；OpenCodeZen 与 Kilo 是免密渠道，
 // 无账号概念（也无积分）。
 // 小浣熊已实现签到（setting_info 触发每日积分落账，见 internal/raccoon/checkin.go），支持手动按钮。
 const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "monkeycode", "loomy", "oczen", "kilo", "zcode", "gemini", "cline"]);
-const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
+const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g) || isCustomGroup(g); // 自定义渠道无签到活动（R66）
+// isCustomGroup 该分组是否为用户自定义 OpenAI 兼容渠道（R66）。
+// 以 state.custom_channels（后端 /api/state 下发，保存即热更新）为准，勿在前端另维护一份。
+const isCustomGroup = (g) => !!(state && (state.custom_channels || []).some((c) => c && c.name === g));
+// hasNoCredits 该分组是否无积分概念：内建 NA 名单 ∪ 动态自定义渠道。与后端 creditsNAKind 同口径。
+const hasNoCredits = (g) => NO_CREDITS_BUILTIN.has(g) || isCustomGroup(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
 const IMPORT_LOCAL_CHANNELS = new Set(["monkeycode", "raccoon", "loomy", "officeace"]);
 const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
@@ -458,7 +510,9 @@ const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持", kilo: "不支持", zcode: "不支持", gemini: "不支持", cline: "无签到" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
-const NO_CREDITS = new Set(["oczen", "kilo", "cline"]);
+// 内建名单只有 oczen/kilo/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
+// 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
+const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline"]);
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
@@ -479,7 +533,7 @@ function fmtTokens(n) {
 
 function creditsText(a) {
   if (a.credits_na) {
-    return `<span class="credit-na" title="免密渠道无积分概念">不适用</span>`;
+    return `<span class="credit-na" title="该渠道无积分概念">不适用</span>`;
   }
   if (a.credits_stale) {
     return `<span class="credit-stale" title="余额口径已过期（旧版本状态文件），正在自动刷新…">待刷新</span>`;
@@ -661,9 +715,13 @@ function renderAccounts() {
       ? `<span class="icon-op off" title="${esc(noCheckinTitle)}" onclick="return false">✓</span>`
       : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">✓</span>`;
 
-    // 匿名渠道（无积分/无签到）：只保留「不可操作」的静态指示，
-    // 不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
-    const noCredits = NO_CREDITS.has(a.group);
+    // 无积分账号分两类，处理不同：
+    // - oczen/cline（固定账号）：只保留「不可操作」的静态指示，
+    //   不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
+    // - 自定义渠道（R66）：无积分/无签到，但账号可在设置里停用/删除，
+    //   故保留停用/删除/改名入口，只去掉签到/刷新积分两个无意义按钮。
+    const noCredits = hasNoCredits(a.group);
+    const fixedAcct = noCredits && !isCustomGroup(a.group);
     // 问号图标：hover 展示 oczen 通道说明（免费反代范围/私有 Key/代理三项）。
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
@@ -671,17 +729,17 @@ function renderAccounts() {
     // kilo 的说明与 oczen 不同：没有私有 Key 可配，也没有备用通道重放。
     const kiloHelp = `<span class="icon-op help" title="关于 Kilo 免费池：&#10;1. 上游是 api.kilo.ai 网关的免费模型池，**不需要任何凭据**（无账号、无 Key）&#10;2. 只反代免费池（模型清单里 isFree=true 的那些）；请求付费模型会返回 PAID_MODEL_AUTH_REQUIRED&#10;3. 无签到、无积分，故没有「刷新积分」入口">?</span>`;
     const channelHelp = a.group === "kilo" ? kiloHelp : oczenHelp;
-    const ops = noCredits
+    const ops = fixedAcct
       ? `${channelHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
-          <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>
+          ${noCredits ? "" : `<span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>`}
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
-          <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">✕</span>`;
+          <span class="icon-op danger" title="${isCustomGroup(a.group) ? esc("删除账号（自定义渠道将移除整个渠道配置）") : "删除账号"}" onclick="removeAcct('${a.uid}')">✕</span>`;
     // 显示名：点击直接弹出改名框（匿名渠道不可改，降级为普通文本）。
     // oczen 特例：渠道名已由 badge 承担，名字按凭证形态显示「匿名/私有Key」。
     const isOczen = a.group === "oczen";
     const oczenName = (state.oczen_api_key || "") ? "私有Key" : "匿名";
-    const nameHtml = noCredits
+    const nameHtml = fixedAcct
       ? `<span class="acct-name">${esc(isOczen ? oczenName : (a.nickname || shortUid(a.uid)))}</span>`
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
@@ -1059,7 +1117,10 @@ async function refreshAll() {
   try {
     const r = await api("/api/account/refresh_all", {});
     detailCache = {}; // 顶层已全部更新，全部明细缓存作废
-    toast(r.busy ? "已有刷新任务进行中" : `积分刷新完成：成功 ${r.ok} / 失败 ${r.failed}`);
+    // 无积分概念的渠道（oczen/cline/自定义）后端不参与统计，无需前端再补偿数
+    toast(r.busy ? "已有刷新任务进行中"
+      : r.failed > 0 ? `积分刷新完成：成功 ${r.ok} / 失败 ${r.failed}`
+      : `积分刷新完成：全部成功（${r.ok} 个）`);
     loadState();
   } catch (e) { toast(e.message); } finally {
     $("btnRefreshAll").disabled = false;
@@ -1190,7 +1251,9 @@ function promptLogin(channel) {
     return;
   }
   $("lcTitle").textContent = "添加 " + name + " 账号";
-  $("lcMsg").textContent = noExplicitCheckin(channel)
+  // 此处只会收到内建渠道名（自定义渠道走设置弹层，不经 promptLogin），
+  // 故直接查内建名单，不走动态判定的 noExplicitCheckin()。
+  $("lcMsg").textContent = NO_EXPLICIT_CHECKIN.has(channel)
     ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。${NO_CHECKIN_LOGIN_HINT[channel] || ""}`
     : `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。`;
   $("btnLoginConfirm").textContent = "登录" + name;
@@ -2519,6 +2582,15 @@ function fmtTokensFull(n) {
   return Number(n).toLocaleString("zh-CN");
 }
 
+// fmtAxisTokens 坐标轴专用紧凑刻度：万/亿取整不带小数（刻度无需精度，悬浮明细仍用 fmtTokensFull）。
+// 「8000.0万」这类长标签会撑爆 50px 网格边距、被画布裁成 0000.0万。
+function fmtAxisTokens(n) {
+  if (!n) return "0";
+  if (n >= 1e8) return Math.round(n / 1e8) + "亿";
+  if (n >= 1e4) return Math.round(n / 1e4) + "万";
+  return String(Math.round(n));
+}
+
 // cacheCell 渲染「缓存利用率」单元格。**优雅降级的三态**（后端约定）：
 //   cr_cov > 0 → 有上报样本，显示百分比（可准确到 0%，那是真没命中）
 //   cr_cov = 0 → 上游不提供该维度（glm / raccoon 等）→ 显示「—」，**绝不显示 0%**
@@ -2645,18 +2717,35 @@ function renderUsageChart(st) {
   if (!usageChart) return;
   const byDay = (st.token.by_day || []);
   const dates = byDay.map((d) => d.date);
-  // 渠道系列：取所有出现过的渠道并集
+  // 渠道系列：取所有出现过的渠道并集，按区间总量降序（主力渠道排在图例最前）
+  const totalOf = {};
   const chans = [...new Set(byDay.flatMap((d) => Object.keys(d.by_channel || {})))];
+  for (const d of byDay) for (const [ch, v] of Object.entries(d.by_channel || {})) totalOf[ch] = (totalOf[ch] || 0) + v;
+  chans.sort((a, b) => (totalOf[b] || 0) - (totalOf[a] || 0));
   const series = chans.map((ch) => ({
     name: CH_NAMES[ch] || ch, type: "line", smooth: true,
+    itemStyle: { color: chColor(ch) }, lineStyle: { color: chColor(ch) },
     data: byDay.map((d) => d.by_channel[ch] || 0),
   }));
   usageChart.setOption({
-    tooltip: { trigger: "axis" },
-    legend: { data: series.map((s) => s.name) },
-    grid: { left: 50, right: 20, top: 36, bottom: 28 },
+    color: chans.map((ch) => chColor(ch)),
+    tooltip: {
+      trigger: "axis",
+      // 全 0 的时刻点不弹悬浮（避免清晨无用量时一片 0 刷屏）；
+      // 有数据时也过滤掉 0 值系列，只看当下真正在跑的渠道。
+      formatter: (params) => {
+        const list = params.filter((p) => p.value > 0);
+        if (!list.length) return "";
+        const head = `<div style="font-weight:600;margin-bottom:4px">${esc(params[0].axisValue)}</div>`;
+        return head + list.map((p) =>
+          `<div>${p.marker}${esc(p.seriesName)}：${fmtTokensFull(p.value)}</div>`).join("");
+      },
+    },
+    legend: { type: "scroll", data: series.map((s) => s.name),
+      tooltip: { show: true } },
+    grid: { left: 8, right: 20, top: 36, bottom: 28, containLabel: true },
     xAxis: { type: "category", data: dates },
-    yAxis: { type: "value", axisLabel: { formatter: (v) => fmtTokensFull(v) } },
+    yAxis: { type: "value", axisLabel: { formatter: (v) => fmtAxisTokens(v) } },
     series,
   }, true);
   usageChart.resize();
@@ -2687,14 +2776,33 @@ function renderCreditChart(entries, names) {
     for (const e of spends) if (e.uid === uid) cnt[e.channel] = (cnt[e.channel] || 0) + 1;
     return Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || "";
   };
+  // 同渠道多个账号时做颜色变体，保证 10 条线互不相同
+  const colorByUid = {};
+  const vIdx = {};
+  for (const uid of top10) {
+    const ch = mainChOf(uid);
+    colorByUid[uid] = varyColor(chColor(ch), vIdx[ch] = (vIdx[ch] ?? -1) + 1);
+  }
   const series = top10.map((uid) => ({
     name: `${chLabel(mainChOf(uid))} ${names[uid] || shortUid(uid)}`, type: "line", smooth: true,
+    itemStyle: { color: colorByUid[uid] }, lineStyle: { color: colorByUid[uid] },
     data: dates.map((d) => byAcct[uid][d] || 0),
   }));
   creditChart.setOption({
-    tooltip: { trigger: "axis", valueFormatter: (v) => fmtCredits(v) },
-    legend: { data: series.map((s) => s.name) },
-    grid: { left: 50, right: 20, top: 36, bottom: 28 },
+    color: top10.map((uid) => colorByUid[uid]),
+    tooltip: {
+      trigger: "axis", valueFormatter: (v) => fmtCredits(v),
+      formatter: (params) => {
+        const list = params.filter((p) => p.value > 0);
+        if (!list.length) return "";
+        const head = `<div style="font-weight:600;margin-bottom:4px">${esc(params[0].axisValue)}</div>`;
+        return head + list.map((p) =>
+          `<div>${p.marker}${esc(p.seriesName)}：${fmtCredits(p.value)}</div>`).join("");
+      },
+    },
+    legend: { type: "scroll", data: series.map((s) => s.name),
+      tooltip: { show: true } },
+    grid: { left: 8, right: 20, top: 36, bottom: 28, containLabel: true },
     xAxis: { type: "category", data: dates },
     yAxis: { type: "value", axisLabel: { formatter: (v) => fmtCredits(v) } },
     series,

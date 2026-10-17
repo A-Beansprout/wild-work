@@ -57,7 +57,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.8.0"
+const Version = "2.8.1"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -321,16 +321,6 @@ func (a *App) firstRuntime() *Runtime {
 		}
 	}
 	return nil
-}
-
-func (a *App) totalAccounts() int {
-	n := 0
-	for _, rt := range a.runtimesSnapshot() {
-		if rt != nil && rt.Pool != nil && !rt.Alias {
-			n += len(rt.Pool.List())
-		}
-	}
-	return n
 }
 
 func (a *App) allStatuses() []pool.Status {
@@ -1637,16 +1627,6 @@ func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
 	})
 }
 
-// mustLoadQwenWork 重新扫描千问办公凭证目录（错误仅记日志）。
-func mustLoadQwenWork(dir string) []*auth.Auth {
-	auths, err := auth.LoadQwenWorkDir(dir)
-	if err != nil {
-		log.Printf("reload qwenwork accounts: %v", err)
-		return nil
-	}
-	return auths
-}
-
 func (a *App) finishLogin() {
 	a.muLogin.Lock()
 	a.loginBusy = false
@@ -2080,6 +2060,12 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		// 免密免费池同样没有积分概念（面板显示「不适用」）。
 		return 0, fmt.Errorf("Kilo 免费池无积分，不适用")
 	}
+	if rt.Custom {
+		// 自定义渠道（R66）无积分接口：凭据本体是渠道级 api_key（对话转发用），
+		// 不拒绝会落入 creditSnapshot 把 pool 快照写成 0（UserResourceDetail 恒返回空），
+		// 让人误读成「额度已用光」。
+		return 0, fmt.Errorf("%s 为自定义渠道，无积分概念，不适用", rt.Kind)
+	}
 	// 注意：ZCode **不**在这里拒绝 —— 它的额度是 token 口径，同样需要刷新才能看到用量；
 	// 它的数字由 credits_unit="token" 标注，不进积分小计与流水（见 creditsUnit）。
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
@@ -2115,6 +2101,12 @@ func (a *App) RefreshAll() RefreshSummary {
 		// oczen / kilo 无「额度」可刷：纳入只会产生一条无意义的失败记录。
 		// （ZCode 要走刷新：它的额度是 token 口径，同样需要更新才能看到用量。）
 		if rt.Kind == provider.Oczen || rt.Kind == provider.Kilo {
+			continue
+		}
+		// 自定义渠道（R66）同样无积分概念：凭据本体是渠道级 api_key（对话转发用），
+		// 占位账号无 access/refresh token，且 UserResourceDetail 恒返回空。
+		// 纳入只会把每个自定义渠道都记成一条「no token」假失败（面板报「失败 N」噪音）。
+		if rt.Custom {
 			continue
 		}
 		ps := PlatformSummary{Accounts: []AccountRefresh{}}
@@ -2247,6 +2239,11 @@ func (a *App) ResourceDetail(uid string) (remain int64, items []provider.Resourc
 	}
 	if rt.Kind == provider.Kilo {
 		return 0, nil, 0, 0, fmt.Errorf("Kilo 免费池无积分，不适用")
+	}
+	if rt.Custom {
+		// 自定义渠道（R66）无明细接口：UserResourceDetail 恒返回空 items，
+		// 不拒绝会让前端弹出一张空白明细层。
+		return 0, nil, 0, 0, fmt.Errorf("%s 为自定义渠道，无积分明细，不适用", rt.Kind)
 	}
 	return a.creditSnapshot(rt, au)
 }

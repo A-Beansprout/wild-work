@@ -158,10 +158,6 @@ func scanLine(st *sseState, line string) *SOLOEvent {
 	return nil
 }
 
-// Aggregate 读取完整 SOLO SSE，聚合 response + reasoning + tool_calls + usage，
-// 产出单个 OpenAI chat.completion（非流式）。model 为回填的客户端模型名。
-func Aggregate(r io.Reader) (map[string]any, error) { return AggregateWithModel(r, "") }
-
 // AggregateWithModel 同 Aggregate，额外把 model 回填到响应（上游 SOLO 事件不带模型名）。
 func AggregateWithModel(r io.Reader, model string) (map[string]any, error) {
 	br := bufio.NewReaderSize(r, 64*1024)
@@ -330,23 +326,9 @@ func sortInts(a []int) {
 	}
 }
 
-// Stream 流式转换：SOLO SSE → OpenAI SSE chunk，每 chunk flush，保证至少一个 [DONE]。
-// 调用方必须先设置过 status 200；本函数自设 SSE headers。
-func Stream(w http.ResponseWriter, r io.Reader) error {
-	_, err := streamOpts(w, r, nil, "", nil)
-	return err
-}
-
 // StreamWithModel 同 Stream，额外把 model 回填到每个 chunk（上游 SOLO 事件不带模型名）。
 func StreamWithModel(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
 	return streamOpts(w, r, nil, model, nil)
-}
-
-// StreamWithError 同 Stream，额外在遇到上游 event:error 时回调 onErr（非 nil），
-// 供调用方冷却账号/记录日志；错误信息同时注入 SSE 事件流。
-func StreamWithError(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)) error {
-	_, err := streamOpts(w, r, onErr, "", nil)
-	return err
 }
 
 // streamOpts Stream 的可选参数版本；onUsage 非 nil 时回调 token_usage 事件的 usage。

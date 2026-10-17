@@ -39,9 +39,7 @@ const (
 	// v2 面只给 `balance` + `dailyBalance`（聊天聚合形状、无 availableBalance），
 	// 用它就得自己相加 —— 多一个口径推导就多一处出错面。
 	EpPointsV1 = "/api/v1/points/records"
-	EpPointsV2 = "/api/v2/points/records"
 	EpBalance  = "/api/v1/team-points/balance"
-	EpPetWork  = "/api/v1/pet-work"
 )
 
 // ChannelName 费率面板与日志中的渠道标识。

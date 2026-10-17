@@ -726,15 +726,25 @@ func (s *Stats) platformRowsLocked(now time.Time) []PlatformRow {
 // null（上游下一请求会重建粘性记录，下一轮喂入自然纠正）。
 // 只下发有使用记录（Current 非 null）的平台——无粘性记录=今日未用过，
 // 展示「暂无使用记录」行没有信息量。
+// 单账号组整组跳过（组内账号总数 < 2）：无接棒候选，展示恒为「当前=自己、
+// Next 恒空」纯噪音（R75）。自然覆盖自定义渠道伪账号（custom-<名>）与 oczen
+// 匿名号等单账号渠道；glm 虽置 SingleAccount 但是真多账号池（可加多个
+// refresh_token），有轮换语义，按账号数判断不会误伤。
+// 注意：platformRows 等聚合视图不受此过滤影响，单账号渠道余额/花费照常入表。
 func (s *Stats) rotationLocked() []RotationView {
-	groups := map[string]bool{}
+	// 先按组聚合账号数：单账号组（无接棒候选）整组不进轮换视图。
+	groupCount := map[string]int{}
 	for _, a := range s.accts {
-		if a.group != "" {
-			groups[normalizePlatform(a.group)] = true
+		if a.group == "" {
+			continue
 		}
+		groupCount[normalizePlatform(a.group)]++
 	}
-	out := make([]RotationView, 0, len(groups))
-	for g := range groups {
+	out := make([]RotationView, 0, len(groupCount))
+	for g, n := range groupCount {
+		if n < 2 {
+			continue
+		}
 		view := RotationView{Group: g, Next: []RotationRow{}}
 
 		st, hasSticky := s.sticky[g]

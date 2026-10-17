@@ -281,11 +281,8 @@ func (a *Auth) saveAtomicLocked() error {
 	return os.Rename(tmp, a.FilePath)
 }
 
-// LoadDir 扫描 dir 下 workbuddy*.json，只收 wantRegion（"cn"/"global"）。
-// 解析失败与 region 不符的文件静默跳过（启动日志由调用方统计）。
-func LoadDir(dir, wantRegion string) ([]*Auth, error) { return LoadWorkBuddyDir(dir, wantRegion) }
-
 // LoadWorkBuddyDir 扫描 WorkBuddy 凭证。
+// 解析失败与 region 不符的文件静默跳过（启动日志由调用方统计）。
 func LoadWorkBuddyDir(dir, wantRegion string) ([]*Auth, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "workbuddy*.json"))
 	if err != nil {
