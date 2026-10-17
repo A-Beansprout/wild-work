@@ -194,7 +194,7 @@ func (s *LoginSession) run(authDir, state, verifier string, dpop *DPoPKey, onDon
 		AccountID:       accountID,
 		UserID:          userID,
 		Label:           tok.UserName,
-		BaseURL:         trimSlash(base),
+		BaseURL:         bareGateway(base),
 		Authorization:   "Basic " + base64.StdEncoding.EncodeToString([]byte(appKey+":"+appSecret)),
 		AccessKeyID:     tok.AccessKeyID,
 		SecretAccessKey: tok.SecretAccessKey,

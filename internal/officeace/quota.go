@@ -152,17 +152,18 @@ func (c *Client) fetchSubscription(ac *Account) (*subscription, error) {
 	return &sub, nil
 }
 
-// gatewayBase 解析账号专属网关：配置里没有就读 client-permission-validate。
+// gatewayBase 解析账号专属网关（**裸 host**）：配置里没有就读 client-permission-validate。
+// 返回前一律过 bareGateway：额度/签到端点直接拼 `/v1/subscription`，不得带 `/v2`（#152）。
 func (c *Client) gatewayBase(ac *Account) (string, error) {
 	if ac.BaseURL != "" {
-		return ac.BaseURL, nil
+		return bareGateway(ac.BaseURL), nil
 	}
 	// 无网关凭据时尝试用临时凭据问控制面。
 	base, _, err := c.clientPermissionValidate(ac)
 	if err != nil || base == "" {
 		return defaultGateway, nil
 	}
-	return base, nil
+	return bareGateway(base), nil
 }
 
 // clientPermissionValidate 调 {agentartsBase}/v1/claw/client-permission-validate（V4 签名）。
