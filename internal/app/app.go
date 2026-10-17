@@ -114,6 +114,14 @@ type App struct {
 	loginCtx     context.Context
 	loginCancel  context.CancelFunc
 	loginClient  *http.Client
+	// loginLabel 用户在登录弹窗里填的「账号标识」（可选，2026-10-17 新增）。
+	// 上游不提供稳定身份字段的渠道（当前是 CodeArts）靠它区分「同一账号重新登录」与
+	// 「新增第二个账号」——否则方案 B 的复用逻辑会把第二个账号覆盖到第一条上（用户实测报告）。
+	loginLabel string
+	// loginBackendOpened 本次登录的授权页是否已由本工具（无痕窗口）拉起。
+	// 前端据此**不再** window.open —— 否则会在日常浏览器里再开一个带登录态的标签页，
+	// 无痕的努力就白费了（授权页照样会复用已登录的华为云账号）。
+	loginBackendOpened bool
 	loginStateFP string
 	loginKind    provider.Kind
 	// loginErr 上一次登录流程的终态错误（成功/取消/超时为空串）。
@@ -750,10 +758,39 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.finishLogin()
 		return "", err
 	}
-	// 浏览器打开由前端 Web UI 通过 window.open() 完成
+	// 浏览器打开通常由前端 Web UI 通过 window.open() 完成；但 CodeArts 例外：
+	// 它的授权页会**复用日常浏览器里已登录的华为云会话**，于是「想添加第二个账号，
+	// 却总被授权成已登录的那个」（2026-10-17 用户实测报告）。故这里由本工具用**无痕窗口**拉起。
+	if k == provider.CodeArts {
+		a.openAuthURLIncognito(authURL)
+	}
 	go a.pollLogin(ctx)
 	log.Printf("%s 登录流程已发起", k)
 	return authURL, nil
+}
+
+// openAuthURLIncognito 用无痕窗口打开授权页（用于必须避开日常浏览器登录态的渠道）。
+//
+// 成功时置 loginBackendOpened，让前端**不再** window.open —— 否则会在日常浏览器里再开一个
+// 带登录态的标签页，无痕那一步就白做了。
+// 探测不到支持无痕的浏览器 / 启动失败时**退回系统默认打开**：可用性优先于隔离性，
+// 并在日志里说明原因，便于排查「为什么还是登录成了老账号」。
+func (a *App) openAuthURLIncognito(url string) {
+	exe, flag, ok := platform.DefaultBrowserIncognito()
+	if !ok {
+		log.Printf("登录：未探测到支持无痕的默认浏览器，退回系统默认打开（可能带上已有登录态）")
+		_ = platform.OpenURL(url)
+		return
+	}
+	if err := platform.LaunchIncognito(exe, flag, url); err != nil {
+		log.Printf("登录：无痕窗口启动失败（%v），退回系统默认打开", err)
+		_ = platform.OpenURL(url)
+		return
+	}
+	a.muLogin.Lock()
+	a.loginBackendOpened = true
+	a.muLogin.Unlock()
+	log.Printf("登录：已用无痕窗口打开授权页（避免复用日常浏览器的登录态）")
 }
 
 // CancelLogin 取消当前登录流程。
@@ -1146,7 +1183,14 @@ func (a *App) completeWbaiLogin(r loginwbai.Result) {
 // 本渠道**有**每日签到（三步、走 HMAC 签名，渠道包实现了 CheckinReporter/CheckinGranter），
 // 但与其他渠道一致**不**在登录时顺手签到：定时任务会在签到时间自行领取，少发一次上游请求。
 func (a *App) completeCodeArtsLogin(r logincodearts.Result) {
-	log.Printf("codearts 登录成功 uid=%s nickname=%s expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresAt, r.RefreshToken != "")
+	// 带上用户在登录弹窗里填的「账号标识」：上游不提供稳定身份字段（实测），只能靠它区分账号
+	// ——留空 = 覆盖该渠道已有条目（同一账号重新登录）；填写 = 作为独立账号并存。
+	// 取完即清，避免污染下一次登录。
+	a.muLogin.Lock()
+	r.Label = a.loginLabel
+	a.loginLabel = ""
+	a.muLogin.Unlock()
+	log.Printf("codearts 登录成功 uid=%s nickname=%s label=%q expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.Label, r.ExpiresAt, r.RefreshToken != "")
 	fp, err := logincodearts.SaveAuth(a.cfg.AuthDir, r)
 	if err != nil {
 		log.Printf("codearts 登录保存凭证失败 uid=%s err=%v", r.UID, err)
@@ -2990,14 +3034,25 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login/start", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Channel string `json:"channel"`
+			// AccountLabel 用户指定的「账号标识」（可选）。
+			// 只对上游不提供稳定身份字段的渠道有意义（当前是 CodeArts）：填了就是独立账号，
+			// 留空则按「同一账号重新登录」处理（覆盖该渠道已有条目）。
+			AccountLabel string `json:"account_label"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		a.muLogin.Lock()
+		a.loginLabel = strings.TrimSpace(req.AccountLabel)
+		a.loginBackendOpened = false
+		a.muLogin.Unlock()
 		url, err := a.StartLoginFor(req.Channel)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"auth_url": url})
+		a.muLogin.Lock()
+		opened := a.loginBackendOpened
+		a.muLogin.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"auth_url": url, "backend_opened": opened})
 	})
 	mux.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.CancelLogin(); err != nil {

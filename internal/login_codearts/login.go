@@ -58,8 +58,10 @@ var stsURL = codearts.STSTokenURL
 
 // Result 登录成功后拿到的凭据与账号信息。
 //
-// AccessToken 承载 **AK**（与渠道包/落盘约定一致：本渠道没有 Bearer token，
-// AK 是账号唯一标识）。其余渠道专有字段在 SaveAuth 里进 auth.Auth.Extra。
+// AccessToken 承载 **AK**（与渠道包/落盘约定一致：本渠道没有 Bearer token）。
+// ⚠️ 但 **AK 不是账号唯一标识** —— 它是每次交换**新签发**的临时凭据；而上游又不下发任何身份字段，
+// 所以「账号身份」只能由用户填的 Label 决定（留空时退回复用已有 UID），见 Label 与 SaveAuth。
+// 其余渠道专有字段在 SaveAuth 里进 auth.Auth.Extra。
 type Result struct {
 	AccessToken  string
 	RefreshToken string
@@ -69,6 +71,14 @@ type Result struct {
 	ExpiresIn int64
 	UID       string
 	Nickname  string
+	// Label 用户指定的「账号标识」（可选，由调用方在保存前填入）。
+	//
+	// 为什么需要它：上游不提供任何稳定身份字段（2026-10-17 实测：STS 响应与
+	// statistics/plugin 的字段全集里都没有 user_id/domain_id），UID 只能落到临时 AK
+	// ⇒ 既无法区分多个华为账号，重复登录又会被写成新条目。用户填的标识是唯一可靠的区分手段：
+	// **填同一标识 = 同一账号（覆盖）；填不同标识 = 多个账号（并存）**。
+	// 留空则退回「复用该渠道已有账号的 UID」（见 SaveAuth）。
+	Label string
 
 	// 签名三件套 + 续期材料（SaveAuth 落 Extra）。
 	AccessKeyID     string
@@ -227,23 +237,22 @@ func Shutdown() {
 // auth.Auth.SaveAtomic()，保证落盘字节形态与 auth.Parse / auth.LoadCodeArtsDir /
 // 续期回写**完全同源**（不变量 3，Extra 键名也只有一个来源）。
 func SaveAuth(authDir string, r Result) (string, error) {
-	if strings.TrimSpace(r.UID) == "" {
+	if strings.TrimSpace(r.UID) == "" && strings.TrimSpace(r.Label) == "" {
 		return "", errors.New("missing uid in result")
 	}
-	// ── 方案 B（2026-10-17，用户实测报告后落地）：避免「每次登录多出一个账号」─────────
+	// ── UID 优先级（2026-10-17 起）──────────────────────────────────────────────
+	//   1. **用户指定的 Label**（最可靠：直接表达「这是哪个账号」，也是多账号的唯一手段）；
+	//   2. 上游稳定身份字段（当前上游不下发，留着以备将来）；
+	//   3. **复用该渠道已有账号的 UID**（= 同一账号重新登录，覆盖同一文件）；
+	//   4. 兜底 r.UID（= 临时 AK；仅当目录为空且未填 Label 时才会走到）。
 	//
-	// 上游 STS 响应**不含任何身份字段**（协议 §2.7 已确认：只有 `credentials.*` + `refresh_token`），
-	// 因此 exchange 里的 `UID = user_id → domain_id → access_key_id` 实际**必然**落到 AK；
-	// 而 AK 是每次交换**新签发**的临时凭据 ⇒ 每次点「新增账号」都会得到一个新 UID ⇒
-	// 面板上同一个华为账号不断累积重复条目（且各自持有 refresh_token、都能续期，所以还不报错）。
-	//
-	// 处置：**没有稳定身份字段时**，若该渠道已有账号，复用其 UID
-	// （语义 = 同一账号重新登录，覆盖同一文件；不会误伤多账号场景——当前实现下多账号本来就
-	// 无法聚合，因为每次都是新 AK）。
-	//
-	// TODO(A·待抓包验证)：若 `statistics/plugin` 之类的响应里带回 `domain_id` / `user_id`，
-	// 应改为以它为准（那样多账号才能真正区分），届时本分支自然失效（因为身份字段非空）。
-	if strings.TrimSpace(r.UserID) == "" && strings.TrimSpace(r.DomainID) == "" {
+	// 背景：上游 STS 只回 `credentials.*` + `refresh_token`，**不含任何身份字段**（协议 §2.7；
+	// 2026-10-17 抓包核对 statistics/plugin 的字段全集，亦无 user_id/domain_id）⇒ 直接用 AK
+	// 会导致「点一次新增就多一个账号」（用户实测报告）；而**单纯**复用已有 UID 又让第二个华为账号
+	// 无处安放（用户随后实测报告）。故引入 Label 由用户显式区分。
+	if label := strings.TrimSpace(r.Label); label != "" {
+		r.UID = label
+	} else if strings.TrimSpace(r.UserID) == "" && strings.TrimSpace(r.DomainID) == "" {
 		if uid := firstExistingUID(authDir); uid != "" {
 			r.UID = uid
 		}

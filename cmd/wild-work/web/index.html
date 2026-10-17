@@ -177,6 +177,14 @@
     <div class="modal-title" id="lcTitle">添加账号</div>
     <div class="modal-body">
       <p id="lcMsg">点击下方按钮将打开浏览器窗口，请按照指示正常登录，登录成功后关闭浏览器窗口即可。</p>
+      <!-- 账号标识输入行：只对「上游不提供稳定身份字段」的渠道显示（当前是 CodeArts）。
+           留空 = 覆盖该渠道已有账号；填写 = 作为独立账号并存。默认隐藏，由 promptLogin 控制显隐。 -->
+      <div class="hidden" id="lcLabelRow" style="margin-top:10px">
+        <div id="lcLabelHint" style="font-size:12px;margin-bottom:4px;opacity:.8">账号标识（可选）</div>
+        <input type="text" id="lcAccountLabel" maxlength="32" autocomplete="off"
+               style="width:100%;box-sizing:border-box;padding:6px 8px"
+               placeholder="留空 = 覆盖已有账号；填写 = 作为独立账号新增">
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnLoginConfirmCancel">取消</button>

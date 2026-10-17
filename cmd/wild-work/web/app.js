@@ -1091,6 +1091,18 @@ function promptLogin(channel) {
   pendingChannel = channel;
   const name = chLabel(channel);
   pendingAction = isImportLocal(channel) ? "import" : "login";
+  // 「账号标识」输入行：只对**上游不提供稳定身份字段**的渠道显示（当前是 CodeArts）。
+  // 为什么要把区分账号的责任交给用户：上游不回传任何身份信息，账号 ID 只能落到每次新签发的
+  // 临时凭据上 ⇒ 既无法区分多个账号、重复登录又会被写成新条目（见 docs/渠道接入备忘.md）。
+  const labelRow = $("lcLabelRow");
+  if (labelRow) {
+    const need = channel === "codearts";
+    labelRow.classList.toggle("hidden", !need);
+    if (need) {
+      const inp = $("lcAccountLabel");
+      if (inp) inp.value = "";
+    }
+  }
   // 次按钮默认隐藏，只在「两条路都通」的渠道（小浣熊）里显示。
   const altBtn = $("btnLoginAlt");
   altBtn.classList.add("hidden");
@@ -1160,6 +1172,23 @@ function promptLogin(channel) {
     $("loginConfirmOverlay").classList.remove("hidden");
     return;
   }
+  // CodeArts：授权页必须避开日常浏览器里的华为云登录态（否则永远被授权成已登录的那个账号），
+  // 后端会用**无痕窗口**打开；同时需要用户填「账号标识」来区分多个华为账号。
+  if (channel === "codearts") {
+    $("lcTitle").textContent = "添加 CodeArts 账号";
+    $("lcMsg").innerHTML = `点击「登录 CodeArts」会打开一个<b>无痕浏览器窗口</b> —— `
+      + `无痕会话不带日常浏览器的华为云登录态（否则你只会被授权成<b>已登录的那个</b>账号）。`
+      + `请在其中登录<b>你想要添加的那个</b>华为账号。`
+      + `<div class="glm-warn" style="margin-top:10px">`
+      + `<div class="glm-warn-title">为什么要填「账号标识」</div>`
+      + `华为云不回传账号身份信息，本工具无法自动分辨「同一账号重新登录」与「另一个账号」。`
+      + `所以：<b>留空</b> = 覆盖已有的 CodeArts 账号；<b>填写</b>（例如"工作号"）= 作为独立账号并存。`
+      + `以后重登同一个账号时填<b>同一个标识</b>，就会覆盖它而不是再新增一个。`
+      + `</div>`;
+    $("btnLoginConfirm").textContent = "登录 CodeArts";
+    $("loginConfirmOverlay").classList.remove("hidden");
+    return;
+  }
   $("lcTitle").textContent = "添加 " + name + " 账号";
   $("lcMsg").textContent = noExplicitCheckin(channel)
     ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。${NO_CHECKIN_LOGIN_HINT[channel] || ""}`
@@ -1173,7 +1202,16 @@ function confirmLogin() {
   // 按 pendingAction 分发：小浣熊两种动作都支持，不能只看渠道是否属于导入型。
   if (pendingAction === "import") importLocal(pendingChannel);
   else if (pendingChannel === "officeace") startOfficeAceWebLogin();
-  else startLogin(pendingChannel);
+  else startLogin(pendingChannel, loginLabelValue());
+}
+
+// loginLabelValue 读取登录弹窗里的「账号标识」：只对需要它的渠道（CodeArts）有意义，
+// 其余渠道那一行是隐藏的，恒返回空串。
+function loginLabelValue() {
+  const row = $("lcLabelRow");
+  if (!row || row.classList.contains("hidden")) return "";
+  const inp = $("lcAccountLabel");
+  return inp ? inp.value.trim() : "";
 }
 
 // importLocal 从本机已登录的官方客户端导入凭据（MonkeyCode / 小浣熊 / Loomy）。
@@ -1191,15 +1229,22 @@ async function importLocal(channel) {
   }
 }
 
-async function startLogin(channel) {
+async function startLogin(channel, accountLabel) {
   try {
-    const r = await api("/api/login/start", { channel });
+    const r = await api("/api/login/start", { channel, account_label: accountLabel || "" });
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = `添加 ${chLabel(channel)} 账号`;
-    // 网页版登录：浏览器已由后端拉起（独立 profile），这里只需提示，不能再 window.open
-    // （否则会在用户日常浏览器里再开一个标签页，且那个标签页没有调试端口、捕获不到）。
-    if (hasWebLogin(channel)) {
+    // 三种情形（顺序即优先级）：
+    //  ① 后端已用**无痕窗口**拉起（CodeArts）—— 绝不能 window.open：那会在日常浏览器里再开一个
+    //     带登录态的标签页，用户又会被授权成老账号，无痕那一步就白做了；
+    //  ② 网页版登录渠道（glm / 小浣熊）—— 后端用独立 profile + CDP 拉起，同理不能 open
+    //     （那个标签页没有调试端口，捕获不到）；
+    //  ③ 其余渠道 —— 由前端 window.open 打开（它们不需要隔离登录态）。
+    if (r.backend_opened) {
+      $("loginMsg").textContent = `已为你打开一个**无痕窗口**，请在其中完成 ${chLabel(channel)} 登录；`
+        + `登录完成后无需任何操作，本工具会自动添加账号。`;
+    } else if (hasWebLogin(channel)) {
       $("loginMsg").textContent = `已为你打开一个独立的浏览器窗口，请在其中完成${chLabel(channel)}登录；`
         + `登录完成后无需任何操作，本工具会自动捕获凭据并添加账号。`;
     } else {

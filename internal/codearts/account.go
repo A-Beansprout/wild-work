@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"time"
 
 	"wild-work/internal/auth"
@@ -235,29 +236,42 @@ const domainConst = "codearts.huaweicloud.com"
 
 // SanitizeFileID 把 uid 消毒成安全文件名片段（uid 是外部数据，落文件名前必须消毒）。
 //
-// 规则（比 officeace 的版本更严一点）：
-//   - 只保留 [A-Za-z0-9_-] 与非首位的 `.`，其余一律替换成 `_`（**替换而非删除**，
-//     保留长度信息，避免 "../evil" 被删成 "evil" 这种"看起来合法"的名字）；
+// 规则：
+//   - 保留 **Unicode 字母与数字**（含中文）+ `-` `_` + 非首位的 `.`；
+//   - 其余（Windows 禁用字符 `\ / : * ? " < > |`、控制字符、空格、全角斜杠等）一律替换成 `_`
+//     （**替换而非删除**，保留长度信息，避免 "../evil" 被删成 "evil" 这种"看起来合法"的名字）；
 //   - 首位 `.` 也替换成 `_`，杜绝 `..` 与隐藏文件；
 //   - 空结果或 `unknown` 兜底。
+//
+// ⚠️ 为什么必须放行中文（2026-10-17 实测踩到）：用户填的「账号标识」通常是中文（如"工作号"）；
+// 若只放行 ASCII，每个汉字都会变成一个 `_`，于是「工作号」与「生活号」会**撞成同一个文件名**
+// （`codearts-___.json`），两个账号互相覆盖。
+//
+// ⚠️ 安全性说明：路径穿越靠「不允许 `/`、`\`、`..` 与首位 `.`」阻断，**与字符集宽窄无关**；
+// 放宽到 Unicode 不引入穿越面 —— 视觉上像斜杠的字符（`／` U+FF0F、`∕` U+2215）都不是 Unicode 字母，
+// 依然会被替换；Windows 保留设备名（CON/PRN/…）也因文件名统一带 `codearts-` 前缀而不成立。
 func SanitizeFileID(id string) string {
+	// 按 **rune** 计数截断：中文 3 字节/字，按字节截会把最后一个字切碎。
+	const maxRunes = 48
 	var sb strings.Builder
+	n := 0
 	for _, r := range id {
+		if n >= maxRunes {
+			break
+		}
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_':
 			sb.WriteRune(r)
 		case r == '.' && sb.Len() > 0:
 			sb.WriteRune(r)
 		default:
 			sb.WriteByte('_')
 		}
+		n++
 	}
 	out := sb.String()
 	if out == "" || out == "." || out == ".." {
 		return "unknown"
-	}
-	if len(out) > 64 {
-		out = out[:64]
 	}
 	return out
 }
