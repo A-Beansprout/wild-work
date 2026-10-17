@@ -667,14 +667,15 @@ func TestBillingParsing(t *testing.T) {
 
 	c := NewWithBase(srv.URL)
 	a := testAuth(nil)
-	// ⚠️ 2026-10-17 修正：UserResource 恒 0 —— 本渠道额度计量单位是 **token**，不是积分；
-	// 把 Σ token 当余额返回会污染 pool 选号与积分统计（用户实测报告）。
+	// 2026-10-17：UserResource 返回 Σ token —— **这是 token 口径的额度余额，不是积分**
+	// （由渠道级 credits_unit="token" 标注：前端用「Token 计数」面板展示，
+	// 后端不进积分合计、不进积分流水；条目仍是 InfoOnly，见下）。
 	remain, err := c.UserResource(a)
 	if err != nil {
 		t.Fatalf("UserResource: %v", err)
 	}
-	if remain != 0 {
-		t.Errorf("remain = %d，期望 0（token 桶不是积分）", remain)
+	if remain != 94539275 {
+		t.Errorf("remain = %d，期望 94539275（token 桶剩余之和）", remain)
 	}
 	_, items, err := c.UserResourceDetail(a)
 	if err != nil {

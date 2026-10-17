@@ -136,6 +136,8 @@ body {
 .cs-n { color: var(--muted); font-size: 11px; }
 .cs-num { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-exp { color: var(--danger); font-weight: 600; font-size: 11px; }
+/* Token 计量渠道的量纲标签（与积分的「分」区分开，明示单位是 token） */
+.cs-tok { color: var(--primary); font-size: 11px; font-weight: 600; margin-left: 2px; }
 .cs-unu { color: var(--muted); font-size: 11px; }
 .cs-stale { color: var(--warn); font-size: 11px; }
 .cs-total { background: #eef4ff; border-color: #c7d9ff; }

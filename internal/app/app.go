@@ -387,17 +387,33 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 //
 // 两种成因不同，但 UI 处理一致：
 //   - oczen / kilo：免密免费池，根本没有账号/余额概念；
-//   - zcode：额度计量单位是 **token**（不是积分）⇒ 标量积分恒 0，「不适用」比「0」准确；
-//     token 桶仍在明细里以 InfoOnly 条目展示（不进任何积分算术）。
 //   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
 //     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
 //   - 自定义渠道（R66）：无积分与额度接口，同样走 NA。
+//
+// 注意：**ZCode 不走这里**（尽管它的额度也不是积分）——它有真实的 token 桶要展示，
+// 走 creditsUnit="token" 的「Token 计数」面板，而不是「不适用」（见 creditsUnit）。
 func (a *App) creditsNAKind(group string) bool {
 	if group == provider.Oczen.String() || group == provider.Kilo.String() ||
-		group == provider.ZCode.String() || group == provider.Cline.String() {
+		group == provider.Cline.String() {
 		return true
 	}
 	return a.isCustomChannel(group)
+}
+
+// creditsUnit 该渠道「额度」的计量单位：空串 = 积分（credits，默认），`"token"` = Token 计数。
+//
+// 为什么做成渠道级：面板的**卡片与汇总条**按渠道渲染，它们只知道渠道名，需要先知道
+// 「这个渠道的数字是什么单位」才能选对文案与合计口径（token 绝不并入积分合计）；
+// 条目级的单位见 provider.ResourceItem.Unit（弹层逐条显示用）。
+//
+// ⚠️ 这是**单一来源**：前端不维护渠道名单，全靠本函数下发的 credits_unit 字段 ——
+// 以后新增以 token 计量的渠道，只在这里加一行即可（用户 2026-10-17 的明确要求）。
+func (a *App) creditsUnit(group string) string {
+	if group == provider.ZCode.String() {
+		return "token"
+	}
+	return "" // 积分（credits）
 }
 
 // isCustomChannel 报告该分组名是否是自定义渠道。先查运行时表（热更新后的权威态），
@@ -1875,7 +1891,10 @@ func (a *App) creditSnapshot(rt *Runtime, au *auth.Auth) (remain int64, items []
 	_, unusable = provider.Summarize(items)
 	expiring = provider.ExpiringWithin(items, a.cfg.ExpiringThresholdDur)
 	// 差分记账：与上次快照对比产出 earn/spend/expire 流水（锦上添花，失败不干扰）
-	if a.ledger != nil {
+	// 积分流水只记「积分口径」的余额变化：token 计量渠道（credits_unit="token"）的 remain
+	// 是 token 数，记进积分流水会污染统计（2026-10-17 用户实测报告）。
+	// Token 用量本身另有 token 流水（按请求实测计量），不受影响。
+	if a.ledger != nil && a.creditsUnit(rt.Kind.String()) == "" {
 		a.ledger.DiffCredits(rt.Kind.String(), au.UID, remain, items)
 	}
 	rt.Pool.SetCreditDetail(au.UID, remain, expiring, unusable)
@@ -2017,11 +2036,8 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		// 免密免费池同样没有积分概念（面板显示「不适用」）。
 		return 0, fmt.Errorf("Kilo 免费池无积分，不适用")
 	}
-	if rt.Kind == provider.ZCode {
-		// ZCode 的额度以 **token** 计量、不是积分：这里必须明确拒绝，
-		// 否则「刷新积分」会回一个看起来像积分的 token 数（2026-10-17 修正）。
-		return 0, fmt.Errorf("ZCode 的额度以 token 计量、不是积分，不适用")
-	}
+	// 注意：ZCode **不**在这里拒绝 —— 它的额度是 token 口径，同样需要刷新才能看到用量；
+	// 它的数字由 credits_unit="token" 标注，不进积分小计与流水（见 creditsUnit）。
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
 	usable, expiring, unusable, err := a.creditTotals(rt, au)
 	if err != nil {
@@ -2052,9 +2068,9 @@ func (a *App) RefreshAll() RefreshSummary {
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Alias {
 			continue
 		}
-		// oczen / kilo / zcode 都无「积分」可刷：纳入只会产生一条无意义的失败记录
-		// （zcode 的额度以 token 计量、不是积分）。
-		if rt.Kind == provider.Oczen || rt.Kind == provider.Kilo || rt.Kind == provider.ZCode {
+		// oczen / kilo 无「额度」可刷：纳入只会产生一条无意义的失败记录。
+		// （ZCode 要走刷新：它的额度是 token 口径，同样需要更新才能看到用量。）
+		if rt.Kind == provider.Oczen || rt.Kind == provider.Kilo {
 			continue
 		}
 		ps := PlatformSummary{Accounts: []AccountRefresh{}}
@@ -2680,6 +2696,10 @@ type AccountView struct {
 	// CreditsNA 积分概念不适用（如 OpenCodeZen 匿名通道），UI 显示「不适用」
 	// 而非 0，并隐藏刷新积分与明细入口。
 	CreditsNA bool   `json:"credits_na,omitempty"`
+	// CreditsUnit 该账号额度的计量单位：空 = 积分（credits），`"token"` = Token 计数。
+	// 前端据此把它渲染成「Token 计数」面板（文案/单位/合计口径都随之切换），
+	// 且**不并入积分合计**——即「与积分分开统计和显示」（用户 2026-10-17 的要求）。
+	CreditsUnit string `json:"credits_unit,omitempty"`
 	Cooling   bool   `json:"cooling"`
 	Until     string `json:"until"`
 	Reason    string `json:"reason"`
@@ -2829,6 +2849,7 @@ func (a *App) accountViews() []AccountView {
 			CreditsStale:    s.CreditsStale,
 			// 匿名与自定义渠道无积分：前端据此显示「不适用」
 			CreditsNA:      a.creditsNAKind(group),
+			CreditsUnit:    a.creditsUnit(group),
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,

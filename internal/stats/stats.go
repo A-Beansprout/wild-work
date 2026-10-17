@@ -66,6 +66,10 @@ type Account struct {
 	ErrCount int `json:"err_count"`
 	// CreditsNA 匿名渠道无积分概念（面板显示「不适用」，不参与余额合计）。
 	CreditsNA bool `json:"credits_na"`
+	// CreditsUnit 该账号额度的计量单位：空 = 积分，`"token"` = Token 计数。
+	// token 渠道的数字**不并入积分口径**（TotalCredits / 平台行 Credits / 差值消耗都按 0 处理），
+	// 前端另用「Token 计数」面板展示它的真实用量（2026-10-17 用户要求）。
+	CreditsUnit string `json:"credits_unit,omitempty"`
 }
 
 // Toast 里程碑通知事件（带稳定 ID，前端按 id 去重）。
@@ -201,7 +205,8 @@ type acct struct {
 	coolReason string
 	coolUntil  string
 	errCount   int
-	creditsNA  bool
+	creditsNA   bool
+	creditsUnit string // 空 = 积分；"token" = Token 计数（不进任何积分口径）
 	hasLast    bool      // 是否已确立差值基线（首轮只建基线不记差值）
 	creditOut  int64     // 今日差值花费（仅下降记，上涨不计）
 	expireAt   string    // 最早到期本地日（ApplyExpiry 喂入，纯内存）
@@ -216,10 +221,11 @@ type stickyInfo struct {
 	max   int
 }
 
-// creditVal 账号的积分口径值：匿名渠道（无积分概念）恒 0，不参与任何余额/差值口径。
-// Snapshot.TotalCredits 与平台行 Credits 共用此口径，防两处各自维护漂移。
+// creditVal 账号的积分口径值：匿名渠道（无积分概念）与 token 计量渠道（credits_unit="token"）
+// 恒 0，不参与任何余额/差值口径。Snapshot.TotalCredits 与平台行 Credits 共用此口径，
+// 防两处各自维护漂移。
 func (a *acct) creditVal() int64 {
-	if a.creditsNA {
+	if a.creditsNA || a.creditsUnit != "" {
 		return 0
 	}
 	return a.credits
@@ -370,7 +376,9 @@ func (s *Stats) ApplyPoll(list []Account, now time.Time) {
 		a.expiring, a.cooling, a.disabled = u.Expiring, u.Cooling, u.Disabled
 		a.coolReason, a.coolUntil, a.errCount = u.Reason, u.Until, u.ErrCount
 		a.creditsNA = u.CreditsNA
-		if a.hasLast && !a.creditsNA && u.Credits < a.credits {
+		a.creditsUnit = u.CreditsUnit
+		// 差值口径同样要门禁：token 数下降不是「积分消耗」，记进 creditOut 会污染消耗统计。
+		if a.hasLast && !a.creditsNA && a.creditsUnit == "" && u.Credits < a.credits {
 			a.creditOut += a.credits - u.Credits // 仅记消耗；余额上涨不是收入事件
 		}
 		if a.burnSince.IsZero() {

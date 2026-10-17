@@ -825,9 +825,10 @@ func main() {
 		provider.Minimax,
 		// LobsterAI 有 profile-summary 额度端点，同理必须纳入。
 		provider.LobsterAI,
-		// ⚠️ ZCode **不**纳入（2026-10-17 修正）：它的 billing/balance 下发的是 **token 桶**
-		// （unit_type="token"）而不是积分；纳入会让上亿 token 进入积分刷新口径、严重污染统计。
-		// 标量积分恒 0（见 zcode.UserResource），token 桶只在面板明细里以 InfoOnly 条目展示。
+		// ZCode 的额度是 **token 口径**（credits_unit="token"）：纳入刷新是为了让面板能显示
+		// Token 用量（用户 2026-10-17 的明确要求）；它的数字不进积分小计与积分流水
+		// —— 由 app.creditsUnit 分流保证（积分流水跳过 token 渠道，条目一律 InfoOnly）。
+		provider.ZCode,
 		// Gemini **不**纳入：它的 UserResource 恒 0——真实信息是「配额窗口剩余百分比」，
 		// 已按 InfoOnly 呈现在明细里、不参与积分算术，纳入只会刷出一个无意义的 0。
 		// CodeArts 有 benefit 额度（按 UTC+8 自然日重置）与积分账户形态，必须纳入。

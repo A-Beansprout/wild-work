@@ -325,7 +325,10 @@ function renderCreditDetail() {
     html += `<span class="detail-pg${page >= pages - 1 ? " off" : ""}" data-pg="${page + 1}">›</span>`;
     html += `</span>`;
   }
-  html += `<span class="detail-title">积分明细</span>`;
+  // 标题随计量单位切换：token 渠道不叫「积分明细」（避免把 token 数当积分读）。
+  const detailAcct = (state.accounts || []).find((x) => x.uid === uid);
+  const detailIsToken = !!(detailAcct && detailAcct.credits_unit === "token");
+  html += `<span class="detail-title">${detailIsToken ? "Token 额度明细" : "积分明细"}</span>`;
   // 关闭按钮：桌面与触屏共用同一入口（触屏没有 hover，只能靠显式按钮）
   html += `<button type="button" class="detail-close" data-close-credit-tip="1" title="关闭" aria-label="关闭积分明细">✕</button>`;
   html += `</div>`;
@@ -338,8 +341,11 @@ function renderCreditDetail() {
     let tag = "";
     if (!it.usable) {
       tag = '<span class="detail-tag" title="该额度仅供官方客户端使用，本工具无法消耗">不可用</span>';
+    } else if (it.unit === "token") {
+      // Token 计量（ZCode 的额度桶、MonkeyCode 的每日 Token 额度）：明示单位，不计入积分合计。
+      tag = '<span class="detail-tag" title="以 token 计量，不计入积分合计">tokens</span>';
     } else if (it.info_only) {
-      // 单位与积分不同（如 MonkeyCode 的每日 Token 额度）：展示但不计入合计。
+      // 其它「单位与积分不同」的展示型条目：展示但不计入合计。
       tag = '<span class="detail-tag" title="单位与积分不同，仅作展示，不计入合计">仅展示</span>';
     }
     // 临期条目（可消耗且有剩余、窗口内到期，与后端 ExpiringWithin 余额口径一致）：
@@ -360,7 +366,9 @@ function renderCreditDetail() {
         expCell = esc(it.expire_at);
       }
     }
-    html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${it.total}</td><td>${it.used}</td><td>${it.remain}</td>`;
+    // Token 条目用紧凑单位显示（上亿数字直接铺开会撑破表格）。
+    const cellNum = (v) => (it.unit === "token" ? fmtTokens(v) : v);
+    html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${cellNum(it.total)}</td><td>${cellNum(it.used)}</td><td>${cellNum(it.remain)}</td>`;
     if (hasExpiry) html += `<td${expCellCls}>${expCell}</td>`;
     html += `</tr>`;
   }
@@ -459,12 +467,33 @@ const NO_CREDITS = new Set(["oczen", "kilo", "cline"]);
 // 不可用仅在 >0 时显示；临期同理，凭空多个灰/红 0 很吵。
 // 旧版本 state 文件（v2.2.0 及之前，无 unusable 字段）读入后 credits_stale=true，
 // 此时不把旧值当真值，改显示「待刷新」；自动刷新首刷成功后即变回真实拆分。
+// fmtTokens Token 数格式化：这类数字动辄上亿，直接铺开会撑破卡片与汇总条，
+// 故用中文紧凑单位（万/亿）显示；完整语义靠 title 说明。
+function fmtTokens(n) {
+  n = Number(n) || 0;
+  const trim = (s) => s.replace(/\.?0+$/, "");
+  if (Math.abs(n) >= 1e8) return trim((n / 1e8).toFixed(2)) + "亿";
+  if (Math.abs(n) >= 1e4) return trim((n / 1e4).toFixed(2)) + "万";
+  return n.toLocaleString("zh-CN");
+}
+
 function creditsText(a) {
   if (a.credits_na) {
     return `<span class="credit-na" title="免密渠道无积分概念">不适用</span>`;
   }
   if (a.credits_stale) {
     return `<span class="credit-stale" title="余额口径已过期（旧版本状态文件），正在自动刷新…">待刷新</span>`;
+  }
+  // Token 计量渠道（credits_unit="token"，如 ZCode）：同一位置改显示 **Token 计数**。
+  // 与积分分开统计——它**不进**积分汇总合计（见 renderSummary），
+  // 但保留临期角标（token 桶同样有到期时间，来自内部 ResourceItem.ExpireAt）。
+  if (a.credits_unit === "token") {
+    let html = `<span class="credit-num">${fmtTokens(a.credits)}</span>`
+      + `<span title="本渠道额度以 token 计量，与积分分开统计">tokens</span>`;
+    if ((a.expiring_credits || 0) > 0) {
+      html += `<span class="credit-expiring"> (临期${fmtTokens(a.expiring_credits)})</span>`;
+    }
+    return html;
   }
   let html = `<span class="credit-num">${a.credits}</span><span>可用积分</span>`;
   if ((a.expiring_credits || 0) > 0) {
@@ -492,9 +521,11 @@ function renderSummary() {
   for (const a of state.accounts) {
     const g = a.group || "workbuddy";
     let c = byCh[g];
-    if (!c) { c = byCh[g] = { n: 0, credits: 0, expiring: 0, unusable: 0, stale: 0, na: false }; }
+    if (!c) { c = byCh[g] = { n: 0, credits: 0, expiring: 0, unusable: 0, stale: 0, na: false, isToken: false, tokens: 0 }; }
     c.n++;
     if (a.credits_na) { c.na = true; continue; }
+    // Token 计量渠道单列：只累加 token 数，**不并入**积分合计（与积分分开统计）。
+    if (a.credits_unit === "token") { c.isToken = true; c.tokens += a.credits || 0; c.expiring += a.expiring_credits || 0; continue; }
     c.credits += a.credits || 0;
     c.expiring += a.expiring_credits || 0;
     c.unusable += a.unusable_credits || 0;
@@ -513,11 +544,17 @@ function renderSummary() {
     const allStale = c.stale === c.n;
     // R17 口径：口径过期的数字不当真值——全渠道待刷新时不进合计
     // （否则"待刷新"的旧值会悄悄抬高合计，用户看到的数字无从解释）。
-    if (!c.na && !allStale) { total += c.credits; totalExp += c.expiring; }
-    if (!c.na && allStale) staleChs++;
+    // Token 计量渠道不进积分合计（这就是「和积分分开统计」的落点）。
+    if (!c.na && !c.isToken && !allStale) { total += c.credits; totalExp += c.expiring; }
+    if (!c.na && !c.isToken && allStale) staleChs++;
     let body;
     if (c.na) {
       body = `<span class="credit-na">不适用</span>`;
+    } else if (c.isToken) {
+      // Token 计数：以 tokens 为单位单列，明示它不是积分。
+      body = `<span class="cs-num">${fmtTokens(c.tokens)}</span>`
+        + `<span class="cs-tok" title="本渠道额度以 token 计量，不计入「合计」">tokens</span>`
+        + (c.expiring > 0 ? `<span class="cs-exp" title="24 小时内到期">临期${fmtTokens(c.expiring)}</span>` : "");
     } else if (allStale) {
       body = `<span class="credit-stale">待刷新</span>`;
     } else {
@@ -536,7 +573,7 @@ function renderSummary() {
     html += `<span class="cs-chip clickable cs-all" data-wg="" role="button" tabindex="0" title="显示全部账号">`
       + `<span class="cs-n">全部</span></span>`;
   }
-  html += `<span class="cs-chip cs-total" title="各渠道可用积分合计（不含「不可用」与匿名通道）">`
+  html += `<span class="cs-chip cs-total" title="各渠道可用积分合计（不含「不可用」、匿名通道与 Token 计量渠道）">`
     + `<span class="cs-title">合计</span><span class="cs-num">${fmt(total)}</span>`
     + (totalExp > 0 ? `<span class="cs-exp">临期${fmt(totalExp)}</span>` : "")
     + (staleChs > 0 ? `<span class="cs-stale" title="有渠道整体待刷新，未计入合计">${staleChs} 渠道待刷新</span>` : "")

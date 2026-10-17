@@ -458,6 +458,14 @@ type ResourceItem struct {
 	// 两者都该显示，但相加无意义。
 	// 注意：InfoOnly 条目应同时置 Usable=true（它在界面上既非「不可用」，也不该被小计）。
 	InfoOnly bool `json:"info_only,omitempty"`
+	// Unit 该条目的计量单位：空串 = 积分（credits，默认），`"token"` = Token 计数。
+	//
+	// 为什么需要它：有些渠道的额度**不以积分计量**（ZCode 的 billing/balance 是 token 桶，
+	// MonkeyCode 的每日额度也是 token）。这类数字按「积分」展示会严重误导（上亿 token 看起来
+	// 像巨额积分），但完全隐藏又让用户看不到用量。故用 Unit 明确标注计量单位：前端据此把
+	// 该渠道渲染成「Token 计数」面板，并与积分**分开统计**（不并入积分合计）。
+	// 零值（空串）保持既有语义 = 积分，向后兼容。
+	Unit string `json:"unit,omitempty"`
 }
 
 // Summarize 按 Usable 标记汇总条目：返回 (可消耗剩余, 不可消耗剩余)。

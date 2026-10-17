@@ -364,8 +364,21 @@ type balanceResult struct {
 //
 // token 桶仍然要展示，但只走 `UserResourceDetail` 的 **InfoOnly** 条目：
 // 那条路径明确不进 Summarize 小计、不进临期统计、不参与 ledger 差分（与 gemini 的配额窗口同一口径）。
-func (c *Client) UserResource(_ *auth.Auth) (int64, error) {
-	return 0, nil
+func (c *Client) UserResource(a *auth.Auth) (int64, error) {
+	res, err := c.fetchBalance(a)
+	if err != nil {
+		return 0, err
+	}
+	// 返回 Σ token remaining —— ⚠️ **这是 token 口径的额度余额，不是积分**。
+	// 由渠道级 credits_unit="token" 标注，前端据此用「Token 计数」面板展示；
+	// 它不进积分小计（桶条目标了 InfoOnly，Summarize 不统计）、不进积分流水
+	// （app.creditSnapshot 按 unit 分流，跳过 ledger 的积分差分）。
+	// 同渠道内 pool 按它排序是有意义的（token 余额多的先用）；跨渠道不比较（pool 是 per-channel）。
+	var sum int64
+	for _, b := range res.Buckets {
+		sum += b.Remain
+	}
+	return sum, nil
 }
 
 // UserResourceDetail 返回余额与明细条目。
@@ -384,9 +397,12 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	if err != nil {
 		return 0, nil, err
 	}
-	// 标量余额恒 0：本渠道没有积分，只有 token 桶（口径见 UserResource 的注释）。
-	// token 的数字只出现在下面的 InfoOnly 明细里。
+	// 标量余额 = Σ token remaining（**token 口径，不是积分**）；单位由渠道级
+	// credits_unit="token" 标注，前端用「Token 计数」展示，且不进积分小计/流水。
 	var remain int64
+	for _, b := range res.Buckets {
+		remain += b.Remain
+	}
 
 	if res.Enterprise {
 		// 企业版不下发额度数字：用一条**只作展示**的条目承载这个事实，
@@ -420,6 +436,8 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 			// ⚠️ InfoOnly=true：它**不是积分**（计量单位是 token），不得进 Summarize 小计、
 			// 不得参与临期判定与 ledger 差分 —— 否则上亿 token 会污染积分口径
 			// （2026-10-17 修正，与 gemini 的配额窗口同一口径）。
+			// Unit="token"：本条目走「Token 计数」展示（前端按 credits_unit 渲染）。
+			Unit:     "token",
 			Usable:   true,
 			InfoOnly: true,
 		})
@@ -436,6 +454,8 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 			Remain: p.GrantUnits,
 			Key:    p.PlanID,
 			// InfoOnly：只作展示，不进任何积分算术（见方法注释）。
+			// Unit="token"：可领额度同样是 token 计量。
+			Unit:     "token",
 			Usable:   true,
 			InfoOnly: true,
 		})
