@@ -1371,13 +1371,25 @@ function friendlyCheckinMsg(m) {
   return /401|unauthorized|登录已失效|登录已过期/i.test(m || "")
     ? m + "（该账号登录已过期，点账号卡片右上角 ⟳ 重新登录）" : m;
 }
+// checkinToast 签到后的提示文案。
+// 为什么不能一律写「签到成功」：Qoder 双区的 campaigns 路径有三个**都是 ok=true** 的结果——
+// 真领到（msg「签到成功 +100」）/ 今日已领（msg「今日已领取 +100」）/ 上游还没发可领活动
+// （no_campaign，msg 是诊断摘要）。旧文案把第三种也说成「签到成功：上游未下发可领取活动…」，
+// 读起来像领到了，是 10-17「签到没实现」误判的来源之一。这里按 msg 区分，绝不越权声称。
+function checkinToast(r) {
+  const msg = r.msg || "";
+  if (!r.ok) return `签到：${friendlyCheckinMsg(msg)}`;
+  if (/^今日已领取/.test(msg)) return `今日已领过：${msg}（剩余 ${r.remain}）`;
+  if (/^签到成功/.test(msg) || /^\+/.test(msg) || /\+\d+/.test(msg)) return `签到成功：${msg}（剩余 ${r.remain}）`;
+  return `暂未领到：${msg}（剩余 ${r.remain}）`;
+}
 async function checkin(uid) {
   try {
     const r = await api("/api/account/checkin", { uid });
     // 未达成且可重试（活动尚未创建/上游瞬时故障）：说明会在签到窗口内自动重试，
     // 避免用户看到「无可用签到活动」误以为失败。
     if (!r.ok && r.retryable) toast(`暂未领到：${r.msg}（10:00–12:00 窗口内会自动重试）`);
-    else toast(r.ok ? `签到成功：${r.msg}（剩余 ${r.remain}）` : `签到：${friendlyCheckinMsg(r.msg)}`);
+    else toast(checkinToast(r));
     delete detailCache[uid]; // 签到改变余额，旧明细缓存会与新顶层打架
     loadState();
   } catch (e) { toast(e.message); }

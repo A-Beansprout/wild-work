@@ -9,18 +9,34 @@
 //     依据：活动页 activity-iframe 前端源码（g.alicdn.com/.../activity-iframe.js）里
 //     `campaign:apiRequest` → type=claimCampaign 映射到 `/claim`，且以
 //     `${base}/sash/api/v1/me/campaigns/${id}/claim` + keepalive POST 发出。
+//     桌面端主进程**不转发**该请求（activity-iframe 是独立 webview，由注入式请求代理
+//     直接带 dt- 发出），故本机日志里只有发现请求、没有 claim 请求 —— 属工具链行为，
+//     不代表领取不存在（2026-10-18 复核 app.asar 与桌面端 main.log 得出）。
 //   - 回执：{"status":"CLAIMED","replayed":bool,"benefit":{"amount":N}}。
 //   - claimStatus 线上形态是**扁平字符串**（本机三份 0.4.8 主进程日志逐字实证：
 //     "claimStatus":"CLAIMABLE" / "CLAIMED"）。对象形态 {"status":…} 无线上证据，
 //     解析层仍保留**防御性**兼容（未知形态一律按「不可领取」处理，绝不误领）。
 //
-// 已知边界（2026-10-17 实测，务必别把它读成 bug）：
-// 本账号在桌面端可见 CLAIM_BENEFIT/CLAIMABLE +100 CREDITS；而本工具拿同一个 uid
-// 在同一时刻（相差 10 秒）请求同一端点，回包里**没有** CLAIM_BENEFIT 条目
-// （响应原文只有 VIEW_DETAILS/CLAIMED）。单发 A/B 证明与请求头无关 ⇒ 该活动按
-// 客户端会话/设备下发，不是账号级。**故 no_campaign 是如实反映上游，不是解析缺陷。**
-// 正因如此，no_campaign 的 Msg 必须带上游响应摘要，把「上游没发活动」与
-// 「本工具解析出错」分开——否则面板只显示「无可用签到活动」，用户会误以为功能没实现。
+// 已知边界与 2026-10-18 的实证更新（务必别把这读成 bug）：
+//
+//	① 「桌面端看得到、本工具看不到」的旧结论已被证伪。
+//	   2026-10-17 的记录是：本账号在桌面端可见 CLAIM_BENEFIT/CLAIMABLE +100 CREDITS，
+//	   而本工具拿同一个 uid 在同一时刻（相差 10 秒）请求同一端点，回包里没有 CLAIM_BENEFIT 条目。
+//	   2026-10-18 01:10 的单发只读探测（本机 3 个 qodercom 账号各 1 次 GET，无重试、无领取）
+//	   拿到了一模一样的 CLAIM_BENEFIT 条目（act-20261013-119 / CREDITS 100 / CLAIMED），
+//	   其中账号 0 正是 10-17 那个 uid。⇒ **本工具确实能拿到该活动**，旧结论不成立。
+//	   原因至今未知，**不写成因猜测**（R23b：观察只能提假设）。
+//	   因此本文件保留「no_campaign 必须带上游响应摘要」这一诊断纪律：
+//	   「上游没发」与「本工具解析出错」必须一眼可分。
+//	② 上游的活动条目都带**有效窗口** startAt/endAt（Unix 秒，实测字段）。
+//	   本文件在发现阶段先按窗口分类（见 campaignWindow）：endAt<=now 记 ended、
+//	   startAt>now 记 pending，两者都不参与「可领/已领」判定。
+//	   缺了这一步，窗口外残留的 CLAIMED 会被读成「今日已领取」，导致签到窗口内不再重试
+//	   —— 当天漏领。（结构证据来自上述探测回包；「过期条目会残留」这一形态本身
+//	   本机尚未直接观察到，按推断对待，但按不变量实现，代价为零。）
+//	③ claimStatus 线上形态是**扁平字符串**（本机三份 0.4.8 主进程日志逐字实证：
+//	   "claimStatus":"CLAIMABLE" / "CLAIMED"）。对象形态 {"status":…} 无线上证据，
+//	   解析层仍保留**防御性**兼容（未知形态一律按「不可领取」处理，绝不误领）。
 package qodercom
 
 import (
@@ -96,16 +112,25 @@ func checkin(a *auth.Auth) (provider.CheckinReport, error) {
 }
 
 // campaignNode 活动列表里的一条活动（只解本工具需要的字段）。
+//
+// StartAt/EndAt 是活动自身的**有效窗口**（Unix 秒，实测）。
+// 漏掉它们会踩两个坑：
+//   - 上游若把「已结束的旧活动」留在列表里，其 claimStatus 恒为 CLAIMED，
+//     会被读成「今日已领取」，从而在窗口内不再重试 —— 当天漏领（与 R23 修的「假成功」同类）。
+//   - 把**未开始**的活动当可领取去 POST，会把「今天还没到点」变成一条假的失败记录。
 type campaignNode struct {
 	CampaignID  string           `json:"campaignId"`
 	CampaignKey string           `json:"campaignKey"`
 	ActionType  string           `json:"actionType"`
+	StartAt     int64            `json:"startAt"`
+	EndAt       int64            `json:"endAt"`
 	ClaimStatus claimStatusNode  `json:"claimStatus"`
 	Benefit     *campaignBenefit `json:"benefit"`
 }
 
-// campaignsList 活动列表响应。showCampaign/claimable 只用于诊断文案。
+// campaignsList 活动列表响应。showCampaign/claimable/uid 只用于诊断文案。
 type campaignsList struct {
+	UID          string         `json:"uid"`
 	ShowCampaign bool           `json:"showCampaign"`
 	Claimable    bool           `json:"claimable"`
 	Campaigns    []campaignNode `json:"campaigns"`
@@ -129,13 +154,26 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 		return provider.CheckinReport{Status: provider.CheckinError, Msg: fmt.Sprintf("campaigns parse: %v", err)}, nil
 	}
 	warnUnrecognizedClaimStatus(list.Campaigns)
+	now := time.Now().Unix()
 	var targetID string
 	var alreadyAmount int64
-	already := false
+	already := false // 窗口内已有 CLAIMED
+	ended := 0       // 窗口已结束（上游残留）
+	notStarted := 0  // 窗口未开始
 	for _, cp := range list.Campaigns {
 		// 只有 CLAIM_BENEFIT 是签到领积分；VIEW_DETAILS 等其它动作的 CLAIMED 与「今日已领」无关，
 		// 不能用来把 no_campaign 掩成已领取（否则当天漏领）。
 		if cp.ActionType != "CLAIM_BENEFIT" {
+			continue
+		}
+		// 只在活动自身的有效窗口内判定（0 表示上游未下发该字段 → 不做时间过滤，保持旧行为）。
+		// 边界：endAt 早于现在 = 已结束的残留活动；startAt 晚于现在 = 今日还没开始。
+		switch campaignWindow(cp, now) {
+		case "ended":
+			ended++
+			continue
+		case "pending":
+			notStarted++
 			continue
 		}
 		switch cp.ClaimStatus.mode() {
@@ -160,7 +198,7 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 		}
 		// 活动尚未创建（10:00 整点延迟）或上游按客户端会话/设备下发（见文件头「已知边界」）
 		// → 可重试状态，不可当作完成。Msg 带上游响应摘要，便于判断是谁的问题。
-		return provider.CheckinReport{Status: provider.CheckinNoCampaign, Msg: noCampaignMsg(list)}, nil
+		return provider.CheckinReport{Status: provider.CheckinNoCampaign, Msg: noCampaignMsg(list, now, ended, notStarted)}, nil
 	}
 
 	// 领取（空 body；活动页源码实证为 POST .../campaigns/{id}/claim）
@@ -198,22 +236,40 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 // noCampaignMsg 组装 no_campaign 的诊断文案（进面板 last_checkin_msg）。
 // 目的是让用户一眼分清「上游本次没下发可领取活动」与「本工具解析/请求出错」。
 // showCampaign=false 表示上游连活动体系都没开——这是与「活动尚未创建」不同的信号，故一并带上。
-func noCampaignMsg(list campaignsList) string {
-	if len(list.Campaigns) == 0 {
-		return fmt.Sprintf("上游未下发任何活动（showCampaign=%t, claimable=%t）", list.ShowCampaign, list.Claimable)
+// ended/notStarted 两个计数单独报出：上游会把**已结束的旧活动**留在列表里（实测，
+// 其 endAt 早于本次请求时刻），若把它们混进「N 条活动」摘要，用户会以为今天已经领过了。
+func noCampaignMsg(list campaignsList, now int64, ended, notStarted int) string {
+	head := fmt.Sprintf("上游未下发可领取活动（showCampaign=%t, claimable=%t", list.ShowCampaign, list.Claimable)
+	switch {
+	case ended > 0 && notStarted > 0:
+		head += fmt.Sprintf("；CLAIM_BENEFIT 活动均不在有效期内：已结束 %d 条、未开始 %d 条", ended, notStarted)
+	case ended > 0:
+		head += fmt.Sprintf("；CLAIM_BENEFIT 活动已结束 %d 条（等上游刷新今日活动）", ended)
+	case notStarted > 0:
+		head += fmt.Sprintf("；CLAIM_BENEFIT 活动未开始 %d 条（到点后可领）", notStarted)
 	}
-	return fmt.Sprintf("上游未下发可领取活动（showCampaign=%t, claimable=%t；%s）", list.ShowCampaign, list.Claimable, campaignsSummary(list.Campaigns))
+	if len(list.Campaigns) == 0 {
+		return head + "）上游未下发任何活动"
+	}
+	return head + "；" + campaignsSummary(list.Campaigns, now) + "）"
 }
 
 // campaignsSummary 把活动列表压成一行「动作=状态」摘要，形如
-// "2 条活动：CLAIM_BENEFIT=CLAIMED, VIEW_DETAILS=CLAIMED"。
-func campaignsSummary(campaigns []campaignNode) string {
+// "2 条活动：CLAIM_BENEFIT=CLAIMED[已结束], VIEW_DETAILS=CLAIMED"。
+// 窗口已经不在当前时刻的活动标 `[已结束]` / `[未开始]`，避免把残留活动读成「今日已领」。
+func campaignsSummary(campaigns []campaignNode, now int64) string {
 	parts := make([]string, 0, len(campaigns))
 	for _, cp := range campaigns {
 		state := cp.ClaimStatus.mode()
 		if state == "" {
 			// 未知形态原样带上（截断）：这是「上游换了形态、解析层需复核」的唯一线索。
 			state = "未知" + truncate(cp.ClaimStatus.raw, 40)
+		}
+		switch campaignWindow(cp, now) {
+		case "ended":
+			state += "[已结束]"
+		case "pending":
+			state += "[未开始]"
 		}
 		parts = append(parts, cp.ActionType+"="+state)
 	}
@@ -224,6 +280,7 @@ func campaignsSummary(campaigns []campaignNode) string {
 // 两种情形都要报，否则会被静默吞成一句笼统的 no_campaign：
 //   - 取值是没见过的新枚举（如 "CLAIMABLE_V2"）→ 上游可能新增了可领状态；
 //   - 形态本身不认识（非字符串、非 {"status":…}）→ 上游可能改了结构。
+//
 // 这正是本渠道历史上被误判为解析缺陷的盲区（形态/取值变了，面板却只显示「无可用签到活动」）。
 func warnUnrecognizedClaimStatus(campaigns []campaignNode) {
 	for _, cp := range campaigns {
@@ -300,4 +357,16 @@ func alreadyMsg(amount int64) string {
 // 裸 fmt.Errorf 会让 isSessionDead 恒为 false（AGENTS.md 不变式 19）。
 func sessionDead(status int, raw []byte) error {
 	return &provider.Error{Kind: provider.ErrSessionDead, Status: status, Msg: truncate(string(raw), 200)}
+}
+
+// campaignWindow 判断某一活动在 now 时刻的窗口位置，返回 "ended"/"pending"/"active"。
+// 只在发现阶段用于诊断与过滤（0 值意为上游未下发该字段 → 恒 "active"，保持旧行为）。
+func campaignWindow(cp campaignNode, now int64) string {
+	switch {
+	case cp.EndAt > 0 && cp.EndAt <= now:
+		return "ended"
+	case cp.StartAt > 0 && cp.StartAt > now:
+		return "pending"
+	}
+	return "active"
 }

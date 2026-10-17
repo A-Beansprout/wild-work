@@ -1012,6 +1012,26 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- Qoder 双区签到：结果必须按 msg 区分「领到了」与「还没发」（2026-10-18）----
+// 背景：campaigns 路径有三个都是 ok=true 的结果（真领到 / 今日已领 / 上游还没发可领活动），
+// 旧 toast 一律写「签到成功：…」，把 no_campaign 也说成成功 —— 这是 10-17「签到没实现」
+// 误判的来源之一。断言 checkinToast 存在，且 checkin() 走它而不是内联三元表达式。
+{
+  const need = [
+    ["checkinToast 存在（按 msg 区分签到结果）", /function checkinToast\(/.test(raw)],
+    ["checkin 走 checkinToast（不再内联「签到成功：」）",
+      /toast\(checkinToast\(r\)\)/.test(raw) && !/toast\(r\.ok \? `签到成功：/.test(raw)],
+    ["checkinToast 区分「今日已领过」", /今日已领过/.test(raw)],
+    ["checkinToast 区分「暂未领到」", /暂未领到/.test(raw)],
+    ["qodercom 不在无签到集合（campaigns 活动路径已实装）", !/NO_EXPLICIT_CHECKIN[^)]*"qodercom"/.test(raw)],
+    ["qodercn 不在无签到集合", !/NO_EXPLICIT_CHECKIN[^)]*"qodercn"/.test(raw)],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 
