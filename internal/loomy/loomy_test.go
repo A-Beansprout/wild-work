@@ -170,6 +170,41 @@ func TestParsePoints(t *testing.T) {
 	}
 }
 
+// TestParsePointsDailyExpiry 守门：每日池「当日有效」必须带 ExpireAt（今天，UTC+8），
+// 常规池不带。这是「临期积分」能在面板/汇总条上显示的前提 ——
+// ExpiringWithin 只累计 ExpireAt 非空且「到期日零点 < now+horizon」的条目。
+func TestParsePointsDailyExpiry(t *testing.T) {
+	var rec pointsRecord
+	if err := json.Unmarshal([]byte(`{"data":{"balance":15000,"dailyBalance":4800}}`), &rec); err != nil {
+		t.Fatal(err)
+	}
+	_, items := parsePoints(rec)
+	today := provider.ExpireDateToday()
+
+	var daily, base *provider.ResourceItem
+	for i := range items {
+		switch items[i].Name {
+		case "每日积分":
+			daily = &items[i]
+		case "积分":
+			base = &items[i]
+		}
+	}
+	if daily == nil || base == nil {
+		t.Fatalf("items = %+v, want 积分 + 每日积分", items)
+	}
+	if daily.ExpireAt != today {
+		t.Fatalf("每日积分 ExpireAt = %q, want %q（当日有效）", daily.ExpireAt, today)
+	}
+	if base.ExpireAt != "" {
+		t.Fatalf("常规积分不应有 ExpireAt，got %q", base.ExpireAt)
+	}
+	// 临期额度只应统计每日池（常规池长期有效，不参与）
+	if got := provider.ExpiringWithin(items, 24*time.Hour); got != 4800 {
+		t.Fatalf("ExpiringWithin = %d, want 4800（每日池全额临期）", got)
+	}
+}
+
 func TestPriceFromName(t *testing.T) {
 	cases := map[string]float64{
 		"DeepSeek V4 Flash 0731（x3.0）": 3.0,
@@ -349,6 +384,41 @@ func (r *errAfterReader) Read(p []byte) (int, error) {
 	n := copy(p, r.data[r.off:])
 	r.off += n
 	return n, nil
+}
+
+// TestStreamRecognizesMultilineBusinessEnvelope 守门流末兜底：
+// 上游用**多行** JSON（或错误体不以 `{` 开头）表达业务失败时，单行判定命中不了，
+// 由「整段无有效 SSE 帧」的统一判定兜底 —— 同样必须写错误帧、不补 [DONE]、上抛语义化错误。
+func TestStreamRecognizesMultilineBusinessEnvelope(t *testing.T) {
+	body := "{\n  \"code\": \"100002\",\n  \"desc\": \"登录已失效，请重新登录\"\n}"
+	rec := httptest.NewRecorder()
+	_, err := Stream(rec, strings.NewReader(body), "loomy/glm-5.2")
+	if err == nil {
+		t.Fatal("多行业务信封必须上抛错误，实际 nil（客户端会看到空回答）")
+	}
+	pe, ok := err.(*provider.Error)
+	if !ok || pe.Kind != provider.ErrSessionDead {
+		t.Fatalf("err = %v，want *provider.Error{ErrSessionDead}", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "session_dead") {
+		t.Errorf("应向客户端写出错误帧，实际 body=%q", out)
+	}
+	if strings.Contains(out, "[DONE]") {
+		t.Error("失败时不得补 [DONE]（R36：不伪装正常收尾）")
+	}
+}
+
+// TestStreamEmptyStaysDone 边界：真正的空流仍按正常结束补 [DONE]，
+// 流末兜底不得把「上游什么都没回」误判成业务错误。
+func TestStreamEmptyStaysDone(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if _, err := Stream(rec, strings.NewReader(""), "loomy/glm-5.2"); err != nil {
+		t.Fatalf("空流不应报错，got %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Error("空流仍应补 [DONE]（正常结束）")
+	}
 }
 
 func TestTraceparentShape(t *testing.T) {

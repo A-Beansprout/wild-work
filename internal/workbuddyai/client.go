@@ -19,6 +19,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/idle"
 	"wild-work/internal/provider"
+	"wild-work/internal/upstream"
 )
 
 // Client 国际版上游 HTTP 客户端。Base 可覆盖以便测试。
@@ -192,6 +193,20 @@ func refreshHeaders(req *http.Request, a *auth.Auth) {
 // 信封与错误
 // ---------------------------------------------------------------------------
 
+// errorFromBody 把「HTTP ≥400 + 原始响应体」统一转成带分类的 *provider.Error。
+//
+// 网关 HTML 认证页在这里被换成可行动文案：原始 HTML 对用户零信息量，
+// 却会被截成半截 `<html><head><title>401 Authori…` 塞进面板与日志。
+// 与国内版 upstream.errorFromBody 同口径（两渠道 Classify 语义必须一致）。
+func errorFromBody(status int, body string) *provider.Error {
+	kind := Classify(status, body)
+	msg := truncate(body, 200)
+	if kind == provider.ErrSessionDead && upstream.IsGatewayAuthPage(body) {
+		msg = upstream.GatewayAuthHint
+	}
+	return &provider.Error{Kind: kind, Status: status, Msg: msg}
+}
+
 // apiEnvelope 上游统一信封。
 type apiEnvelope struct {
 	Code int             `json:"code"`
@@ -208,7 +223,7 @@ func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return nil, &provider.Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
+		return nil, errorFromBody(resp.StatusCode, string(raw))
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -281,21 +296,32 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 // 仅传输层失败才返回 err。
 //
 // 对网关类 5xx（502/503/504）与瞬态传输错误做有限重试（见 retry.go）；
-// 4xx 不重试（风控/余额/参数语义，重试无益）。
+// 4xx 不重试（风控/余额/参数语义，重试无益）——**唯一例外是上游显式声明
+// `retry_policy.retry=true` 或 `actions` 含 `RETRY` 的 429**（14003 瞬时拥塞）：
+// 上游自己说可重试，此时直接抛错并让上层罚号，会把一次可自愈的抖动放大成渠道级 503。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	prepared := PrepareBody(body)
+	rateLimitRetries := 0
 	for attempt := 1; attempt <= retryMaxAttempts; attempt++ {
 		rc, status, respBody, err = c.chatStreamOnce(a, prepared)
-		// 成功或 4xx：直接返回，不重试
-		if err == nil && !retryableStatus(status) {
-			return rc, status, respBody, nil
-		}
-		// 传输层错误：仅在可重试时继续
-		if err != nil && !retryableErr(err) {
-			return nil, 0, nil, err
+		ok, isRateLimit := retryDecision(status, respBody, err)
+		if !ok {
+			return rc, status, respBody, err
 		}
 		if attempt == retryMaxAttempts {
 			break
+		}
+		if isRateLimit {
+			// 收紧的独立预算：只重试一次，且不占用 5xx 的重试额度。
+			// 429 频繁重试有风控风险，宁可少试也不能刷屏。
+			rateLimitRetries++
+			if rateLimitRetries >= rateLimitMaxAttempts {
+				break
+			}
+			log.Printf("workbuddyai chat_stream uid=%s: 上游 429 显式声明可重试（retry_policy.retry / actions 含 RETRY），%v 后重试 (%d/%d)",
+				a.UID, rateLimitBackoff.Round(time.Millisecond), rateLimitRetries, rateLimitMaxAttempts-1)
+			time.Sleep(rateLimitBackoff)
+			continue
 		}
 		why := fmt.Sprintf("http %d", status)
 		if err != nil {

@@ -109,6 +109,8 @@
 | R74 | 内建渠道扩到 20 条（Kilo/MiniMax/LobsterAI/ZCode/Gemini/CodeArts）；CodeArts 无上游身份字段 ⇒ 用户指定「账号标识」复用 UID |
 | R75 | 429+code 14018（积分耗尽）归 `hard_credit`；候选耗尽时可在**请求内**按降级链重入一次（封顶一次、单账号豁免） |
 | R76 | 登录态失效走可自愈的 `SessionDead` 标记（不 `Disable`）；重登后按 auth 文件 mtime 自动清除标记 |
+| R77 | 上游声明可重试的 429（14003 瞬时拥塞，retry_policy.retry / actions 含 RETRY）必须请求内重试一次（独立预算，20s 退避）；6004 用量配额无信号，维持冷却到重置点 |
+| R78 | **网关 HTML 401 也是「登录态失效」**（APISIX/openresty 拦截页 → `ErrSessionDead`，不是 `ErrClient`）；对话路径先 refresh 再决定是否落失效标记；目录/费率接口必须返回类型化错误 |
 | R79 | **Qoder 双区签到：活动资格是上游按账号授予的**（实测：同账号在官方客户端里同样看不到入口）⇒ 无资格必须直说「该账号无资格、不是本工具的问题」，不得含糊成「上游未下发」；**且按活动 `startAt/endAt` 有效窗口过滤**（窗口外不参与「可领/已领」判定，缺字段则不过滤）；面板结果分「领到 / 已领 / 还没发 / 失败」四档，**不得一律写「签到成功」**（详见 `docs/决议项.md`） |
 
 > ⚠️ **R71 附带的实测纪律**（也是 §0.1 的来源）：上游校验的是**头族齐全**而非单点
@@ -158,7 +160,12 @@
 19. **401 必须自愈，不能只信本地 `expiresAt`**：上游刷新会作废旧 access token（refresh token 同步轮换）。若新 token 未落盘、
     或同一账号在别处被刷新，本地文件里的 token `expiresAt` 仍在未来，但上游已拒绝 → `NeedsRefresh` 恒为假、永不刷新、
     积分恒 0、明细恒空。因此积分/明细/费率路径遇 `ErrSessionDead` 必须「refresh + 落盘 + 重试一次」
-    （`app.refreshIfSessionDead`，scheduler 的 checkin 路径同理）。
+    （`app.refreshIfSessionDead`，scheduler 的 checkin 路径同理；**对话路径**见 R78）。
+    - **401 的形态不止业务码**：网关（APISIX/openresty）会在认证前拦下请求并回 HTML 页，
+      这种形态必须同样归 `ErrSessionDead`（`upstream.IsGatewayAuthPage`，见 R78）；
+      归成 `ErrClient` 时上述自愈链全部静默失效。
+    - **`FetchModels`/`FetchModelPricing` 必须返回类型化 `*provider.Error`**，不得用裸 `fmt.Errorf`——
+      否则 `errors.As` 取不到分类，模型面与费率面的 401 自愈永远不触发（2026-10-17 现场缺口）。
 20. **凡是调 `Upstream.RefreshToken` 的地方必须紧跟 `SaveAtomic`**：refresh token 会轮换，不落盘 = 下次启动用旧 refresh token，
     重回上一条的死锁（`RefreshPricing` 曾漏，已补）。
 21. **匿名渠道的虚拟账号不得进入任何「能把它弄没」的路径**：`reloadAccounts` 不纳入（`SyncToDir` 会剔除），
