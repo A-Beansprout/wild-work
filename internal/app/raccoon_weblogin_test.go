@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"wild-work/internal/provider"
 )
 
 // 本测试锁定 R44：小浣熊登录必须走「网页版 CDP 捕获」，
@@ -39,15 +41,21 @@ func TestRaccoonLoginUsesWebFlow(t *testing.T) {
 	}
 	code := strings.Join(live, "\n")
 
-	// ① 网页版入口必须被调用（签名与其它 login_* 包同构，两个参数用不上）。
-	if !strings.Contains(code, "loginraccoon.Start(") {
-		t.Errorf("❌ app.go 未调用 loginraccoon.Start(...) —— 小浣熊网页版登录未接线")
+	// ① 网页版入口必须被接线：直接查单一来源表。
+	//    2026-10-18 收表后，调用已从 StartLoginFor 的 switch 移入 loginFlows 表，
+	//    源码文本比对不再适用（它本来就分不清空壳 case 与死 case —— 见下）。
+	f, ok := loginFlows[provider.Raccoon]
+	if !ok {
+		t.Fatal("❌ loginFlows 未登记 provider.Raccoon —— 小浣熊登录未接线")
 	}
-	if !strings.Contains(code, "loginraccoon.Poll(") {
-		t.Errorf("❌ app.go 未调用 loginraccoon.Poll(...) —— 登录结果无法回传")
+	if f.Start == nil {
+		t.Error("❌ provider.Raccoon 没有 Start —— 网页版登录无法发起（H1 形态：空壳）")
 	}
-	if !strings.Contains(code, "loginraccoon.Shutdown()") {
-		t.Errorf("❌ app.go 未调用 loginraccoon.Shutdown() —— 浏览器不会被关闭")
+	if f.Poll == nil {
+		t.Error("❌ provider.Raccoon 没有 Poll —— 登录结果无法回传")
+	}
+	if f.Shutdown == nil {
+		t.Error("❌ provider.Raccoon 没有 Shutdown —— 浏览器不会被关闭")
 	}
 
 	// ② 不得回退到已废弃的**桌面协议回调**路径（R44 的核心约束）。
