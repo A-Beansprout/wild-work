@@ -1128,3 +1128,94 @@ body {
   vertical-align: middle; margin-left: 6px; padding: 0 8px; line-height: 1;
   white-space: nowrap; font-family: inherit; font-weight: 400;
 }
+
+/* ---------- 配置区交互优化：combobox 模糊搜索下拉 + 规则卡片 + 备胎 chip 拖拽 ----------
+   覆盖「模型降级链」「思考强度」两区：
+   - .pk-wrap：输入框定位容器（下拉锚点，input 直接子元素）；.half2 底部行对半分。
+   - .pk-menu：下拉面板（渠道徽标 + 完整 ID + 价格两行富信息，字段与「查找模型」弹层同源）。
+   - .fb-rule-card：规则/映射卡片区块（custom-ch-card 同款设计语言）。
+   - .fb-to-chip：备胎链 chip（序号 + grip + ID + ×），可拖拽排序，drop-before/after 指示条。 */
+
+/* combobox 包装容器：position:relative 作下拉锚点 */
+.pk-wrap { position: relative; display: flex; min-width: 0; }
+.pk-wrap > input { min-width: 0; }
+
+/* 下拉面板：绝对定位贴输入框下沿，全局同时只开一个（pkOpenMenu 管理闭菜单）。
+   display:none / .open 才显示——渲染与显隐解耦，避免空菜单占位。 */
+.pk-menu {
+  display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 60;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.14);
+  max-height: 320px; overflow-y: auto; overflow-x: hidden;
+  font-size: 12.5px; padding: 4px;
+}
+.pk-menu.open { display: block; }
+.pk-item { padding: 5px 8px; border-radius: 6px; cursor: pointer; line-height: 1.45; }
+.pk-item:hover, .pk-item.pk-hl { background: #eff6ff; }
+.pk-item .pk-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pk-item .pk-line1 .id {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.pk-item .pk-line1 .rate { flex: none; font-weight: 600; font-size: 12px; color: var(--primary); font-variant-numeric: tabular-nums; }
+.pk-item .pk-line2 { color: var(--muted); font-size: 11px; margin-top: 1px; display: flex; gap: 6px; flex-wrap: wrap; }
+.pk-item .pk-ch-tag { flex: none; color: var(--muted); font-size: 11px; margin-left: auto; }
+.pk-menu mark { background: #fde68a; border-radius: 2px; padding: 0 1px; color: inherit; }
+.pk-empty { color: var(--muted); font-size: 12px; padding: 10px 8px; text-align: center; }
+
+/* 规则/映射卡片区块（custom-ch-card 同款） */
+.fb-rule-card {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+}
+.fb-rule-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fb-rule-badge {
+  flex: none; font-size: 11px; font-weight: 600; color: var(--primary);
+  background: #dbeafe; border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+.fb-rule-head .pk-wrap { flex: 1 1 320px; }
+.fb-rule-head .pk-wrap > input { width: 100%; box-sizing: border-box; }
+.fb-rule-body .pk-wrap { flex: 1 1 auto; }
+.fb-rule-body .pk-wrap > input { width: 100%; box-sizing: border-box; }
+.fb-rule-body { margin-top: 6px; }
+.fb-chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+
+/* 备胎 chip：序号 + grip + ID + 删除 */
+.fb-to-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 8px; font-size: 12px; font-family: ui-monospace, Consolas, monospace;
+  cursor: grab; user-select: none; max-width: 100%;
+}
+.fb-to-chip .chip-idx {
+  flex: none; font-size: 10px; font-weight: 700; color: var(--primary);
+  background: #dbeafe; border-radius: 999px; min-width: 16px; text-align: center; line-height: 14px;
+  font-family: inherit;
+}
+.fb-to-chip .chip-grip { flex: none; color: var(--muted); font-size: 11px; cursor: grab; }
+.fb-to-chip .chip-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fb-to-chip a[data-del-to] { flex: none; color: var(--muted); text-decoration: none; font-size: 13px; line-height: 1; }
+.fb-to-chip a[data-del-to]:hover { color: var(--danger); }
+.fb-to-chip.dragging { opacity: .45; }
+.fb-to-chip.drop-before { box-shadow: -2px 0 0 0 var(--primary); }
+.fb-to-chip.drop-after { box-shadow: 2px 0 0 0 var(--primary); }
+
+/* 思考强度映射卡片：档位 + 删除左对齐（不推最右） */
+.fb-map-card .fb-map-model {
+  flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.fb-map-card .fb-map-arrow { flex: none; color: var(--muted); }
+.fb-map-card .fb-map-eff {
+  flex: 0 1 120px; min-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--primary);
+}
+
+/* 底部添加行：主力/备选对半分，按钮组独立一行右对齐 */
+.fb-foot-row .half2 { flex: 1 1 calc(50% - 5px); min-width: 260px; }
+.fb-foot-actions { justify-content: flex-end; flex-wrap: wrap; }
+.fb-foot-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+/* 窄屏：对半分退化为整行堆叠 */
+@media (max-width: 640px) {
+  .fb-foot-row .half2 { flex: 1 1 100%; }
+}
