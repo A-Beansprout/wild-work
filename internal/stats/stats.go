@@ -570,6 +570,7 @@ var (
 		string(provider.QwenWork): true, string(provider.MonkeyCode): true,
 		string(provider.Raccoon): true, string(provider.Loomy): true,
 		string(provider.Oczen): true, string(provider.GLM): true,
+		string(provider.Kilo):      true, // 漏了它 ⇒ kilo 的 token 与请求都不进平台概览表
 		string(provider.Cline):     true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
 		string(provider.OfficeAce): true,
 	}
@@ -609,9 +610,12 @@ func normalizePlatform(g string) string {
 	return g
 }
 
-// noExpiryChannel 判定渠道是否无临期/到期概念（oczen 匿名免费：上游对其
-// resource_detail 恒返拒绝，临期数据喂入方须跳过，否则每轮恒报失败噪音）。
-func noExpiryChannel(g string) bool { return g == string(provider.Oczen) }
+// noExpiryChannel 判定渠道是否无临期/到期概念（oczen 匿名通道与 kilo 免费池：
+// 两者都不存在账号/余额概念，resource_detail 无数据可返，临期数据喂入方须跳过，
+// 否则每轮恒报失败噪音）。
+func noExpiryChannel(g string) bool {
+	return g == string(provider.Oczen) || g == string(provider.Kilo)
+}
 
 // platformRowsLocked 生成平台表行（调用方须持锁）：按 group 聚合账号数/余额/今日
 // 收入/今日花费/作废与净值/今日 Token，并按各账号 expireAt 归入 7 日内/今日/明日

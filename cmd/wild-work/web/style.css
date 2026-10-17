@@ -602,6 +602,10 @@ body {
 /* oczen：OpenCodeZen 匿名通道（暗灰蓝，与其它紫/青系区分，弱化「固定账号」观感） */
 .badge.oczen { background: #475569; }
 .fees .ch-header.oczen td { color: #475569; }
+
+/* kilo：Kilo AI 免费池（深青绿；同为免密渠道，需与 oczen 的灰蓝区分开） */
+.badge.kilo { background: #0f766e; }
+.fees .ch-header.kilo td { color: #0f766e; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 

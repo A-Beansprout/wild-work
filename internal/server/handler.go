@@ -954,8 +954,8 @@ func formatUnfreeze(t time.Time) string {
 
 // noLoginChannel 报告渠道是否「无登录概念」（不存在凭证文件、也无重登入口）。
 // 用于把「去面板重新登录」这类引导文案限定在真正适用的渠道上，
-// 避免匿名通道（oczen）被误导去找一个不存在的登录按钮。
-func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen }
+// 避免免密渠道（oczen / kilo）被误导去找一个不存在的登录按钮。
+func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen || k == provider.Kilo }
 
 // keyPasteChannel 报告渠道凭据是否「由用户从官方站点自行创建后粘贴进来」（而非登录编排取得）。
 // 这类渠道的引导文案必须指向「粘贴新 Key」而不能说「重新登录」：
@@ -967,7 +967,7 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	// 直通形态（`cline-free/*`）——后者首段不是渠道名，必须整串当上游模型名（决议 R59）。
 	kind, upstream, ok := provider.SplitModelID(model)
 	if !ok {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
+		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model> / kilo/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
 	}
 	rt := h.getRuntime(kind)
 	if rt == nil || rt.Pool == nil || rt.Upstream == nil {

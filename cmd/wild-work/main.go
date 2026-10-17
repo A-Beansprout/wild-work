@@ -41,6 +41,7 @@ import (
 	"wild-work/internal/loomy"
 	"wild-work/internal/loopguard"
 	"wild-work/internal/monkeycode"
+	"wild-work/internal/kilo"
 	"wild-work/internal/oczen"
 	"wild-work/internal/officeace"
 	"wild-work/internal/platform"
@@ -193,8 +194,10 @@ func main() {
 	// OpenCodeZen 匿名通道无凭证文件：全程只有一个虚拟账号，
 	// 不经目录扫描、不参与 reload（见 app.reloadAccounts 的说明）。
 	ocAuths := []*auth.Auth{oczen.AnonymousAuth()}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名) from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), cfg.AuthDir)
+	// Kilo 免费池同样是免密渠道：没有凭证文件、没有登录流程，只有一个虚拟账号。
+	kiAuths := []*auth.Auth{kilo.AnonymousAuth()}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名) from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -266,6 +269,14 @@ func main() {
 	// 冷却也要清：该渠道只有这一个账号且无号可轮换，冷却即等于整条渠道下线。
 	ocPool.SetDisabled(oczen.AnonymousUID, false)
 	ocPool.ClearPenalty(oczen.AnonymousUID)
+	// kilo：与 oczen 同款——整池只有一个虚拟账号，state 仅用于记冷却（无积分、无签到）。
+	// 同样要在启动时自愈：任何历史脏数据（冷却/禁用）都会让这条没有第二个账号的渠道直接下线。
+	kiPool := pool.New(filepath.Join(stateDir, "state-kilo.json"))
+	for _, a := range kiAuths {
+		kiPool.Add(a)
+	}
+	kiPool.SetDisabled(kilo.AnonymousUID, false)
+	kiPool.ClearPenalty(kilo.AnonymousUID)
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -302,6 +313,10 @@ func main() {
 	oaUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	oaUp.StreamHTTP.Transport = oaUp.HTTP.Transport
 	ocUp := oczen.New()
+	// kilo：免密免费池。非流式 client 保留总超时兜底；StreamHTTP 不设 Timeout（R35）。
+	// New() 内两个 client 已共用同一 Transport，这里无需再赋 Transport。
+	kiUp := kilo.New()
+	kiUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -338,6 +353,7 @@ func main() {
 		provider.Cline.String():       {clUp.HTTP, clUp.StreamHTTP},
 		provider.OfficeAce.String():   {oaUp.HTTP, oaUp.StreamHTTP},
 		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
+		provider.Kilo.String():        {kiUp.HTTP, kiUp.StreamHTTP},
 		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -420,6 +436,11 @@ func main() {
 	// CheckinMinutes/KeepaliveHours 均为显式空切片 → 调度器不发生任何上游调用。
 	ocSch := scheduler.New(scheduler.Config{Pool: ocPool, Upstream: ocUp, Name: "oczen",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
+	// Kilo 免费池：无账号、无签到、无 token 可保活 ⇒ 定时任务全关。
+	// 必须传**显式空切片**（R39）：传 nil 会被 scheduler.New 当作「未配置」补成
+	// 默认 9:00/21:00 签到与 22:00 保活，每天空跑两次必然失败的调用。
+	kiSch := scheduler.New(scheduler.Config{Pool: kiPool, Upstream: kiUp, Name: "kilo",
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -460,6 +481,11 @@ func main() {
 		// NoCooldownOnServerError 保留（语义已被 SingleAccount 涵盖，留着不依赖顺序）。
 		provider.Oczen: {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, StaticModels: oczen.StaticModels(),
 			SingleAccount: true, NoCooldownOnServerError: true},
+		// kilo：同为无账号渠道（免密免费池，虚拟账号不可重登），语义与 oczen 一致——
+		// 任何账号级惩罚（冷却/计数/禁用）都等于整条渠道下线，故声明 SingleAccount，
+		// 由 handler 对所有错误一律原文透传。
+		provider.Kilo: {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, StaticModels: kilo.StaticModels(),
+			SingleAccount: true, NoCooldownOnServerError: true},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -477,6 +503,7 @@ func main() {
 		provider.Cline:       {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
 		provider.OfficeAce:   {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
 		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
+		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
@@ -637,13 +664,16 @@ func main() {
 	go clSch.Run(sctx)
 	// OfficeAce 的 Run 不可漏（R34）：本渠道有签到与保活。
 	go oaSch.Run(sctx)
+	// kilo 的 Run 同样不可漏（R34）：本渠道当前无任何定时任务，Run 只会阻塞等
+	// ctx/配置变更；但漏了它，将来给它加任务就会静默不跑。
+	go kiSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
 	// - traework / workbuddy(CN) 虽有签到顺带拉余额，但一天只有两次，
 	//   其间 token 若在别处被轮换（401）也无法自愈；统一纳入循环才能
 	//   启动即出真实拆分数字，并靠 401 自愈（refreshIfSessionDead）及时恢复。
-	// oczen 不在其中：匿名通道无积分可刷（面板显示「不适用」），
+	// oczen 与 kilo 不在其中：两条都是免密渠道（无账号、无积分可刷，面板显示「不适用」），
 	// 其 FetchModelPricing 已在费率刷新路径单独覆盖。
 	// glm 纳入：其凭据本体是 refresh_token（accessToken 可为空），
 	// 积分靠 member_info 拉取，不刷就永远是 0。
@@ -680,7 +710,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名)\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名)\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

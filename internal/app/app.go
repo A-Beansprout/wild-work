@@ -302,7 +302,7 @@ func (a *App) runtimesSnapshot() []*Runtime {
 func (a *App) firstRuntime() *Runtime {
 	// oczen 排在末位：它无调度器活动，不应成为「签到时间/下次签到」的展示来源。
 	// 顺序即展示优先级：新渠道追加在 Oczen 之前（Oczen 恒末位）。
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Oczen} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Kilo, provider.Oczen} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -339,13 +339,14 @@ var channelOrder = map[provider.Kind]int{
 	provider.QoderCN: 3, provider.QoderCOM: 4, provider.TraeWork: 5, provider.QwenWork: 6,
 	provider.GLM:       7,
 	provider.OfficeAce: 8,
+	provider.Kilo:      9, // 免密免费池：排序上紧随 oczen 之后（同属无账号渠道）
 }
 
 // feeChannelOrder 「模型列表和费率」面板的渠道分组顺序。
 // 与 channelOrder 分开维护：本表把 Oczen 放首位（其免费模型最常被查），
-// 且含 TraeCode（与 TraeWork 共账号但模型集不同，需独立成组）。
+// kilo 紧随其后（同为免密免费池），且含 TraeCode（与 TraeWork 共账号但模型集不同，需独立成组）。
 var feeChannelOrder = []provider.Kind{
-	provider.Oczen, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN,
+	provider.Oczen, provider.Kilo, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN,
 	provider.QoderCOM, provider.TraeWork, provider.TraeCode, provider.QwenWork, provider.GLM,
 	provider.Cline, // 漏在此表 = 面板永远不出该渠道 tab（buildFeesChannels 只遍历本表）
 	provider.MonkeyCode,
@@ -370,12 +371,12 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 // creditsNAKind 判定该渠道的「积分」概念是否不适用（面板显示「不适用」而不是 0）。
 //
 // 两种成因不同，但 UI 处理一致：
-//   - oczen：匆名通道，根本没有账号/余额概念；
+//   - oczen / kilo：免密免费池，根本没有账号/余额概念；
 //   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
 //     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
 //   - 自定义渠道（R66）：无积分与额度接口，同样走 NA。
 func (a *App) creditsNAKind(group string) bool {
-	if group == provider.Oczen.String() || group == provider.Cline.String() {
+	if group == provider.Oczen.String() || group == provider.Kilo.String() || group == provider.Cline.String() {
 		return true
 	}
 	return a.isCustomChannel(group)
@@ -433,11 +434,12 @@ func (a *App) SetCustomChannelsSyncer(fn func(channels []custom.ChannelConfig)) 
 // Loomy 一期也不提供手动签到：上游未提供额度或签到端点。
 // Cline 走官方 API Key：无签到活动、Key 不过期 ⇒ 既不需手动签到也不需保活。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
+// Kilo 免费池同为免密渠道：无账号、无签到、无积分。
 // noExplicitCheckin 不支持显式签到（手动按钮）的渠道。
 // 自定义渠道无签到活动（R66）；内建名单固定，故抽成无状态的包级函数（可脱离 App 断言），
 // 方法体仅补上「是否自定义渠道」这一动态判定。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Cline
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Kilo || k == provider.Cline
 }
 
 func (a *App) noExplicitCheckinKind(k provider.Kind) bool {
@@ -604,6 +606,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.Oczen:
 		// 匿名通道无账号可登（凭证固定为 public，启动时已注入虚拟账号）
 		return "", errors.New("OpenCodeZen 为匿名通道，无需也无法添加账号")
+	case provider.Kilo:
+		// 免密免费池：没有登录流程可走，虚拟账号在启动时注入。
+		// 这里必须显式拒绝——**不能**依赖 default 分支，见本函数末尾第二张 switch 的注释。
+		return "", errors.New("Kilo 免费池无需登录，也没有可添加的账号")
 	case provider.GLM:
 		// 智谱清言无编程式登录：凭据只能由用户从浏览器 Cookie 里取出后粘贴。
 		// 故这里不发起轮询流程，只返回登录页地址；用户粘贴后走 SubmitGLMToken。
@@ -659,6 +665,12 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.Raccoon:
 		// 网页版登录：拉起独立 profile 的浏览器并返回登录页地址（跨平台，无需注册表/客户端）。
 		authURL, err = loginraccoon.Start()
+	case provider.Oczen, provider.Kilo:
+		// 免密渠道没有登录流程。正常情况下上面第一张 switch 已拒绝并返回，走不到这里；
+		// 这条 case 是**防御**：若将来有人把第一张的拒绝删掉，default 会把用户导向
+		// WorkBuddy 的授权页——静默指向错误渠道，比直接报错难查得多。
+		a.finishLogin()
+		return "", fmt.Errorf("%s 为免密渠道，没有登录流程", k)
 	default:
 		ep := login.EndpointsForRegion(a.cfg.Region)
 		authURL, err = login.Start(a.loginClient, a.loginStateFP, ep)
@@ -1387,7 +1399,7 @@ func (a *App) peekLoginError() string {
 }
 
 // reloadAccounts 用 auths 目录最新文件对齐账号池。
-// 注意：oczen 不在此列——匿名虚拟账号没有凭证文件，
+// 注意：oczen 与 kilo 不在此列——两者的虚拟账号都没有凭证文件，
 // SyncToDir 会因「目录扫描不到」而把它从池里剔除，故只能由 main 装配时注入一次。
 func (a *App) reloadAccounts() {
 	if rt := a.runtime(provider.WorkBuddy); rt != nil && rt.Pool != nil {
@@ -1746,6 +1758,10 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		// 匿名通道无积分概念，面板显示「不适用」，无刷新语义。
 		return 0, fmt.Errorf("OpenCodeZen 匿名通道无积分，不适用")
 	}
+	if rt.Kind == provider.Kilo {
+		// 免密免费池同样没有积分概念（面板显示「不适用」）。
+		return 0, fmt.Errorf("Kilo 免费池无积分，不适用")
+	}
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
 	usable, expiring, unusable, err := a.creditTotals(rt, au)
 	if err != nil {
@@ -1776,8 +1792,8 @@ func (a *App) RefreshAll() RefreshSummary {
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Alias {
 			continue
 		}
-		// oczen 无积分可刷：纳入只会产生一条无意义的「无积分」失败记录。
-		if rt.Kind == provider.Oczen {
+		// oczen 与 kilo 都无积分可刷：纳入只会产生一条无意义的「无积分」失败记录。
+		if rt.Kind == provider.Oczen || rt.Kind == provider.Kilo {
 			continue
 		}
 		ps := PlatformSummary{Accounts: []AccountRefresh{}}
@@ -1833,7 +1849,7 @@ type AccountRefresh struct {
 }
 
 // RemoveAccount 删除账号（auth 文件 + 内存池）。
-// oczen 是唯一例外：匿名虚拟账号不可删除（需求约束），返回明确错误而非默默失败。
+// oczen / kilo 是例外：免密渠道的虚拟账号不可删除（需求约束），返回明确错误而非默默失败。
 func (a *App) RemoveAccount(uid string) error {
 	rt, au := a.findRuntimeAuth(uid)
 	if rt == nil || au == nil {
@@ -1841,6 +1857,9 @@ func (a *App) RemoveAccount(uid string) error {
 	}
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可删除")
+	}
+	if rt.Kind == provider.Kilo {
+		return fmt.Errorf("Kilo 免费池账号不可删除")
 	}
 	if rt.Custom {
 		var next []custom.ChannelConfig
@@ -1860,8 +1879,8 @@ func (a *App) RemoveAccount(uid string) error {
 }
 
 // DisableAccount 停用/启用账号。
-// oczen 匿名账号不可停用：停用后无法从面板恢复，而该渠道只有一个虚拟账号，
-// 停用等于禁用整个渠道。
+// oczen / kilo 的虚拟账号不可停用：停用后无法从面板恢复，而这两条渠道各自只有一个
+// 虚拟账号，停用等于禁用整条渠道。
 func (a *App) DisableAccount(uid string, disabled bool) error {
 	rt, _ := a.findRuntimeAuth(uid)
 	if rt == nil || rt.Pool == nil {
@@ -1869,6 +1888,9 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 	}
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可停用/启用")
+	}
+	if rt.Kind == provider.Kilo {
+		return fmt.Errorf("Kilo 免费池账号不可停用/启用")
 	}
 	if rt.Custom {
 		var next []custom.ChannelConfig
@@ -1901,6 +1923,9 @@ func (a *App) ResourceDetail(uid string) (remain int64, items []provider.Resourc
 	}
 	if rt.Kind == provider.Oczen {
 		return 0, nil, 0, 0, fmt.Errorf("OpenCodeZen 匿名通道无积分，不适用")
+	}
+	if rt.Kind == provider.Kilo {
+		return 0, nil, 0, 0, fmt.Errorf("Kilo 免费池无积分，不适用")
 	}
 	return a.creditSnapshot(rt, au)
 }
@@ -2348,6 +2373,9 @@ func (a *App) SetAccountNickname(uid, nickname string) error {
 	}
 	if rt.Kind == provider.Oczen {
 		return fmt.Errorf("OpenCodeZen 匿名通道账号不可改名")
+	}
+	if rt.Kind == provider.Kilo {
+		return fmt.Errorf("Kilo 免费池账号不可改名")
 	}
 	if au.FilePath == "" {
 		return fmt.Errorf("账号 %s 无凭证文件，不可改名", uid)
