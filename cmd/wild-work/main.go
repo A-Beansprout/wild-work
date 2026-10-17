@@ -42,6 +42,7 @@ import (
 	"wild-work/internal/loopguard"
 	"wild-work/internal/monkeycode"
 	"wild-work/internal/kilo"
+	"wild-work/internal/lobsterai"
 	"wild-work/internal/minimax"
 	"wild-work/internal/oczen"
 	"wild-work/internal/officeace"
@@ -202,8 +203,13 @@ func main() {
 	if err != nil {
 		fatal("读取 MiniMax 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), cfg.AuthDir)
+	// LobsterAI：正常多账号渠道，凭据由本机回调登录写入 auths/lobsterai-*.json。
+	lobAuths, err := auth.LoadLobsterAIDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 LobsterAI 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -288,6 +294,11 @@ func main() {
 	for _, a := range mimAuths {
 		mimPool.Add(a)
 	}
+	// LobsterAI：真多账号池（每个有道账号一份凭据，含 keyfrom 四元组），不置 SingleAccount。
+	lobPool := pool.New(filepath.Join(stateDir, "state-lobsterai.json"))
+	for _, a := range lobAuths {
+		lobPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -333,6 +344,11 @@ func main() {
 	mimUp := minimax.New()
 	mimUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	mimUp.StreamHTTP.Transport = mimUp.HTTP.Transport
+	// LobsterAI：对话是 OpenAI 兼容面且恒流式；非流式 client 留总超时兜底，
+	// StreamHTTP 不设 Timeout（R35），两者共用 Transport。
+	lobUp := lobsterai.New()
+	lobUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	lobUp.StreamHTTP.Transport = lobUp.HTTP.Transport
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -371,6 +387,7 @@ func main() {
 		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		provider.Kilo.String():        {kiUp.HTTP, kiUp.StreamHTTP},
 		provider.Minimax.String():     {mimUp.HTTP, mimUp.StreamHTTP},
+		provider.LobsterAI.String():   {lobUp.HTTP, lobUp.StreamHTTP},
 		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -463,6 +480,11 @@ func main() {
 	mimSch := scheduler.New(scheduler.Config{Pool: mimPool, Upstream: mimUp, Name: "minimax",
 		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
 		ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// LobsterAI：有每日签到（三步：slot → context → check_in，客户端幂等键），
+	// 也需要 token 保活（refresh 会轮换，刷新后必须落盘）。
+	lobSch := scheduler.New(scheduler.Config{Pool: lobPool, Upstream: lobUp, Name: "lobsterai",
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -510,6 +532,8 @@ func main() {
 			SingleAccount: true, NoCooldownOnServerError: true},
 		// MiniMax：真多账号渠道 ⇒ 不置 SingleAccount（普通错误分类 + 池内轮换都适用）。
 		provider.Minimax: {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, StaticModels: minimax.StaticModels()},
+		// LobsterAI：真多账号渠道 ⇒ 不置 SingleAccount（错误分类 + 池内轮换都适用）。
+		provider.LobsterAI: {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, StaticModels: lobsterai.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -529,6 +553,7 @@ func main() {
 		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
 		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
 		provider.Minimax:     {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
+		provider.LobsterAI:   {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
@@ -694,6 +719,8 @@ func main() {
 	go kiSch.Run(sctx)
 	// MiniMax 的 Run 不可漏（R34）：本渠道有签到与保活两条定时任务。
 	go mimSch.Run(sctx)
+	// LobsterAI 的 Run 不可漏（R34）：本渠道有签到与保活两条定时任务。
+	go lobSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -712,6 +739,8 @@ func main() {
 		provider.Loomy,
 		// MiniMax 有 credit/details 额度端点：不纳入就永远显示 0（面板看不到真实余额）。
 		provider.Minimax,
+		// LobsterAI 有 profile-summary 额度端点，同理必须纳入。
+		provider.LobsterAI,
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
@@ -739,7 +768,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

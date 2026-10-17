@@ -54,6 +54,21 @@ const (
 	// 过期时间必须由 expires_in 自算，不能解 exp）；推理是 Anthropic Messages 形状，
 	// 签到与积分走 minimax-cloud 端点。多账号渠道 ⇒ **不**置 SingleAccount。
 	Minimax Kind = "minimax"
+	// LobsterAI LobsterAI（有道龙虾）：API 在 lobsterai-server.youdao.com，对话是
+	// **OpenAI 兼容**面（不是 Anthropic 形态）；登录走本机 127.0.0.1 随机端口回调 + state
+	// （无 PKCE）；凭据必须持久化 keyfrom 四元组（uuid/first_keyfrom/latest_keyfrom/user_id）
+	// —— 它们是 refresh 与模型列表的必需载荷。多账号渠道 ⇒ **不**置 SingleAccount。
+	LobsterAI Kind = "lobsterai"
+	// Gemini Google Code Assist（cloudcode-pa.googleapis.com）：推理走自有 `v1internal` 信封，
+	// 鉴权是 Bearer + **逐字身份五头**，请求体必须**逐层字母序序列化**；配额是窗口百分比、无签到。
+	Gemini Kind = "gemini"
+	// CodeArts 华为云 CodeArts Agent：对话走华为 snap-access（**SDK-HMAC-SHA256 签名**），
+	// 登录是 PKCE OAuth；头名是否参与签名必须逐字节对齐（`maas_type` 要参与、`Agent-Type` 不参与）。
+	CodeArts Kind = "codearts"
+	// ZCode 智谱 ZCode：Anthropic Messages 形态；请求体 `system` 必须内嵌官方身份块（否则 405/3012）；
+	// 登录是服务端中介设备授权流。⚠️ **积分领取依赖阿里云验证码 + headful 浏览器**，
+	// 本仓不实现领取路径（渠道包注释里注明）。
+	ZCode Kind = "zcode"
 )
 
 func (k Kind) String() string { return string(k) }
@@ -67,7 +82,8 @@ func (k Kind) String() string { return string(k) }
 func BuiltinKinds() map[string]bool {
 	m := map[string]bool{}
 	for _, k := range []Kind{WorkBuddy, WorkBuddyAI, TraeWork, Qoder, QoderCN, QoderCOM,
-		QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline, OfficeAce, Kilo, Minimax} {
+		QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline, OfficeAce, Kilo, Minimax, LobsterAI,
+		Gemini, CodeArts, ZCode} {
 		m[k.String()] = true
 	}
 	for ns := range ModelNamespaces {

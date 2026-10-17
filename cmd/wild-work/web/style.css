@@ -612,6 +612,12 @@ body {
 .btn.primary.alt.minimax:hover { background: #6d28d9; }
 .badge.minimax { background: #7c3aed; }
 .fees .ch-header.minimax td { color: #7c3aed; }
+
+/* lobsterai：LobsterAI（有道龙虾，橙；与 officeace 的华为红区分开） */
+.btn.primary.alt.lobsterai { background: #ea580c; border-color: #ea580c; }
+.btn.primary.alt.lobsterai:hover { background: #c2410c; }
+.badge.lobsterai { background: #ea580c; }
+.fees .ch-header.lobsterai td { color: #ea580c; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 
