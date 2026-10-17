@@ -116,7 +116,18 @@ func (c *Client) idleTimeout() time.Duration {
 	return c.IdleTimeout
 }
 
-func session(a *auth.Auth) string { return strings.TrimSpace(a.AccessTokenValue()) }
+// sessionOf 读取凭据里的 session（nil 安全）。
+//
+// nil Auth 必须安全：签到/余额这类路径可能在「账号刚被移除」时被调度器调用，
+// 旧写法 `a.AccessTokenValue()` 会直接空指针 panic（2026-10-17 由 checkin 测试抓到）。
+func sessionOf(a *auth.Auth) string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.AccessTokenValue())
+}
+
+func session(a *auth.Auth) string { return sessionOf(a) }
 
 // traceparent 生成 W3C traceparent；官方源码注释实测：**缺这个头 chat/completions 会挂死到超时**。
 func traceparent() string {
@@ -563,11 +574,19 @@ func firstInt(vals ...*int64) *int64 {
 	return nil
 }
 
-// DailyCheckin 实现 provider.Upstream：一期不做签到。
-// 上游有 `/pet-work`（快照）+ `/pet-work/rewards`（领奖），但属"宠物任务"而非明确签到，
-// 且用户已同意签到可豁免（计划 D1）。若二期要做，只需在此实现。
+// DailyCheckin 实现 provider.Upstream（**无业务日**的窄接口）。
+//
+// 本渠道的真实领取是 PET-WORK 领奖，请求体**必须**带服务端业务日 + 配置版本 + 档位
+// （见 checkin.go）。本方法拿不到业务日，故**永远返回错误**，绝不假成功：
+// 返回 nil 会让调度器记一次「已签到」，而实际一分钱没领到。
+//
+// 正确的入口是 DailyCheckinReport（带业务日），调度器在拿到快照后用业务日调用它。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
-	return fmt.Errorf("loomy 暂未实现签到（pet-work 每日任务待二期评估）")
+	return &provider.Error{
+		Kind: provider.ErrClient,
+		Msg: "loomy: 宠物打工领奖需要服务端业务日（/api/v1/pet-work 快照里的 businessDate），" +
+			"不能走无参签到入口；请改用 DailyCheckinReport 或面板的「领取每日积分」",
+	}
 }
 
 // ---------------------------------------------------------------------------
