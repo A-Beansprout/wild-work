@@ -152,17 +152,22 @@ func (c *Client) fetchSubscription(ac *Account) (*subscription, error) {
 	return &sub, nil
 }
 
-// gatewayBase 解析账号专属网关：配置里没有就读 client-permission-validate。
+// gatewayBase 解析账号专属网关的**根地址**（控制面用，恒无 `/v2`）。
+// 配置里没有就读 client-permission-validate。
+//
+// ⚠️ 返回值必须经 `gatewayRootOf` 归一：导入路径落盘的 BaseURL 自带 `/v2`
+// （桌面端 api_base 形态），直接拼 `/v1/subscription` 会变成 `{host}/v2/v1/subscription`
+// ⇒ 上游 404 APIG.0101。数据面另由 `Account.dataBase()` 补 `/v2`（见 account.go）。
 func (c *Client) gatewayBase(ac *Account) (string, error) {
 	if ac.BaseURL != "" {
-		return ac.BaseURL, nil
+		return gatewayRootOf(ac.BaseURL), nil
 	}
 	// 无网关凭据时尝试用临时凭据问控制面。
 	base, _, err := c.clientPermissionValidate(ac)
 	if err != nil || base == "" {
-		return defaultGateway, nil
+		return gatewayRootOf(defaultGateway), nil
 	}
-	return base, nil
+	return gatewayRootOf(base), nil
 }
 
 // clientPermissionValidate 调 {agentartsBase}/v1/claw/client-permission-validate（V4 签名）。

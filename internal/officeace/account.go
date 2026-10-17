@@ -215,11 +215,43 @@ func urlPathUnescape(s string) (string, error) { return url.PathUnescape(s) }
 // trimSlash 去掉 URL 尾部所有 '/'。
 func trimSlash(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
 
-// chatURL 返回对话端点（网关 OpenAI 兼容：{base}/chat/completions，不带 /v1）。
-func (ac *Account) chatURL() string { return trimSlash(ac.BaseURL) + "/chat/completions" }
+// gatewayRootOf 把任意来源的网关地址归一为**网关根**（即剥掉数据面命名空间 `/v2`）。
+//
+// 为什么必须归一（2026-10-17 离线取证定位）：OfficeAce 的两个 base 来源形态不同，混用会
+// 在同一台机器上产生两类相反的故障：
+//   - 导入路径（桌面端 models.json 的 `api_base`）**自带 `/v2`**：`https://host/v2`；
+//   - 自助登录路径（`client-permission-validate` 的 `model_api_url_base`）**不带 `/v2`**：
+//     `https://host`（上游下发的是裸主机名，本仓只补 scheme）。
+//
+// 而两类端点的正确前缀也不同（参考实现 officeace2api 的判据，非推断）：
+//   - **数据面**（对话/模型目录）恒打 `{root}/v2/...`（其 oauth.mjs 显式拼 `https://${host}/v2`）；
+//   - **控制面**（`/v1/subscription`、`/v1/subscription/bonus/claim`、`/v1/claw/*`）恒打 `{root}/v1/...`。
+//
+// 旧实现只有一个 BaseURL 直接拼两种端点，于是：OAuth 产物（无 /v2）的 `/models` 落在
+// `{root}/models` ⇒ 上游 `404 APIG.0101 The API does not exist or has not been published`；
+// 导入产物（有 /v2）的控制面会落在 `{root}/v2/v1/subscription` ⇒ 同样 404。
+//
+// 归一规则保守：**仅当路径以整段 `/v2` 结尾时**才剥（大小写不敏感），其余路径（含
+// `/v2/v1` 这类意外形态）原样保留，避免把用户自定义网关上真实的路径段吃掉。
+func gatewayRootOf(base string) string {
+	u := trimSlash(base)
+	if len(u) >= 3 && strings.EqualFold(u[len(u)-3:], "/v2") {
+		return strings.TrimRight(u[:len(u)-3], "/")
+	}
+	return u
+}
 
-// modelsURL 返回模型目录端点（{base}/models）。
-func (ac *Account) modelsURL() string { return trimSlash(ac.BaseURL) + "/models" }
+// gatewayRoot 返回本账号的网关根（控制面基址，无 `/v2`）。
+func (ac *Account) gatewayRoot() string { return gatewayRootOf(ac.BaseURL) }
+
+// dataBase 返回本账号的数据面基址（网关根 + `/v2`）。
+func (ac *Account) dataBase() string { return ac.gatewayRoot() + "/v2" }
+
+// chatURL 返回对话端点（网关 OpenAI 兼容：{root}/v2/chat/completions）。
+func (ac *Account) chatURL() string { return ac.dataBase() + "/chat/completions" }
+
+// modelsURL 返回模型目录端点（{root}/v2/models）。
+func (ac *Account) modelsURL() string { return ac.dataBase() + "/models" }
 
 // regionFromBaseURL 从网关 host 里猜 region（华为主机形如
 // modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com ⇒ cn-southwest-2）。
