@@ -42,6 +42,7 @@ import (
 	"wild-work/internal/loopguard"
 	"wild-work/internal/monkeycode"
 	"wild-work/internal/kilo"
+	"wild-work/internal/minimax"
 	"wild-work/internal/oczen"
 	"wild-work/internal/officeace"
 	"wild-work/internal/platform"
@@ -196,8 +197,13 @@ func main() {
 	ocAuths := []*auth.Auth{oczen.AnonymousAuth()}
 	// Kilo 免费池同样是免密渠道：没有凭证文件、没有登录流程，只有一个虚拟账号。
 	kiAuths := []*auth.Auth{kilo.AnonymousAuth()}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名) from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), cfg.AuthDir)
+	// MiniMax Code：正常多账号渠道，凭据由设备码登录写入 auths/minimax-*.json。
+	mimAuths, err := auth.LoadMinimaxDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 MiniMax 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -277,6 +283,11 @@ func main() {
 	}
 	kiPool.SetDisabled(kilo.AnonymousUID, false)
 	kiPool.ClearPenalty(kilo.AnonymousUID)
+	// MiniMax：真多账号池（每个 MiniMax 账号一份 OAuth 凭据），不置 SingleAccount。
+	mimPool := pool.New(filepath.Join(stateDir, "state-minimax.json"))
+	for _, a := range mimAuths {
+		mimPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -317,6 +328,11 @@ func main() {
 	// New() 内两个 client 已共用同一 Transport，这里无需再赋 Transport。
 	kiUp := kilo.New()
 	kiUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	// MiniMax：推理是 Anthropic Messages 形状且恒流式，长思考常见 ⇒ 非流式 client 留总超时兜底，
+	// StreamHTTP 不设 Timeout（R35），两者共用 Transport。
+	mimUp := minimax.New()
+	mimUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	mimUp.StreamHTTP.Transport = mimUp.HTTP.Transport
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -354,6 +370,7 @@ func main() {
 		provider.OfficeAce.String():   {oaUp.HTTP, oaUp.StreamHTTP},
 		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		provider.Kilo.String():        {kiUp.HTTP, kiUp.StreamHTTP},
+		provider.Minimax.String():     {mimUp.HTTP, mimUp.StreamHTTP},
 		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -441,6 +458,11 @@ func main() {
 	// 默认 9:00/21:00 签到与 22:00 保活，每天空跑两次必然失败的调用。
 	kiSch := scheduler.New(scheduler.Config{Pool: kiPool, Upstream: kiUp, Name: "kilo",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
+	// MiniMax：有每日签到（7 天面板，claim 幂等判据是响应里的 claim_result），
+	// 也需要 token 保活（refresh_token 会轮换，刷新后必须落盘）。
+	mimSch := scheduler.New(scheduler.Config{Pool: mimPool, Upstream: mimUp, Name: "minimax",
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -486,6 +508,8 @@ func main() {
 		// 由 handler 对所有错误一律原文透传。
 		provider.Kilo: {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, StaticModels: kilo.StaticModels(),
 			SingleAccount: true, NoCooldownOnServerError: true},
+		// MiniMax：真多账号渠道 ⇒ 不置 SingleAccount（普通错误分类 + 池内轮换都适用）。
+		provider.Minimax: {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, StaticModels: minimax.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -504,6 +528,7 @@ func main() {
 		provider.OfficeAce:   {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
 		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
 		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
+		provider.Minimax:     {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
@@ -667,6 +692,8 @@ func main() {
 	// kilo 的 Run 同样不可漏（R34）：本渠道当前无任何定时任务，Run 只会阻塞等
 	// ctx/配置变更；但漏了它，将来给它加任务就会静默不跑。
 	go kiSch.Run(sctx)
+	// MiniMax 的 Run 不可漏（R34）：本渠道有签到与保活两条定时任务。
+	go mimSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -683,6 +710,8 @@ func main() {
 		provider.MonkeyCode,
 		provider.Raccoon,
 		provider.Loomy,
+		// MiniMax 有 credit/details 额度端点：不纳入就永远显示 0（面板看不到真实余额）。
+		provider.Minimax,
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
@@ -710,7 +739,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名)\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

@@ -26,6 +26,7 @@ import (
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
 	"wild-work/internal/login_glm"
+	loginminimax "wild-work/internal/login_minimax"
 	loginqoder "wild-work/internal/login_qoder"
 	loginqodercn "wild-work/internal/login_qodercn"
 	loginqodercom "wild-work/internal/login_qodercom"
@@ -302,7 +303,7 @@ func (a *App) runtimesSnapshot() []*Runtime {
 func (a *App) firstRuntime() *Runtime {
 	// oczen 排在末位：它无调度器活动，不应成为「签到时间/下次签到」的展示来源。
 	// 顺序即展示优先级：新渠道追加在 Oczen 之前（Oczen 恒末位）。
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Kilo, provider.Oczen} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Minimax, provider.Kilo, provider.Oczen} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -340,6 +341,7 @@ var channelOrder = map[provider.Kind]int{
 	provider.GLM:       7,
 	provider.OfficeAce: 8,
 	provider.Kilo:      9, // 免密免费池：排序上紧随 oczen 之后（同属无账号渠道）
+	provider.Minimax:   10,
 }
 
 // feeChannelOrder 「模型列表和费率」面板的渠道分组顺序。
@@ -352,6 +354,7 @@ var feeChannelOrder = []provider.Kind{
 	provider.MonkeyCode,
 	provider.Raccoon,
 	provider.Loomy,
+	provider.Minimax,
 	provider.OfficeAce,
 }
 
@@ -591,7 +594,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		k = provider.WorkBuddy
 	}
 	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork:
+	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Minimax:
 		// 这些渠道已有登录编排
 	case provider.MonkeyCode:
 		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
@@ -638,6 +641,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.loginClient = loginwbai.NewClient()
 	case provider.QwenWork:
 		a.loginClient = loginqwenwork.NewClient()
+	case provider.Minimax:
+		a.loginClient = loginminimax.NewClient()
 	case provider.Raccoon:
 		// 网页版登录靠 CDP，不用 HTTP client；置 nil 即可（pollLogin 里也不再用它）。
 	default:
@@ -665,6 +670,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.Raccoon:
 		// 网页版登录：拉起独立 profile 的浏览器并返回登录页地址（跨平台，无需注册表/客户端）。
 		authURL, err = loginraccoon.Start()
+	case provider.Minimax:
+		// 设备码 + PKCE：Start **立即**返回授权链接（前端 window.open 只在用户点击后的
+		// 短暂窗口内有效），随后由 pollLogin 轮询换 token。
+		authURL, err = loginminimax.Start(a.loginClient, a.loginStateFP)
 	case provider.Oczen, provider.Kilo:
 		// 免密渠道没有登录流程。正常情况下上面第一张 switch 已拒绝并返回，走不到这里；
 		// 这条 case 是**防御**：若将来有人把第一张的拒绝删掉，default 会把用户导向
@@ -742,6 +751,17 @@ func (a *App) pollLogin(ctx context.Context) {
 			log.Printf("登录超时，请重新发起")
 			a.setLoginError("登录超时（未收到授权回调），请重新发起登录")
 			return
+		}
+		if a.loginKind == provider.Minimax {
+			r, err := loginminimax.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeMinimaxLogin(r)
+				return
+			}
+			if !errors.Is(err, loginminimax.ErrPending) {
+				log.Printf("minimax login poll failed: %v", err)
+			}
+			continue
 		}
 		if a.loginKind == provider.TraeWork {
 			r, err := logintrae.Poll(a.loginClient, a.loginStateFP)
@@ -977,6 +997,23 @@ func (a *App) completeWbaiLogin(r loginwbai.Result) {
 			log.Printf("workbuddyai 新账号积分获取完成 %s: %d", r.Nickname, remain)
 		}
 	})
+}
+
+// completeMinimaxLogin MiniMax 设备码登录成功后的收尾。
+//
+// 刻意**不**像 trae 登录那样顺带签到：MiniMax 是 7 天签到面板，用户在面板点一次即可，
+// 少发一次上游请求（AGENTS.md §0.1「验证上游行为最小化请求数」的同源纪律）。
+func (a *App) completeMinimaxLogin(r loginminimax.Result) {
+	log.Printf("minimax 登录成功 uid=%s nickname=%s expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresAt, r.RefreshToken != "")
+	fp, err := loginminimax.SaveAuth(a.cfg.AuthDir, r)
+	if err != nil {
+		log.Printf("minimax 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	log.Printf("minimax 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.Minimax)
 }
 
 func (a *App) completeTraeLogin(r logintrae.Result) {
@@ -1446,6 +1483,14 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadWorkBuddyAiDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload workbuddyai accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.Minimax); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadMinimaxDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload minimax accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}

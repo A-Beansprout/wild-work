@@ -652,3 +652,40 @@ func jwtExpiry(token string) int64 {
 	}
 	return payload.Exp
 }
+
+// LoadMinimaxDir 扫描 MiniMax Code（中国版）渠道凭证（minimax-*.json）。
+//
+// 与 LoadTraeDir 同口径：解析失败或不可读的文件静默跳过（启动日志由调用方统计），
+// Kind 固定为 "minimax"，FilePath 指向来源文件（供 refresh 后 SaveAtomic 写回）。
+//
+// glob 边界：`minimax-*.json` 里的字面量 `-` 保证既不会被别的渠道吞并，也不会吞别人——
+//   - 现存前缀（workbuddy* / workbuddyai- / trae- / qoder* / qodercn- / qodercom- /
+//     qwenwork- / glm- / monkeycode- / raccoon- / loomy- / cline- / officeace-）都不以
+//     `minimax` 开头，故本 glob 不会命中它们的文件；
+//   - 反向同样安全：`minimax-*` 要求紧跟一个 `-`，所以将来若出现 `minimax2-*.json`
+//     （或 `minimaxpro-*.json`）之类的宽前缀渠道，**不会**被本加载器误收。
+//
+// 刻意**不**调 AdoptJWTExpiry：MiniMax 的 access token 不是 JWT（实测前缀 mmoat_、
+// 60 字符、0 个点；refresh_token 前缀 mmort_ 同样非 JWT），没有 `exp` 可读，
+// expiresAt 只能由登录 / 续期时的 `now + expires_in`（**单位秒**）写入。
+// 调它虽然是无害空操作（解析不出 exp 即返回 0），但会误导后来者以为这里有 JWT 兜底。
+func LoadMinimaxDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "minimax-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = "minimax", f
+		out = append(out, a)
+	}
+	return out, nil
+}

@@ -423,8 +423,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", cline: "Cline", officeace: "OfficeAce" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", cline: "cline", officeace: "officeace" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", cline: "Cline", officeace: "OfficeAce" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", cline: "cline", officeace: "officeace" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
 // 不支持显式签到（手动按钮）的渠道：
@@ -477,7 +477,7 @@ function creditsText(a) {
 }
 
 // 渠道汇总固定顺序（与添加按钮布局一致；traecode 是别名池不单独出现，qoder 下线仅存量兜底）
-const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "cline", "officeace", "oczen", "kilo", "qoder"];
+const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "minimax", "cline", "officeace", "oczen", "kilo", "qoder"];
 
 // renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
 // 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
@@ -1015,6 +1015,7 @@ const NO_CHECKIN_LOGIN_HINT = {
   glm: "（登录后请按下方指引复制 refresh_token 粘贴回来）",
   cline: "（无需登录：在 app.cline.bot 注册账号，Account / API Keys → Create API Key 后粘贴即可；Key 不过期也不轮换）",
   officeace: "（凭据来自本机已登录的 OfficeAce 客户端；每日签到的临时凭据约 2 小时有效，本工具会自动续期）",
+  minimax: "（设备码授权：点「浏览器登录」后在新页面确认授权，本工具会自动轮询直到完成；可重复添加多个账号）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
@@ -1423,7 +1424,7 @@ async function saveModelFallback() {
 // 同名时 server/app 两层会指向不同 Runtime，故前端先给即时反馈（后端同样会拒）。
 const RESERVED_CHANNEL_NAMES = new Set([
   "workbuddy", "workbuddyai", "traework", "traecode", "qoder", "qodercn", "qodercom",
-  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "glm", "cline", "cline-free",
+  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "glm", "cline", "cline-free",
 ]);
 let editCustomChannels = [];
 
@@ -1998,6 +1999,7 @@ function bind() {
   $("btnClineSubmit").onclick = submitClineKey;
   $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
   $("btnAddOfficeAce").onclick = () => promptLogin("officeace");
+  $("btnAddMiniMax").onclick = () => promptLogin("minimax");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
@@ -2427,7 +2429,7 @@ function renderUsageCacheCard(t) {
 
 const CH_NAMES = {
   workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork",
-  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen", kilo: "Kilo",
+  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax",
 };
 
 async function loadUsage() {

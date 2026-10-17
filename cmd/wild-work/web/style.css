@@ -606,6 +606,12 @@ body {
 /* kilo：Kilo AI 免费池（深青绿；同为免密渠道，需与 oczen 的灰蓝区分开） */
 .badge.kilo { background: #0f766e; }
 .fees .ch-header.kilo td { color: #0f766e; }
+
+/* minimax：MiniMax Code（紫；账号渠道，与其它紫/青系渠道区分） */
+.btn.primary.alt.minimax { background: #7c3aed; border-color: #7c3aed; }
+.btn.primary.alt.minimax:hover { background: #6d28d9; }
+.badge.minimax { background: #7c3aed; }
+.fees .ch-header.minimax td { color: #7c3aed; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 

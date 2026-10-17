@@ -49,6 +49,11 @@ const (
 	// 与 oczen 同属「无账号渠道」形态（R16）：不建 auth 加载器、不进 reloadAccounts，
 	// 虚拟账号由 main 装配时注入（kilo.AnonymousAuth）。
 	Kilo Kind = "kilo"
+	// Minimax MiniMax Code 中国版（account.minimax.cn + agent.minimax.cn）：
+	// 登录走 OAuth 设备码 + PKCE；凭据是 access/refresh token（**非 JWT**，
+	// 过期时间必须由 expires_in 自算，不能解 exp）；推理是 Anthropic Messages 形状，
+	// 签到与积分走 minimax-cloud 端点。多账号渠道 ⇒ **不**置 SingleAccount。
+	Minimax Kind = "minimax"
 )
 
 func (k Kind) String() string { return string(k) }
@@ -62,7 +67,7 @@ func (k Kind) String() string { return string(k) }
 func BuiltinKinds() map[string]bool {
 	m := map[string]bool{}
 	for _, k := range []Kind{WorkBuddy, WorkBuddyAI, TraeWork, Qoder, QoderCN, QoderCOM,
-		QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline, OfficeAce, Kilo} {
+		QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline, OfficeAce, Kilo, Minimax} {
 		m[k.String()] = true
 	}
 	for ns := range ModelNamespaces {
