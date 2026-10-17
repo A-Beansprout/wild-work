@@ -489,11 +489,13 @@ func main() {
 	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in）；其余同 QoderCN。
 	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// MonkeyCode：无签到、无 refresh 端点，定时任务全关。
-	// 必须传**显式空切片**：传 nil 会被 scheduler.New 当作「未配置」补成默认
-	// 9:00/21:00 签到与 22:00 保活，每天产生两次必然失败的调用与失败日志。
+	// MonkeyCode：已实现签到（控制台 Cookie 走 POST {console}/api/v1/users/wallet/checkin，
+	// 见 internal/monkeycode/checkin.go）。签到时刻用全局配置；**不设 CheckinRetryUntil**
+	// ——它是「直接领一次」的接口，没有 Qoder 那种「活动整点后才创建」的延迟，
+	// 每个签到时刻单次尝试即可（失败状态会在下一个时刻重试），避免窗口内每分钟空跑。
+	// KeepaliveHours 仍为显式空切片：上游无 refresh 端点，保活没有可刷的东西。
 	mcSch := scheduler.New(scheduler.Config{Pool: mcPool, Upstream: mcUp, Name: "monkeycode",
-		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 小浣熊：签到走 setting_info（每日积分惰性落账的触发点，见 internal/raccoon/checkin.go）。
 	// access_token 实测仅 ≈2h，而 refresh_token ≈30 天，
 	// 故保活比其它渠道更密（每 4 小时一次）以减少「请求先 401 再刷新」的额外往返；
@@ -503,11 +505,15 @@ func main() {
 	// 故**不设 CheckinRetryUntil**（窗口重试是为「活动尚未创建」设计的，本渠道无此语义）。
 	rcSch := scheduler.New(scheduler.Config{Pool: rcPool, Upstream: rcUp, Name: "raccoon",
 		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{1, 5, 9, 13, 17, 21}, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// Loomy：无签到，且**上游无 refresh 端点**（session 14 天，到期需重新导入）；
-	// 定时任务全部关闭（显式空切片）：refreshToken 为空，保活虽会按「无 refresh token」
-	// 跳过、不会误禁用账号，但每天仍空跑一次并记录失败，故直接关掉。
+	// Loomy：已实现签到（宠物每日打工奖励，POST /api/v1/pet-work/rewards，
+	// 见 internal/loomy/checkin.go）——判据是该账号当日**有效对话轮次**（上游算），
+	// 故未在官方客户端用过该账号时结果是「未达档位」（如实可重试状态）。
+	// 签到时刻用全局配置、**不设 CheckinRetryUntil**：档位在一天里是渐进的，
+	// 窗口内每分钟重试既无意义又违反 §0.1；每个签到时刻单次尝试即可。
+	// KeepaliveHours 仍为显式空切片：**上游无 refresh 端点**（session 14 天，到期需重新登录/导入），
+	// 保活没有可刷的东西（refreshToken 为空，调度器会跳过并只记一条日志）。
 	lmSch := scheduler.New(scheduler.Config{Pool: lmPool, Upstream: lmUp, Name: "loomy",
-		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// Cline：官方 API Key **不过期**、无签到活动、无 refresh token ⇒ 定时任务全部关闭。
 	// 必须传显式空切片 []int{}（R39）：传 nil 会被 scheduler.New 的零值兜底补上默认时间，
 	// 于是每天空跑一次必然失败的签到，并在面板渲染红色「签到失败」。

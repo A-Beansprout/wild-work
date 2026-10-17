@@ -31,6 +31,22 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// resetOAuthClientCache 清掉 sync.Once 缓存，让下一次 oauthClient() 按**当时的 env** 重新解析。
+//
+// ⚠️ 这不是可有可无的卫生措施，而是**顺序依赖的唯一解法**：解析结果进程级只算一次，
+// 任何一个用例把自己的 env（尤其是"空凭据"）钉进缓存，后续用例都会拿到别人的结果。
+// 实测踩过两次：`TestExtractFromLocalCLI` 先跑会留下一个"空 CLI 结果 + env 值"的混合缓存，
+// 让 `TestOAuthClientFallsBackToLocalCLI` 偶尔失败。
+func resetOAuthClientCache(t *testing.T) {
+	t.Helper()
+	oauthClientOnce = sync.Once{}
+	oauthClientVal = localOAuthClient{}
+	t.Cleanup(func() {
+		oauthClientOnce = sync.Once{}
+		oauthClientVal = localOAuthClient{}
+	})
+}
+
 // TestNoEmbeddedOAuthValueInSource 守门（2026-10-17）：本包**非测试**源码里不得再出现
 // 那两枚 Google OAuth 公开凭据的完整字面量。
 //

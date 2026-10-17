@@ -50,6 +50,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -165,17 +166,75 @@ func NewClient() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
 //
 // 2026-10-17 起源码**不再内嵌**那两枚**公开**凭据（GitHub 的 Secret Scanning Push Protection
 // 会把它们判为 secret 并拒绝推送整个分支，见 internal/gemini/oauthclient.go 的说明），
-// 因此只能来自环境变量，或从本机安装的官方 Gemini CLI 包内提取。
+// 因此只能来自环境变量，或从本机安装的官方 CLI 包内提取。
+//
+// ⚠️ 这条文案是**用户唯一能看到的解释**：前端拿到 /api/login/start 的错误后只弹一个 toast，
+// 没有其它排查入口。故必须写出「怎么查 / 怎么补」，而不能只丢两个变量名
+// （2026-10-17 现场：用户照着旧文案设了变量仍然失败——既没说值从哪来，也没说回调地址要登记）。
 var ErrOAuthClientMissing = errors.New(
-	"未获取到 Google OAuth 客户端凭据：请设置环境变量 " + gemini.EnvClientID + " 与 " + gemini.EnvClientSecret +
-		"（可用自建 OAuth 客户端），或在本机安装官方 Gemini CLI（本工具会从其包内自动提取）")
+	"未获取到 Google OAuth 客户端凭据（点「＋Gemini」失败的直接原因）：" + gemini.EnvClientID +
+		" 与 " + gemini.EnvClientSecret + " 均未设置，且本机未找到可提取的官方 CLI：\n" +
+		"· 二选一即可：① 安装官方 CLI —— npm install -g @google/gemini-cli（或 @google/antigravity），" +
+		"装完点「取消」再重新点「＋Gemini」；② 自建 OAuth 客户端 —— 在 console.cloud.google.com 建「桌面应用」类型客户端，" +
+		"并把回调地址登记为 http://" + gemini.RedirectHost + ":" + strconv.Itoa(gemini.DefaultCallbackPort) + gemini.CallbackPath +
+		"（⚠️ 必须写 localhost，不能写 127.0.0.1；默认用随机端口，该端口是端口被占时的兜底），" +
+		"再把拿到的两枚值设为上述环境变量后**重启本工具**（凭据只在进程启动时读取一次）。\n" +
+		"· 已查过的本机位置：" + strings.Join(gemini.OAuthClientSearchRoots(), "；") + "\n" +
+		"· 若要核对环境变量是否真的生效，可设置 " + EnvDiagnoseOnStart + "=1 后重启查看日志。")
+
+// EnvDiagnoseOnStart 置为 "1" 时，本工具在每次发起的登录里记一行诊断日志
+// （凭据是否就绪、取自 env 还是本机 CLI、扫描过哪些位置）。**不含任何凭据值**。
+//
+// 为什么需要它：凭据解析结果被 sync.Once 缓存，用户改了环境变量却没重启时，
+// 面板上只会重复同一条「缺凭据」——没有日志就无法区分「没设置」与「设置了但没生效」。
+const EnvDiagnoseOnStart = "WILDWORK_GEMINI_DIAG"
+
+// logOAuthDiagnosis 在 EnvDiagnoseOnStart=1 时记一行凭据诊断（**绝不含凭据值**）。
+func logOAuthDiagnosis(status string) {
+	if strings.TrimSpace(os.Getenv(EnvDiagnoseOnStart)) != "1" {
+		return
+	}
+	source := "本机 CLI"
+	if strings.TrimSpace(os.Getenv(gemini.EnvClientID)) != "" ||
+		strings.TrimSpace(os.Getenv(gemini.EnvClientSecret)) != "" {
+		source = "环境变量（或环境变量 + 本机 CLI 互补）"
+	}
+	log.Printf("gemini 登录诊断：OAuth 客户端凭据%s；来源=%s；client_id 长度=%d，client_secret 长度=%d；已扫描位置=%s",
+		status, source, len(gemini.ClientID()), len(gemini.ClientSecret()),
+		strings.Join(gemini.OAuthClientSearchRoots(), " | "))
+}
+
+// ErrGoogleUnreachable Google OAuth 端点连接层不可达（DNS 失败 / 超时 / 连接被拒）。
+//
+// 为什么要与「缺凭据」「授权码被拒」分开：三者的处置完全不同 ——
+// 缺凭据要装 CLI 或设环境变量；授权码被拒要重新授权；**网络不可达只能改网络**
+// （换网络 / 开代理）。修复前这类错误被原样抛成 `dial tcp …: i/o timeout`，
+// 用户看到系统报文，既不知原因也不知该做什么。
+var ErrGoogleUnreachable = errors.New(
+	"无法连接 Google 授权服务器（" + hostOfURL(gemini.TokenEndpoint) + "）：本机网络到 Google 不可达。" +
+		"这不是账号或授权码的问题 —— 请先确认能访问 Google（需要代理时先让本工具走代理），再重新点「＋Gemini」")
+
+// networkError 把连接层失败包装成可由 errors.Is 识别的 ErrGoogleUnreachable。
+func networkError(host string, cause error) error {
+	return fmt.Errorf("%w（%s：%v）", ErrGoogleUnreachable, host, cause)
+}
+
+// hostOfURL 取 URL 的 host，用于错误文案（解析失败时回落为原文）。
+func hostOfURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return raw
+}
 
 // Start 发起登录：起本机回调 server 并**立即**返回用户需要打开的授权 URL。
 func Start(_ *http.Client, statePath string) (string, error) {
 	// 先确认拿到了 OAuth 客户端凭据。**放在监听之前**——否则会白占一个回调端口再报错。
 	if gemini.ClientID() == "" || gemini.ClientSecret() == "" {
+		logOAuthDiagnosis("缺失")
 		return "", ErrOAuthClientMissing
 	}
+	logOAuthDiagnosis("就绪")
 	// ⚠️ 顺序：先监听、再拼 URL（协议 §2.3 第 2 条：先拼 URL 会在换端口时 redirect_uri_mismatch）。
 	lns, port, err := listenCallback(0)
 	if err != nil {
@@ -295,7 +354,10 @@ func exchange(client *http.Client, st state, code string) (Result, bool, error) 
 	// ⚠️ 刻意不设 User-Agent：令牌端点是标准 Google OAuth，伪装只用在 Cloud Code 端点。
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{}, false, err
+		// 连接层失败（DNS / 超时 / 拒绝）：归为 ErrGoogleUnreachable，让用户看到
+		// 「网络不可达」而不是一行 `dial tcp …: i/o timeout`。
+		// 仍是非终态：Poll 继续轮询，网络恢复后同一次登录还能走完。
+		return Result{}, false, networkError(hostOfURL(tokenEndpoint), err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

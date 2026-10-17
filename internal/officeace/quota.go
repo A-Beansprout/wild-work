@@ -16,11 +16,26 @@ import (
 
 // 华为云 AgentArts / 模型网关常量。
 const (
-	agentartsBase  = "https://agentarts.cn-southwest-2.myhuaweicloud.com"
 	defaultGateway = "https://modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com"
-	stsTokenURL    = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 	oauthClientID  = "pdp5_for_agentarts"
 	pointsAttrCode = "officeace_points"
+)
+
+// 生产上游地址。单独列成常量，供 httptest 用例结束时还原（防串测）。
+const (
+	productionAgentartsBase = "https://agentarts.cn-southwest-2.myhuaweicloud.com"
+	productionStsTokenURL   = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
+	productionAuthBase      = "https://auth.huaweicloud.com"
+)
+
+// 三个上游地址做成**变量**的唯一原因是可测性：登录链路（state → code → STS → validate）
+// 必须能在 httptest 假上游上端到端回归——否则「新增账号不成功」这一类断点只能靠真实
+// 华为账号实盘才能发现，而实盘会产生真实 state/令牌消耗与风控暴露（AGENTS.md §0.1）。
+// 生产运行时一律保持默认值；**没有任何代码路径会改写它们**（仅 *_test.go 内临时替换）。
+var (
+	agentartsBase = productionAgentartsBase
+	stsTokenURL   = productionStsTokenURL
+	authBase      = productionAuthBase
 )
 
 // UserResource 返回该账号**可消耗积分**（套餐剩余 + 奖励剩余）。

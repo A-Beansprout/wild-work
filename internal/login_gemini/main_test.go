@@ -15,5 +15,9 @@ import (
 func TestMain(m *testing.M) {
 	os.Setenv(gemini.EnvClientID, "0000000000-testclient.apps.googleusercontent.com")
 	os.Setenv(gemini.EnvClientSecret, "test-placeholder-secret-not-real")
+	// ⚠️ 必须清解析缓存（2026-10-17 实测）：gemini.oauthClient() 用 sync.Once 缓存，
+	// 而它可能在 TestMain 跑之前就被解析过（实测：TestMain 已 Setenv，首次 ClientID() 仍返回空串）。
+	// 不清的话整包用例集体报「缺少 OAuth 客户端凭据」。做法与 internal/gemini 的 TestMain 一致。
+	gemini.ResetOAuthClientCacheForTest()
 	os.Exit(m.Run())
 }
