@@ -56,6 +56,7 @@ function mkNode(id) {
     id,
     innerHTML: "",
     textContent: "",
+    value: "", // #149 起 updateEffDirty/renderFbList 会读输入框 .value.trim()
     style: {},
     classList: {
       add: (c) => cls.add(c),
@@ -372,7 +373,9 @@ const uniq = [
   ["const CH_ORDER", /^\s*const CH_ORDER\s*=/gm],
   ["const CH_SUMMARY_ORDER", /^\s*const CH_SUMMARY_ORDER\s*=/gm],
   ["function renderAccounts", /^\s*function renderAccounts\s*\(/gm],
-  ["function render()", /^\s*function render\s*\(/gm],
+  // 顶层 = 行首无缩进。内层同名函数（如 attachModelPicker 内的 render()、
+  // attachEffortPicker 内的 render()）是合法的局部闭包，不得计入。
+  ["function render()", /^function render\s*\(/gm],
   // 运行统计区块（防「同一提交里写两版」的非预期重复，同 renderSummary 教训）
   ["function loadStats", /^\s*async function loadStats\s*\(/gm],
   ["function renderStats", /^\s*function renderStats\s*\(/gm],
@@ -537,9 +540,11 @@ for (const [label, re] of uniq) {
   const need = [
     ["设置弹层有思考强度编辑区（全局默认行 + 映射列表 + 输入行）",
       html.includes('id="effGlobalInput"') && html.includes('id="effList"') && html.includes('id="effModelInput"') && html.includes('id="effEffortInput"') && html.includes('id="btnEffAdd"') && html.includes('id="btnEffSave"')],
-    ["档位建议集 datalist = none/low/medium/high/max（哑管道：输入框仍可自由输入）",
-      /<datalist id="effortDatalist">[\s\S]*?value="none"[\s\S]*?value="low"[\s\S]*?value="medium"[\s\S]*?value="high"[\s\S]*?value="max"/.test(html)
-      && html.includes('list="effortDatalist"')],
+    // #149 把 datalist 换成了 combobox 下拉（attachEffortPicker），候选集在 app.js 的
+    // PK_EFFORTS；仍可自由输入（哑管道不校验档位取值）。
+    ["档位建议集 none/low/medium/high/max（哑管道：输入框仍可自由输入）",
+      /const PK_EFFORTS = \["none", "low", "medium", "high",[^\]]*"max"\]/.test(raw)
+      && raw.includes("attachEffortPicker($(\"effEffortInput\")")],
     ["hint 含三态语义（未带才注入 / 显式传不覆盖 / 回退全局默认）",
       html.includes("客户端请求<b>未带</b>") && html.includes("一律不覆盖") && html.includes("精确未命中回退全局默认")],
     ["hint 含 channel/model 格式与 TraeWork 无效说明",
@@ -552,8 +557,12 @@ for (const [label, re] of uniq) {
     ["模型行拒绝 `*`（全局默认专用键另有入口）", raw.includes("* 是全局默认专用键")],
     ["renderEffList 空态占位常显（未配置 = 不注入，不整块隐藏）",
       (T.renderEffList(), nodes["effList"].innerHTML.includes("暂无模型档位"))],
-    ["renderEffList 模型 ID 列显式 width:auto（.lbl.wide 的 90px 定宽会压掉 max-width）",
-      /class="lbl wide" style="width:auto;max-width:340px/.test(raw)],
+    // #149 起映射行改为卡片（.fb-map-card），“模型 ID 列不被 .lbl.wide 的 90px 定宽压掉”
+    // 的约束转移到了 style.css 的 .fb-map-card .fb-map-model（flex 自适应 + 省略号）。
+    ["renderEffList 模型 ID 列可伸缩不被定宽压掉",
+      /class="fb-map-model" title=/.test(raw)
+      && /\.fb-map-card \.fb-map-model \{[^}]*flex: 1 1 200px/.test(
+        readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8"))],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
