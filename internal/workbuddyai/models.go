@@ -477,6 +477,22 @@ func Classify(status int, body string) provider.ErrKind {
 		// 模型级冷却化解），模型全冷时降级链自动顶替。历史上曾把 6004 归为
 		// ErrPassthrough 纯透传（当时只有账号级冷却这一种手段），但透传什么都不冷却，
 		// 降级链永不触发，客户端只能对着重置时间干等。
+		// 例外：积分耗尽（14018，msg 是复数 "Credits exhausted"——与 hardMarkers 的
+		// "credit exhausted" 差一个 s，429 分支在 hardMarkers 之前直接 return 时永远
+		// 漏匹配）是账号级余额问题而非限流：归软限流只冷却「账号×该模型」60s（body
+		// 无重置时间戳，回退 SoftCooldown），到期容量"恢复"，降级链永不触发，客户端
+		// 死循环吃 429（2026-09-23 起生产实录）。归 ErrHardCredit：账号级 12h 硬冷却
+		// （充值后 ReenableIfCredits 自动解冻），下一请求入口降级链正常顶替。
+		// 匹配防前缀误伤："code":140180 含子串 "code":14018——命中后下一字符须非
+		// 数字，防未来 14xxxx 新码误归 12h 账号硬冷却。
+		if idx := strings.Index(body, `"code":14018`); idx >= 0 {
+			if end := idx + len(`"code":14018`); end >= len(body) || body[end] < '0' || body[end] > '9' {
+				return provider.ErrHardCredit
+			}
+		}
+		if strings.Contains(lower, "credits exhausted") {
+			return provider.ErrHardCredit
+		}
 		return provider.ErrSoftRate
 	}
 	for _, m := range hardMarkers {
