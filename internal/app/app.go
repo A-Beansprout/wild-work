@@ -514,13 +514,15 @@ func (a *App) SetRootHandler(h http.Handler) { a.httpRoot = h }
 
 // serveHandler 返回实际对外服务的 handler（优先外层组合，其次内层）。
 func (a *App) serveHandler() http.Handler {
+	// 最外层统一加 Host 校验（未启用管理密码时只接受环回 Host，防 DNS rebinding 读写面板）；
+	// 挂在最外层而非只挂 /api/：面板静态页面与 /v1/* 同样不该被跨站域名访问。
 	if a.httpRoot != nil {
-		return a.httpRoot
+		return a.hostGuard(a.httpRoot)
 	}
 	if a.handler == nil { // 避免 typed-nil 接口导致 http.Server 请求时 panic
 		return nil
 	}
-	return a.handler
+	return a.hostGuard(a.handler)
 }
 
 // StartServer 按当前配置启动 HTTP 服务。
