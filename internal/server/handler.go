@@ -521,6 +521,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
+	// 诊断：记录上下文构成摘要（config.body_log 关闭时立即返回，无实际开销）。
+	// 必须放在 rewriteModel 之前——要记的是客户端发来的原始体，而非改写后的。
+	if h.ledger != nil {
+		h.ledger.TraceBody(rt.Kind.String(), clientModel, body)
+	}
 	// 统计/流水的归一 ID：新旧写法（cline-free/x 与 cline/cline-free/x）归一到同一串，
 	// 否则同一模型会在用量榜/请求日志里裂成两行（R59）；其余渠道为恒等变换。
 	canonModel := provider.CanonicalModelID(clientModel)
