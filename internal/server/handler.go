@@ -538,10 +538,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// agent 读 chunk.model / resp.model 即可感知实际执行模型）。
 	var fbApplied string
 	fbID, primaryAvail := h.pickModelFallback(rt, model)
-	// 口径说明：降级期间 ledger/stats 的 token 流水仍按**客户端请求名**记账（statRow.Model、
-	// AddUsage(clientModel)），因为该面向的口径是「客户端这一发花了多少」；实际执行模型
-	// 由上面的日志行 + 面板「降级记录」区块承担。不改成 dispModel 的另一个理由：
-	// 同渠道备胎（如 glm-5.2 顶 deepseek）会把消耗搬到另一行，历史趋势会失真。
+	// 口径说明：降级期间 ledger/stats 的 token 流水按**实际执行模型**记账
+	// （statRow.Model、AddUsage(acctModel)、ledgerModelOf(acctModel)）——谁实际工作、
+	// 谁实际消耗 token/积分，就记在谁名下（2026-10-16 口径变更，推翻原「按客户端
+	// 请求名记账」设计）。acctModel=记账归属模型（无降级=canonModel；降级=备胎的
+	// 规范对外 ID，归一函数同构，新旧写法仍归同一行）；原请求名→备胎的对照由
+	// 日志行 + 面板「降级记录」区块 + X-Model-Fallback 头/响应 model 字段承担。
+	acctModel := canonModel
 	if fbID != "" {
 		if rt2, m2, err := h.runtimeForModel(fbID); err == nil {
 			log.Printf("model fallback platform=%s from=%s to=%s", rt.Kind, clientModel, fbID)
@@ -549,6 +552,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Model-Fallback", clientModel+" -> "+fbID)
 			rt, model = rt2, m2
 			fbApplied = fbID
+			acctModel = provider.CanonicalModelID(fbID)
 		}
 	}
 	dispModel := clientModel
@@ -580,7 +584,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// TTFB 由 statWriter 记首字节，耗时/吞吐在出口由 defer 收口；
 	// Status 未显式赋值 = 成功写回（200）。
 	var statRow statsEngine.ReqRow
-	statRow.Model = canonModel
+	statRow.Model = acctModel
 	if peek.Stream {
 		statRow.Mode = "流"
 	} else {
@@ -756,7 +760,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if h.ledger != nil {
 				pt, ct, src := usageTokens(usage)
 				h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-					Model: ledgerModelOf(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+					Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 			}
 			// 运行统计：模型维度记账（有 usage 才计，对齐 sidecar 的 u.found 语义）。
 			// 吞吐仅在流式下有意义：genSec = 总耗时 − TTFB；引擎内对 ≤50ms 的样本只计 TTFB。
@@ -764,7 +768,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				pt, ct, _ := usageTokens(usage)
 				if pt > 0 || ct > 0 {
 					gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
-					h.stats.AddUsage(canonModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
+					h.stats.AddUsage(acctModel, pt, ct, usageCredit(usage), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 					statRow.Tok = ct
 					if gen > 0 {
 						statRow.TokPerSec = float64(ct) / gen
@@ -853,7 +857,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			pt, ct, src := usageTokens(u)
 			cu := cacheUsageOf(u)
 			h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-				Model: ledgerModelOf(clientModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+				Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
 		}
 		writeJSON(w, http.StatusOK, resp)
 		// 运行统计：必须在写回之后——此刻 statWriter 才记到首字节，TTFB 为真值；
@@ -865,7 +869,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if pt > 0 || ct > 0 {
 				gen := time.Since(sw.start).Seconds() - float64(sw.ttfbMs)/1000
 				cu := cacheUsageOf(u)
-				h.stats.AddUsage(canonModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
+				h.stats.AddUsage(acctModel, pt, ct, usageCredit(u), sw.ttfbMs, gen, cu.cached, cu.reported, time.Now())
 				statRow.Tok = ct
 			}
 			statRow.Credit = usageCredit(u)
