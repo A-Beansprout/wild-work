@@ -573,6 +573,7 @@ var (
 		string(provider.Kilo):      true, // 漏了它 ⇒ kilo 的 token 与请求都不进平台概览表
 		string(provider.Minimax):   true,
 		string(provider.LobsterAI): true,
+		string(provider.ZCode):     true,
 		string(provider.Cline):     true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
 		string(provider.OfficeAce): true,
 	}

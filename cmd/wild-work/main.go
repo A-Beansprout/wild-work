@@ -45,6 +45,7 @@ import (
 	"wild-work/internal/lobsterai"
 	"wild-work/internal/minimax"
 	"wild-work/internal/oczen"
+	"wild-work/internal/zcode"
 	"wild-work/internal/officeace"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
@@ -208,8 +209,13 @@ func main() {
 	if err != nil {
 		fatal("读取 LobsterAI 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), cfg.AuthDir)
+	// ZCode：正常多账号渠道，凭据由服务端中介设备授权流登录写入 auths/zcode-*.json。
+	zcdAuths, err := auth.LoadZCodeDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 ZCode 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -299,6 +305,11 @@ func main() {
 	for _, a := range lobAuths {
 		lobPool.Add(a)
 	}
+	// ZCode：真多账号池（每个智谱账号一份凭据 + device_mid），不置 SingleAccount。
+	zcdPool := pool.New(filepath.Join(stateDir, "state-zcode.json"))
+	for _, a := range zcdAuths {
+		zcdPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -349,6 +360,11 @@ func main() {
 	lobUp := lobsterai.New()
 	lobUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	lobUp.StreamHTTP.Transport = lobUp.HTTP.Transport
+	// ZCode：Anthropic Messages 形态且恒流式；非流式 client 留总超时兜底，
+	// StreamHTTP 不设 Timeout（R35），两者共用 Transport。
+	zcdUp := zcode.New()
+	zcdUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	zcdUp.StreamHTTP.Transport = zcdUp.HTTP.Transport
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -388,6 +404,7 @@ func main() {
 		provider.Kilo.String():        {kiUp.HTTP, kiUp.StreamHTTP},
 		provider.Minimax.String():     {mimUp.HTTP, mimUp.StreamHTTP},
 		provider.LobsterAI.String():   {lobUp.HTTP, lobUp.StreamHTTP},
+		provider.ZCode.String():       {zcdUp.HTTP, zcdUp.StreamHTTP},
 		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -485,6 +502,12 @@ func main() {
 	lobSch := scheduler.New(scheduler.Config{Pool: lobPool, Upstream: lobUp, Name: "lobsterai",
 		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
 		ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// ZCode：**无签到**（积分领取依赖阿里云验证码 + headful 浏览器，本仓不实现；
+	// DailyCheckin 返回明确的「不支持」错误而不是伪造成功），且凭据**不可续期**
+	// （JWT 无 exp）⇒ 定时任务全关。必须传显式空切片（R39）：传 nil 会被补成默认
+	// 9:00/21:00 签到与 22:00 保活，每天空跑两次必然失败的调用并污染面板。
+	zcdSch := scheduler.New(scheduler.Config{Pool: zcdPool, Upstream: zcdUp, Name: "zcode",
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -534,6 +557,8 @@ func main() {
 		provider.Minimax: {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, StaticModels: minimax.StaticModels()},
 		// LobsterAI：真多账号渠道 ⇒ 不置 SingleAccount（错误分类 + 池内轮换都适用）。
 		provider.LobsterAI: {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, StaticModels: lobsterai.StaticModels()},
+		// ZCode：真多账号渠道 ⇒ 不置 SingleAccount（错误分类 + 池内轮换都适用）。
+		provider.ZCode: {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, StaticModels: zcode.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -554,6 +579,7 @@ func main() {
 		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
 		provider.Minimax:     {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
 		provider.LobsterAI:   {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
+		provider.ZCode:       {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
@@ -721,6 +747,8 @@ func main() {
 	go mimSch.Run(sctx)
 	// LobsterAI 的 Run 不可漏（R34）：本渠道有签到与保活两条定时任务。
 	go lobSch.Run(sctx)
+	// ZCode 的 Run 同样不可漏（R34）：本渠道当前无定时任务，但漏了将来加任务即静默失效。
+	go zcdSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -741,6 +769,8 @@ func main() {
 		provider.Minimax,
 		// LobsterAI 有 profile-summary 额度端点，同理必须纳入。
 		provider.LobsterAI,
+		// ZCode 有 billing/balance 额度端点（桶单位是 token），同理必须纳入。
+		provider.ZCode,
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
@@ -768,7 +798,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d zcode=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

@@ -35,6 +35,7 @@ import (
 	loginraccoon "wild-work/internal/login_raccoon"
 	logintrae "wild-work/internal/login_trae"
 	"wild-work/internal/login_wbai"
+	loginzcode "wild-work/internal/login_zcode"
 	"wild-work/internal/loopguard"
 	"wild-work/internal/oczen"
 	"wild-work/internal/officeace"
@@ -304,7 +305,7 @@ func (a *App) runtimesSnapshot() []*Runtime {
 func (a *App) firstRuntime() *Runtime {
 	// oczen 排在末位：它无调度器活动，不应成为「签到时间/下次签到」的展示来源。
 	// 顺序即展示优先级：新渠道追加在 Oczen 之前（Oczen 恒末位）。
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Minimax, provider.LobsterAI, provider.Kilo, provider.Oczen} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM, provider.MonkeyCode, provider.Raccoon, provider.Loomy, provider.Minimax, provider.LobsterAI, provider.ZCode, provider.Kilo, provider.Oczen} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -344,6 +345,7 @@ var channelOrder = map[provider.Kind]int{
 	provider.Kilo:      9, // 免密免费池：排序上紧随 oczen 之后（同属无账号渠道）
 	provider.Minimax:   10,
 	provider.LobsterAI: 11,
+	provider.ZCode:     12,
 }
 
 // feeChannelOrder 「模型列表和费率」面板的渠道分组顺序。
@@ -358,6 +360,7 @@ var feeChannelOrder = []provider.Kind{
 	provider.Loomy,
 	provider.Minimax,
 	provider.LobsterAI,
+	provider.ZCode,
 	provider.OfficeAce,
 }
 
@@ -445,7 +448,7 @@ func (a *App) SetCustomChannelsSyncer(fn func(channels []custom.ChannelConfig)) 
 // 自定义渠道无签到活动（R66）；内建名单固定，故抽成无状态的包级函数（可脱离 App 断言），
 // 方法体仅补上「是否自定义渠道」这一动态判定。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Kilo || k == provider.Cline
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.MonkeyCode || k == provider.Loomy || k == provider.Oczen || k == provider.Kilo || k == provider.ZCode || k == provider.Cline
 }
 
 func (a *App) noExplicitCheckinKind(k provider.Kind) bool {
@@ -599,7 +602,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		k = provider.WorkBuddy
 	}
 	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Minimax, provider.LobsterAI:
+	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Minimax, provider.LobsterAI, provider.ZCode:
 		// 这些渠道已有登录编排
 	case provider.MonkeyCode:
 		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
@@ -650,6 +653,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.loginClient = loginminimax.NewClient()
 	case provider.LobsterAI:
 		a.loginClient = loginlobsterai.NewClient()
+	case provider.ZCode:
+		a.loginClient = loginzcode.NewClient()
 	case provider.Raccoon:
 		// 网页版登录靠 CDP，不用 HTTP client；置 nil 即可（pollLogin 里也不再用它）。
 	default:
@@ -685,6 +690,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		// 本机回调授权：Start 起 127.0.0.1 随机端口的回调监听并**立即**返回登录页地址
 		// （前端 window.open 只在用户点击后的短暂窗口内有效），回调到达后由 pollLogin 收尾。
 		authURL, err = loginlobsterai.Start(a.loginClient, a.loginStateFP)
+	case provider.ZCode:
+		// 服务端中介设备授权流：Start 发起 init 并**立即**返回授权链接
+		// （前端 window.open 只在用户点击后的短暂窗口内有效），随后由 pollLogin 轮询。
+		authURL, err = loginzcode.Start(a.loginClient, a.loginStateFP)
 	case provider.Oczen, provider.Kilo:
 		// 免密渠道没有登录流程。正常情况下上面第一张 switch 已拒绝并返回，走不到这里；
 		// 这条 case 是**防御**：若将来有人把第一张的拒绝删掉，default 会把用户导向
@@ -772,6 +781,17 @@ func (a *App) pollLogin(ctx context.Context) {
 			log.Printf("登录超时，请重新发起")
 			a.setLoginError("登录超时（未收到授权回调），请重新发起登录")
 			return
+		}
+		if a.loginKind == provider.ZCode {
+			r, err := loginzcode.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeZCodeLogin(r)
+				return
+			}
+			if !errors.Is(err, loginzcode.ErrPending) {
+				log.Printf("zcode login poll failed: %v", err)
+			}
+			continue
 		}
 		if a.loginKind == provider.LobsterAI {
 			r, err := loginlobsterai.Poll(a.loginClient, a.loginStateFP)
@@ -1039,6 +1059,23 @@ func (a *App) completeWbaiLogin(r loginwbai.Result) {
 //
 // 与 minimax 同样**不**登录即签到：签到是面板上的显式动作，少发一次上游请求
 // （AGENTS.md §0.1 的同源纪律）。
+// completeZCodeLogin ZCode 设备授权登录成功后的收尾。
+//
+// 与 minimax / lobsterai 同样**不**登录即签到：ZCode 的积分领取依赖阿里云验证码
+// （headful 浏览器），本仓不实现；签到走面板手动或干脆不做，少发一次上游请求。
+func (a *App) completeZCodeLogin(r loginzcode.Result) {
+	log.Printf("zcode 登录成功 uid=%s nickname=%s expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresAt, r.RefreshToken != "")
+	fp, err := loginzcode.SaveAuth(a.cfg.AuthDir, r)
+	if err != nil {
+		log.Printf("zcode 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	log.Printf("zcode 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.ZCode)
+}
+
 func (a *App) completeLobsterAILogin(r loginlobsterai.Result) {
 	log.Printf("lobsterai 登录成功 uid=%s nickname=%s expires_at=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresAt, r.RefreshToken != "")
 	fp, err := loginlobsterai.SaveAuth(a.cfg.AuthDir, r)
@@ -1548,6 +1585,14 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadLobsterAIDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload lobsterai accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.ZCode); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadZCodeDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload zcode accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
