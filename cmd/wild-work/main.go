@@ -41,6 +41,7 @@ import (
 	"wild-work/internal/loomy"
 	"wild-work/internal/loopguard"
 	"wild-work/internal/monkeycode"
+	"wild-work/internal/gemini"
 	"wild-work/internal/kilo"
 	"wild-work/internal/lobsterai"
 	"wild-work/internal/minimax"
@@ -214,8 +215,13 @@ func main() {
 	if err != nil {
 		fatal("读取 ZCode 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), cfg.AuthDir)
+	// Gemini（Google Code Assist）：正常多账号渠道，凭据由 loopback OAuth 登录写入 auths/gemini-*.json。
+	gemAuths, err := auth.LoadGeminiDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 Gemini 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -310,6 +316,11 @@ func main() {
 	for _, a := range zcdAuths {
 		zcdPool.Add(a)
 	}
+	// Gemini：真多账号池（每个 Google 账号一份 OAuth 凭据 + project），不置 SingleAccount。
+	gemPool := pool.New(filepath.Join(stateDir, "state-gemini.json"))
+	for _, a := range gemAuths {
+		gemPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -365,6 +376,11 @@ func main() {
 	zcdUp := zcode.New()
 	zcdUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	zcdUp.StreamHTTP.Transport = zcdUp.HTTP.Transport
+	// Gemini：自有 v1internal 信封、恒流式；非流式 client 留总超时兜底，
+	// StreamHTTP 不设 Timeout（R35），两者共用 Transport。
+	gemUp := gemini.New()
+	gemUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	gemUp.StreamHTTP.Transport = gemUp.HTTP.Transport
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -405,6 +421,7 @@ func main() {
 		provider.Minimax.String():     {mimUp.HTTP, mimUp.StreamHTTP},
 		provider.LobsterAI.String():   {lobUp.HTTP, lobUp.StreamHTTP},
 		provider.ZCode.String():       {zcdUp.HTTP, zcdUp.StreamHTTP},
+		provider.Gemini.String():      {gemUp.HTTP, gemUp.StreamHTTP},
 		provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 	})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -508,6 +525,12 @@ func main() {
 	// 9:00/21:00 签到与 22:00 保活，每天空跑两次必然失败的调用并污染面板。
 	zcdSch := scheduler.New(scheduler.Config{Pool: zcdPool, Upstream: zcdUp, Name: "zcode",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
+	// Gemini：**无签到**（DailyCheckin 返回明确的「不支持」错误），但有 refresh_token 可续期
+	// ⇒ 只开保活；CheckinMinutes 用显式空切片关闭（R39：传 nil 会被补成默认 9:00/21:00，
+	// 每天空跑两次必然失败的签到并污染面板）。
+	gemSch := scheduler.New(scheduler.Config{Pool: gemPool, Upstream: gemUp, Name: "gemini",
+		CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -559,6 +582,8 @@ func main() {
 		provider.LobsterAI: {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, StaticModels: lobsterai.StaticModels()},
 		// ZCode：真多账号渠道 ⇒ 不置 SingleAccount（错误分类 + 池内轮换都适用）。
 		provider.ZCode: {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, StaticModels: zcode.StaticModels()},
+		// Gemini：真多账号渠道 ⇒ 不置 SingleAccount。
+		provider.Gemini: {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, StaticModels: gemini.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -580,6 +605,7 @@ func main() {
 		provider.Minimax:     {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
 		provider.LobsterAI:   {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
 		provider.ZCode:       {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
+		provider.Gemini:      {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
@@ -749,6 +775,8 @@ func main() {
 	go lobSch.Run(sctx)
 	// ZCode 的 Run 同样不可漏（R34）：本渠道当前无定时任务，但漏了将来加任务即静默失效。
 	go zcdSch.Run(sctx)
+	// Gemini 的 Run 不可漏（R34）：本渠道有 token 保活任务。
+	go gemSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -771,6 +799,8 @@ func main() {
 		provider.LobsterAI,
 		// ZCode 有 billing/balance 额度端点（桶单位是 token），同理必须纳入。
 		provider.ZCode,
+		// Gemini **不**纳入：它的 UserResource 恒 0——真实信息是「配额窗口剩余百分比」，
+		// 已按 InfoOnly 呈现在明细里、不参与积分算术，纳入只会刷出一个无意义的 0。
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
@@ -798,7 +828,7 @@ func main() {
 		if appInst.PanelAuthEnabled() {
 			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
 		}
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d zcode=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名) kilo=%d(匿名) minimax=%d lobsterai=%d zcode=%d gemini=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

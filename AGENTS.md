@@ -230,7 +230,7 @@
 
 **面板区块与 API 全量清单**见 [`docs/接口参考.md`](docs/接口参考.md)。
 
-### 渠道清单（18 条内建 + 自定义）
+### 渠道清单（19 条内建 + 自定义）
 
 WorkBuddyCN（`workbuddy/*`）、WorkBuddyAI（`workbuddyai/*`）、TraeWork（`traework/*`）、
 TraeCode（`traecode/*`）、QoderCN（`qodercn/*`）、QoderCOM（`qodercom/*`）、
@@ -238,6 +238,7 @@ TraeCode（`traecode/*`）、QoderCN（`qodercn/*`）、QoderCOM（`qodercom/*`�
 Loomy（`loomy/*`）、智谱清言（`glm/*`）、OpenCodeZen（`oczen/*`，匿名）、
 Kilo（`kilo/*`，免密免费池、无账号）、MiniMax Code（`minimax/*`，设备码授权）、
 LobsterAI（`lobsterai/*`，本机回调授权）、ZCode（`zcode/*`，设备授权；积分领取依赖网页验证码，本工具不自动领取）、
+Gemini（`gemini/*`，本机回调授权）、
 Cline（`cline-free/*`）、华为云果办 OfficeAce（`officeace/*`）；
 另有用户自定义 OpenAI 兼容渠道（`custom_channels`，R66）。
 旧 Qoder（`qoder/*`）已从界面下线，路由保留。

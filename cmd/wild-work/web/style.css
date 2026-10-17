@@ -624,6 +624,12 @@ body {
 .btn.primary.alt.zcode:hover { background: #0e7490; }
 .badge.zcode { background: #0891b2; }
 .fees .ch-header.zcode td { color: #0891b2; }
+
+/* gemini：Gemini（Google，蓝；与其它渠道色区分开） */
+.btn.primary.alt.gemini { background: #2563eb; border-color: #2563eb; }
+.btn.primary.alt.gemini:hover { background: #1d4ed8; }
+.badge.gemini { background: #2563eb; }
+.fees .ch-header.gemini td { color: #2563eb; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 
