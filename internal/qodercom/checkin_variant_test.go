@@ -89,7 +89,7 @@ func TestRealPayloadWithoutClaimBenefitIsNoCampaign(t *testing.T) {
 	if claimCalled {
 		t.Error("无可领活动时发出了 claim")
 	}
-	for _, want := range []string{"claimable=false", "VIEW_DETAILS=CLAIMED", "1 条活动"} {
+	for _, want := range []string{"showCampaign=true", "claimable=false", "VIEW_DETAILS=CLAIMED", "1 条活动"} {
 		if !strings.Contains(rep.Msg, want) {
 			t.Errorf("诊断文案缺 %q：%s", want, rep.Msg)
 		}
@@ -114,8 +114,8 @@ func TestEmptyCampaignListDiagnostics(t *testing.T) {
 	if rep.Status != provider.CheckinNoCampaign || !rep.Status.Retryable() {
 		t.Fatalf("report = %+v, want no_campaign (retryable)", rep)
 	}
-	if !strings.Contains(rep.Msg, "未下发任何活动") {
-		t.Errorf("msg = %q, want 说明上游未下发任何活动", rep.Msg)
+	if !strings.Contains(rep.Msg, "未下发任何活动") || !strings.Contains(rep.Msg, "showCampaign=false") {
+		t.Errorf("msg = %q, want 说明上游未下发任何活动且 showCampaign=false", rep.Msg)
 	}
 }
 

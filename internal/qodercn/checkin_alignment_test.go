@@ -45,7 +45,7 @@ func TestCNFlatStatusDiagnostics(t *testing.T) {
 	if rep.Status != provider.CheckinNoCampaign || !rep.Status.Retryable() {
 		t.Fatalf("report = %+v, want no_campaign (retryable)", rep)
 	}
-	for _, want := range []string{"claimable=false", "VIEW_DETAILS=CLAIMED"} {
+	for _, want := range []string{"showCampaign=true", "claimable=false", "VIEW_DETAILS=CLAIMED"} {
 		if !strings.Contains(rep.Msg, want) {
 			t.Errorf("诊断文案缺 %q：%s", want, rep.Msg)
 		}

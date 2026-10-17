@@ -138,6 +138,10 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 		case "CLAIMED":
 			already = true
 			if cp.Benefit != nil {
+				// 仅供面板显示「今日已领取 +N」：provider.CheckinReport.Amount 的字段口径是
+				// 「仅 Status==CheckinClaimed 时有意义」，而调度器不读 already 分支的 Amount
+				// （已核对 scheduler 生产代码）。多条 CLAIMED 活动时取最后一条、不做求和，
+				// 避免把不同活动重复计入展示金额。
 				alreadyAmount = cp.Benefit.Amount
 			}
 		}
@@ -187,11 +191,12 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 
 // noCampaignMsg 组装 no_campaign 的诊断文案（进面板 last_checkin_msg）。
 // 目的是让用户一眼分清「上游本次没下发可领取活动」与「本工具解析/请求出错」。
+// showCampaign=false 表示上游连活动体系都没开——这是与「活动尚未创建」不同的信号，故一并带上。
 func noCampaignMsg(list campaignsList) string {
 	if len(list.Campaigns) == 0 {
-		return fmt.Sprintf("上游未下发任何活动（claimable=%t）", list.Claimable)
+		return fmt.Sprintf("上游未下发任何活动（showCampaign=%t, claimable=%t）", list.ShowCampaign, list.Claimable)
 	}
-	return fmt.Sprintf("上游未下发可领取活动（claimable=%t；%s）", list.Claimable, campaignsSummary(list.Campaigns))
+	return fmt.Sprintf("上游未下发可领取活动（showCampaign=%t, claimable=%t；%s）", list.ShowCampaign, list.Claimable, campaignsSummary(list.Campaigns))
 }
 
 // campaignsSummary 把活动列表压成一行「动作=状态」摘要，形如
