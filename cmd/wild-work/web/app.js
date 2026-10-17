@@ -91,6 +91,26 @@ function shortUid(uid) {
   return uid.length <= 12 ? uid : uid.slice(0, 6) + "…" + uid.slice(-4);
 }
 
+// fmtDateTime24 时间戳 → "MM-DD HH:MM"（强制 24 小时制，两位补零）。
+// 不用 toLocaleString：它随浏览器 locale/ICU 走，某些环境会渲染成
+// 12 小时制（7:07 PM）或「上午/下午」前缀，与全站 24h 制口径不一致。
+function fmtDateTime24(ts) {
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// fmtLeft 解冻时刻（unix 秒）→ 「剩 X 时 X 分」；已过期返回「即将解冻」。
+// 冷却跨零点时 24h 制绝对时刻（如 10-18 07:07 = 次日清晨）极易被误读成
+// 「19 点被 12 小时制截成 7 点」，并列相对时长后不再歧义。
+function fmtLeft(untilTs) {
+  const sec = untilTs - Date.now() / 1000;
+  if (sec <= 0) return "即将解冻";
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `剩 ${m} 分`;
+  return `剩 ${Math.floor(m / 60)} 时 ${String(m % 60).padStart(2, "0")} 分`;
+}
+
 // ---------- 全局状态 ----------
 let state = null;
 
@@ -666,11 +686,14 @@ function renderAccounts() {
     const disableTitle = a.disabled ? "启用" : "停用";
 
     // 冷却标签（后端 pool.Status 已透出 cooling/until/reason，此前前端未渲染）。
-    // 为什么需要：账号被冷却时挑号会跳过它，表现为「积分明明很多却报 503/上游限流」，
+    // 为什么需要：账号被冷却时挑号会跳过它，表现为「积分明明很多却报 503/上游限流」,
     // 而卡片上毫无提示——用户只能靠猜。这里把「冷却到几点 + 原因」直接摆出来。
-    // until 由后端 fmtTime 预格式化为 "01-02 15:04"，为空则退化为「冷却中」。
+    // until 由后端 fmtTime 预格式化为 "01-02 15:04"（24h 制），为空则退化为「冷却中」。
+    // 24h 制歧义修复（如 10-18 07:07 是次日清晨，却极易被读成「19 点显示成 7 点」）：
+    // 后端同时透出 until_ts，这里实时算出「剩 X 时 X 分」并列展示，绝对时刻 +
+    // 相对时长双保险，跨零点不再误读；无 until_ts（旧后端）时退回纯文案，不破兼容。
     const coolingTag = a.cooling
-      ? `<span class="tag warn" title="${esc(a.reason || "冷却中")}">冷却至 ${esc(a.until || "-")}</span>`
+      ? `<span class="tag warn" title="${esc(a.reason || "冷却中")}">冷却至 ${esc(a.until || "-")}${a.until_ts ? `<span data-until-ts="${a.until_ts}">（${fmtLeft(a.until_ts)}）</span>` : ""}</span>`
       : "";
     const coolingClass = a.cooling ? " cooling" : "";
     const checkinBtn = noCheckin
@@ -2564,7 +2587,7 @@ function renderRecentPage(names) {
   const slice = recentAll.slice(start, end).reverse();
   $("recentList").innerHTML = slice.length
     ? slice.map((r) => `<div class="rline ${r.kind}">
-        <span class="rtime">${new Date(r.ts * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+        <span class="rtime">${fmtDateTime24(r.ts)}</span>
         <span class="rkind">${kinds[r.kind] || r.kind}</span>
         <span class="ramount">${fmtCredits(r.amount)}</span>
         <span class="racct"><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span> ${esc((names || {})[r.uid] || shortUid(r.uid))}</span>
@@ -3080,6 +3103,14 @@ setInterval(() => {
     el.textContent = "已 " + fmtFbDur((Date.now() - Number(el.dataset.fbEpoch) * 1000) / 1000);
   });
 }, 1000);
+
+// 冷却卡片的「剩 X 时 X 分」每 30 秒重算：卡片只在 loadState 事件时重渲染，
+// 不定时刷新会让倒计时停在渲染时刻的值，静止几小时后反而误导。
+setInterval(() => {
+  document.querySelectorAll("[data-until-ts]").forEach((el) => {
+    el.textContent = `（${fmtLeft(Number(el.dataset.untilTs))}）`;
+  });
+}, 30000);
 
 // 异常账号（三级：disabled 已停用 / cool 整号冷却 / err 错误累计；无异常整块隐藏）
 const ABNORMAL_META = {

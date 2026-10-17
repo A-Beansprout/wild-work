@@ -2390,6 +2390,10 @@ type AccountView struct {
 	CreditsNA bool   `json:"credits_na,omitempty"`
 	Cooling   bool   `json:"cooling"`
 	Until     string `json:"until"`
+	// UntilTS 解冻时刻的 unix 秒（0 = 无）。面板用它实时算「剩 X 时 X 分」——
+	// until 文案是 "01-02 15:04"（24h 制），跨零点的次日 07:07 极易被误读成
+	// 「19 点被显示成 7 点」；带相对时长后（issue：24h 制统一）歧义即消除。
+	UntilTS int64 `json:"until_ts,omitempty"`
 	Reason    string `json:"reason"`
 	Disabled  bool   `json:"disabled"`
 	// ModelCooling 模型级冷却（model → 解冻时刻）；仅该账号该模型限流，账号整体仍可用
@@ -2539,6 +2543,7 @@ func (a *App) accountViews() []AccountView {
 			CreditsNA:      a.creditsNAKind(group),
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
+			UntilTS:        unixOrZero(s.Until),
 			Reason:         s.Reason,
 			Disabled:       s.Disabled,
 			ModelCooling:   fmtTimeMap(s.ModelCooling),
@@ -3552,6 +3557,17 @@ func fmtTime(t time.Time) string {
 		return ""
 	}
 	return t.Format("01-02 15:04")
+}
+
+// unixOrZero 解冻时刻的 unix 秒（零值返回 0）。统一 24 小时制补充通道：
+// "01-02 15:04" 文案虽是 24h 制，但跨零点的次日清晨时刻（如 07:07）仍易被
+// 误读为「12 小时制丢了上午/下午」；面板拿到 until_ts 后可实时算出
+// 「剩 11 时 53 分」，绝对时刻 + 相对时长并列展示，歧义自然消除。
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 // fmtTimeMap 模型级冷却 map 的时间格式化（仅保留未过期条目；空 map 返回 nil 以便 omitempty）。
