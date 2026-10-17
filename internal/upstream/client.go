@@ -64,6 +64,11 @@ func Classify(status int, body string) ErrKind {
 	if status == http.StatusPaymentRequired {
 		return ErrHardCredit
 	}
+	// 401：登录态失效（令牌过期/被吊销）。放在文案标记之前：HTML 形态的 401
+	// Authorization Required（无业务信封）没有可匹配文案，也要归入 SessionDead（#134）。
+	if status == http.StatusUnauthorized {
+		return ErrSessionDead
+	}
 	lower := strings.ToLower(body)
 	for _, m := range sessionDeadMarkers {
 		if strings.Contains(body, m) {
@@ -345,12 +350,12 @@ type catalogModel struct {
 
 // catalogReasoning 目录 reasoning 对象（仅取可透传的权威字段）。
 type catalogReasoning struct {
-	SupportedEfforts   []string `json:"supportedEfforts"`
-	DefaultEffort      string   `json:"defaultEffort"`
+	SupportedEfforts []string `json:"supportedEfforts"`
+	DefaultEffort    string   `json:"defaultEffort"`
 	// Effort 老式默认档字段（上游 deepseek 系实测：reasoning:{effort:"high"}）；
 	// DefaultEffort 为空时回退取它。
-	Effort             string   `json:"effort"`
-	CanDisableThinking bool     `json:"canDisableThinking"`
+	Effort             string `json:"effort"`
+	CanDisableThinking bool   `json:"canDisableThinking"`
 }
 
 // FetchModels 调上游动态模型接口。

@@ -27,7 +27,8 @@ func TestClassify(t *testing.T) {
 		{429, ``, ErrSoftRate},
 		{401, `Offline user session not found`, ErrSessionDead},
 		{401, `{"code":12153,"msg":"Offline user session not found"}`, ErrSessionDead},
-		{401, `{"code":9999,"msg":"bad token"}`, ErrClient},
+		// 401 统一归登录态失效（#134）：上游拒绝我们的凭据 = 需重新登录
+		{401, `{"code":9999,"msg":"bad token"}`, ErrSessionDead},
 		{500, `boom`, ErrServer},
 		{503, `unavailable`, ErrServer},
 		{200, ``, ErrNone},

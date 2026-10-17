@@ -569,8 +569,10 @@ for (const [label, re] of uniq) {
   const need = [
     ["两处 cfg-heading 各带一个 data-model-search 查找按钮",
       (html.match(/data-model-search/g) || []).length === 2],
-    ["按钮文案含「🔍 查询模型」（与首页纯图标入口区分）",
-      (html.match(/🔍 查询模型/g) || []).length === 2],
+    // 文案带「🔍 查询模型」：设置内两处 + 模型列表标题行一处（#139 把首页纯图标入口也改成了带字文案）。
+    // 只断言数量是为了防“改回纯图标”回退：纯图标入口在触屏/小字号下不可发现。
+    ["按钮文案含「🔍 查询模型」（设置内两处 + 模型列表标题行一处）",
+      (html.match(/🔍 查询模型/g) || []).length === 3],
     ["模型降级链标题右侧有查找入口", /模型降级链[\s\S]{0,80}data-model-search/.test(html)],
     ["思考强度标题右侧有查找入口", /思考强度[\s\S]{0,80}data-model-search/.test(html)],
     ["app.js 统一接线 data-model-search → openModelSearch",

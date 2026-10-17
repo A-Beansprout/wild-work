@@ -2423,6 +2423,9 @@ type AccountView struct {
 	LastCheckinOK  bool              `json:"last_checkin_ok"`
 	LastCheckinAt  string            `json:"last_checkin_at"`
 	LastCheckinMsg string            `json:"last_checkin_msg"`
+	// SessionDead 登录态失效（401/登录已失效）：面板显示「需重新登录」+ 重新登录入口（#134）。
+	SessionDead       bool   `json:"session_dead,omitempty"`
+	SessionDeadReason string `json:"session_dead_reason,omitempty"`
 }
 
 // State Web UI 初始数据。
@@ -2564,17 +2567,19 @@ func (a *App) accountViews() []AccountView {
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
 			// 匿名与自定义渠道无积分：前端据此显示「不适用」
-			CreditsNA:      a.creditsNAKind(group),
-			Cooling:        s.Cooling,
-			Until:          fmtTime(s.Until),
-			UntilTS:        unixOrZero(s.Until),
-			Reason:         s.Reason,
-			Disabled:       s.Disabled,
-			ModelCooling:   fmtTimeMap(s.ModelCooling),
-			ErrCount:       s.ErrCount,
-			LastCheckinOK:  s.LastCheckinOK,
-			LastCheckinAt:  fmtTime(s.LastCheckinAt),
-			LastCheckinMsg: s.LastCheckinMsg,
+			CreditsNA:         a.creditsNAKind(group),
+			Cooling:           s.Cooling,
+			Until:             fmtTime(s.Until),
+			UntilTS:           unixOrZero(s.Until),
+			Reason:            s.Reason,
+			Disabled:          s.Disabled,
+			ModelCooling:      fmtTimeMap(s.ModelCooling),
+			ErrCount:          s.ErrCount,
+			LastCheckinOK:     s.LastCheckinOK,
+			LastCheckinAt:     fmtTime(s.LastCheckinAt),
+			LastCheckinMsg:    s.LastCheckinMsg,
+			SessionDead:       s.SessionDead,
+			SessionDeadReason: s.SessionDeadReason,
 		})
 	}
 	// 面板固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公

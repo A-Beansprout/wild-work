@@ -629,7 +629,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.stickyClear(rt)
 				var ue *provider.Error
 				if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
-					rt.Pool.Disable(acct.UID, "refresh session dead")
+					rt.Pool.MarkSessionDead(acct.UID, "refresh: "+err.Error())
 				} else {
 					rt.Pool.Cooldown(acct.UID, pool.CoolErr, h.cfg.ErrCooldown, "refresh: "+err.Error())
 				}
@@ -694,7 +694,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					log.Printf("model cooldown platform=%s uid=%s model=%s", rt.Kind, acct.UID, model)
 				}
 			case provider.ErrSessionDead:
-				rt.Pool.Disable(acct.UID, "session dead")
+				// 登录态失效不再混入「停用」：标记 SessionDead（挑号跳过 + 面板徽标 +
+				// 重新登录入口），与用户手动停用（Disable）分离（#134）。
+				rt.Pool.MarkSessionDead(acct.UID, truncateBody(respBody))
+				log.Printf("session dead marked platform=%s uid=%s", rt.Kind, acct.UID)
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
 			case provider.ErrContentBlocked, provider.ErrPromptTooLong, provider.ErrPassthrough:
@@ -820,8 +823,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
 							rt.Kind, acct.UID, kind, h.cfg.HardCooldown)
 					case provider.ErrSessionDead:
-						rt.Pool.Disable(acct.UID, "stream business error: session dead")
-						log.Printf("stream error disabled platform=%s uid=%s", rt.Kind, acct.UID)
+						// 登录态失效：标记 SessionDead（挑号跳过 + 面板徽标），不再混入停用（#134）
+						rt.Pool.MarkSessionDead(acct.UID, serr.Error())
 					default:
 						// 其余流内错误（如请求级拒绝）不罚账号，只记日志。
 						log.Printf("stream error ignored platform=%s uid=%s kind=%s",

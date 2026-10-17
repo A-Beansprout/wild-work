@@ -170,6 +170,8 @@ function collectAllModels() {
 }
 
 function openModelSearch() {
+  // 弹层互斥：打开查找模型时收起设置（#134）
+  $("settingsOverlay").classList.add("hidden");
   $("modelSearchOverlay").classList.remove("hidden");
   const inp = $("modelSearchInput");
   inp.value = "";
@@ -540,6 +542,8 @@ const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 内建名单只有 oczen/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
 // 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
 const NO_CREDITS_BUILTIN = new Set(["oczen", "cline"]);
+// 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
+const RELOGIN_CHANNELS = new Set(["workbuddy", "workbuddyai", "traework", "qoder", "qodercn", "qodercom", "qwenwork", "raccoon"]);
 
 // creditsText 账号卡片的积分文案。
 // 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
@@ -727,9 +731,17 @@ function renderAccounts() {
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
     const oczenHelp = `<span class="icon-op help" title="关于 OpenCodeZen 通道：&#10;1. 本工具仅反代其免费模型（绕过官方客户端限制）；付费账号可直接使用官方端点，无需经此通道&#10;2. 在 OpenCodeZen 获取的 API-Key 可在设置中配置，避免匿名账号共享限额超限&#10;3. 地域受限的免费模型（如 muse-spark 系）会经「备用上游通道」自动重发（设置里配置代理地址；未配置则原文透传 403）">?</span>`;
+    // 登录态失效（401/登录已失效）：徽标 + 一键重新登录（#134）。
+    const sessionDeadTag = a.session_dead
+      ? `<span class="tag bad" title="${esc(a.session_dead_reason || "登录态已失效，请重新登录")}">需重新登录</span>`
+      : "";
+    const reloginBtn = a.session_dead && RELOGIN_CHANNELS.has(a.group)
+      ? `<span class="icon-op" title="重新登录（跳转登录页换新凭据，成功后自动补签）" onclick="startLogin('${a.group}')">⟳</span>`
+      : "";
     const ops = fixedAcct
       ? `${oczenHelp}<span class="icon-op off" title="固定账号，不可停用/删除" onclick="return false">🔒</span>`
       : `${checkinBtn}
+          ${reloginBtn}
           ${noCredits ? "" : `<span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>`}
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
           <span class="icon-op danger" title="${isCustomGroup(a.group) ? esc("删除账号（自定义渠道将移除整个渠道配置）") : "删除账号"}" onclick="removeAcct('${a.uid}')">✕</span>`;
@@ -755,7 +767,7 @@ function renderAccounts() {
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
         <div class="acct-credits${noCredits ? "" : " clickable"}" data-uid="${a.uid}"${noCredits ? "" : ` onclick="showCreditDetail(event,'${a.uid}')" title="点击查看积分明细（含分页）" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showCreditDetail(event,'${a.uid}')}"`}>${creditsText(a)}</div>
-        <div class="acct-checkin">${coolingTag}${checkinTag}</div>
+        <div class="acct-checkin">${coolingTag}${sessionDeadTag}${checkinTag}</div>
       </div>
     </div>`;
   }).join("");
@@ -1020,13 +1032,18 @@ function fmtTokens(n) {
 }
 
 // ---------- 账号操作 ----------
+// 签到失败信息友好化：登录态失效形态（401 等）追加可操作指引（#134）。
+function friendlyCheckinMsg(m) {
+  return /401|unauthorized|登录已失效|登录已过期/i.test(m || "")
+    ? m + "（该账号登录已过期，点账号卡片右上角 ⟳ 重新登录）" : m;
+}
 async function checkin(uid) {
   try {
     const r = await api("/api/account/checkin", { uid });
     // 未达成且可重试（活动尚未创建/上游瞬时故障）：说明会在签到窗口内自动重试，
     // 避免用户看到「无可用签到活动」误以为失败。
     if (!r.ok && r.retryable) toast(`暂未领到：${r.msg}（10:00–12:00 窗口内会自动重试）`);
-    else toast(r.ok ? `签到成功：${r.msg}（剩余 ${r.remain}）` : `签到：${r.msg}`);
+    else toast(r.ok ? `签到成功：${r.msg}（剩余 ${r.remain}）` : `签到：${friendlyCheckinMsg(r.msg)}`);
     delete detailCache[uid]; // 签到改变余额，旧明细缓存会与新顶层打架
     loadState();
   } catch (e) { toast(e.message); }
@@ -1074,7 +1091,7 @@ async function checkinAll() {
     const total = (r.results || []).length + skip;
     const parts = [skip ? `成功 ${ok} / ${total}（${skip} 个无签到活动跳过）` : `成功 ${ok} / 共 ${total}`];
     if (pending) parts.push(`${pending} 个未领到将在窗口内自动重试`);
-    toast(`批量签到完成：${parts.join("；")}`);
+    toast(`批量签到完成：${parts.map(friendlyCheckinMsg).join("；")}`);
     loadState();
   } catch (e) { toast(e.message); } finally {
     $("btnCheckinAll").disabled = false;
@@ -1748,6 +1765,8 @@ function syncListenRisk() {
 }
 
 function openSettings() {
+  // 弹层互斥：打开设置时收起「查找模型」（#134）
+  $("modelSearchOverlay").classList.add("hidden");
   // 监听
   $("inPort").value = state.listen_port;
   $("selHost").value = state.listen_host === "127.0.0.1" ? "127.0.0.1"
