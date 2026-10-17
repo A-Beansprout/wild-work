@@ -137,8 +137,15 @@ func AccountFromCredential(uid, nickname string, c Credential, codeVerifier, dpo
 	return ac
 }
 
-// deriveUID 派生账号 UID：user_id → domain_id → AK（协议 §2.7：AK 是 CodeArts 的
-// 身份反查字段，故它永远是可用的最后兜底）。
+// deriveUID 派生账号 UID：user_id → domain_id → AK。
+//
+// ⚠️ 2026-10-17 更正：先前此处写着「协议 §2.7：AK 是 CodeArts 的身份反查字段，故它永远是
+// 可用的最后兜底」——**这个假设是错的**。协议 §2.7 已确认 STS 响应只给 `credentials.*`
+// （不含任何身份字段），于是本函数实际**总是**落到 AK；而 AK 是每次交换新签发的**临时**凭据
+// ⇒ 每次登录 UID 都不同 ⇒ 同一账号不断新增重复条目（用户实测报告）。
+//
+// 现实处置见 login_codearts.SaveAuth 的「方案 B」：无稳定身份字段时复用已有账号的 UID。
+// 本函数保持既有回退顺序（它是纯函数，不应依赖 IO），但**调用方必须知道退化后果**。
 func deriveUID(candidates ...string) string {
 	for _, c := range candidates {
 		if s := strings.TrimSpace(c); s != "" {

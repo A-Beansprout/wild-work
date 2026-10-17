@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"wild-work/internal/auth"
 	"wild-work/internal/codearts"
 	"wild-work/internal/provider"
 )
@@ -229,6 +230,24 @@ func SaveAuth(authDir string, r Result) (string, error) {
 	if strings.TrimSpace(r.UID) == "" {
 		return "", errors.New("missing uid in result")
 	}
+	// ── 方案 B（2026-10-17，用户实测报告后落地）：避免「每次登录多出一个账号」─────────
+	//
+	// 上游 STS 响应**不含任何身份字段**（协议 §2.7 已确认：只有 `credentials.*` + `refresh_token`），
+	// 因此 exchange 里的 `UID = user_id → domain_id → access_key_id` 实际**必然**落到 AK；
+	// 而 AK 是每次交换**新签发**的临时凭据 ⇒ 每次点「新增账号」都会得到一个新 UID ⇒
+	// 面板上同一个华为账号不断累积重复条目（且各自持有 refresh_token、都能续期，所以还不报错）。
+	//
+	// 处置：**没有稳定身份字段时**，若该渠道已有账号，复用其 UID
+	// （语义 = 同一账号重新登录，覆盖同一文件；不会误伤多账号场景——当前实现下多账号本来就
+	// 无法聚合，因为每次都是新 AK）。
+	//
+	// TODO(A·待抓包验证)：若 `statistics/plugin` 之类的响应里带回 `domain_id` / `user_id`，
+	// 应改为以它为准（那样多账号才能真正区分），届时本分支自然失效（因为身份字段非空）。
+	if strings.TrimSpace(r.UserID) == "" && strings.TrimSpace(r.DomainID) == "" {
+		if uid := firstExistingUID(authDir); uid != "" {
+			r.UID = uid
+		}
+	}
 	if strings.TrimSpace(r.AccessKeyID) == "" || strings.TrimSpace(r.SecretAccessKey) == "" {
 		// 防御：exchange 已硬校验，这里再挡一次——半成品凭据落盘后不可用且污染账号池。
 		return "", errors.New("missing access_key_id/secret_access_key in result")
@@ -247,6 +266,25 @@ func SaveAuth(authDir string, r Result) (string, error) {
 	ac.ProjectID = r.ProjectID
 	ac.Region = r.Region
 	return codearts.WriteAuthFile(authDir, ac)
+}
+
+// firstExistingUID 返回该渠道**已落盘账号的第一个 UID**（按文件名序，确定性）。
+//
+// 无账号 / 读取失败 / UID 全空时返回空串——调用方退回新 UID（与旧行为一致，不会因此失败）。
+// 用途见 SaveAuth 的「方案 B」注释：上游没有稳定身份字段时用它避免重复条目。
+func firstExistingUID(authDir string) string {
+	auths, err := auth.LoadCodeArtsDir(authDir)
+	if err != nil {
+		return ""
+	}
+	for _, a := range auths {
+		if a != nil {
+			if uid := strings.TrimSpace(a.UID); uid != "" {
+				return uid
+			}
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
