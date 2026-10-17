@@ -1026,6 +1026,17 @@ for (const [label, re] of uniq) {
     // 独立复核（2026-10-18）抓到：ok=true 但 msg 是「领取失败 http 400」时旧实现仍说「暂未领到」，
     // 等于换了说法的假成功。断言失败判据存在且排在「含 +N」之前。
     ["checkinToast 有失败档（ok=true 的真失败不得说成「暂未领到」）", /签到失败：/.test(raw) && /CHECKIN_FAIL_RE = \/.+\/i;/.test(raw)],
+    // 2026-10-18 用户实测定性：活动资格由上游按账号授予，不是每个号都有。
+    // 无资格的 msg 既不含「失败」也不含错误码，若不单独成档会落到兜底被说成「暂未领到」，
+    // 再叠加「窗口内会自动重试」⇒ 用户白等一个永远不来的结果（「以为工具没实现」的最后来源）。
+    ["无领取资格档存在（该状态不得说成「暂未领到」）",
+      /CHECKIN_NO_ELIGIBILITY_RE = \/.+\;/.test(raw) && /无领取资格：/.test(raw)],
+    ["无资格判据先于失败判据（否则会先被兜底/失败分支吃掉）",
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(msg)') > 0 &&
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(msg)') < raw.indexOf('CHECKIN_FAIL_RE.test(msg)')],
+    ["checkin() 对无资格不再说「会自动重试」（先判无资格，再判 retryable）",
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(r.msg') > 0 &&
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(r.msg') < raw.indexOf('!r.ok && r.retryable')],
     ["失败判据先于 \\+N 判据（否则「领取失败 http 400」会被数字命中）",
       raw.indexOf('CHECKIN_FAIL_RE.test(msg)') > 0 && raw.indexOf('CHECKIN_FAIL_RE.test(msg)') < raw.indexOf('/\\+-?\\d+/.test(msg)')],
     ["qodercom 不在无签到集合（campaigns 活动路径已实装）", !/NO_EXPLICIT_CHECKIN[^)]*"qodercom"/.test(raw)],

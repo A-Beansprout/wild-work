@@ -219,27 +219,48 @@ func tryCampaigns(dt string) (provider.CheckinReport, error) {
 // noCampaignMsg 组装 no_campaign 的诊断文案（进面板 last_checkin_msg）。
 // 目的是让用户一眼分清「上游本次没下发可领取活动」与「本工具解析/请求出错」。
 // showCampaign=false 表示上游连活动体系都没开——这是与「活动尚未创建」不同的信号，故一并带上。
-// ended/notStarted 两个计数单独报出：窗口外的活动不参与可领/已领判定，若混进「N 条活动」
+// 文案分两类（判据：本次回包里有没有 CLAIM_BENEFIT 这类领积分活动）：
+//   - 完全没有 ⇒ **该账号无资格**（实测：同账号在官方客户端里同样看不到），重试无意义，必须直说；
+//   - 有但窗口不合 ⇒ 有资格，等刷新/到点，窗口内继续重试。
+//
+// ended/notStarted 计数供第二类使用：窗口外的活动不参与可领/已领判定，若混进「N 条活动」
 // 摘要，用户会把残留的 CLAIMED 读成「今天已经领过了」。
 // 末尾带上本机探测时刻：窗口判断用的是本机时钟，与上游时间对不上时（本机快/慢钟）
 // 只有把「我们的 now」摆出来才查得出来。
 func noCampaignMsg(list campaignsList, now int64, ended, notStarted int) string {
-	head := fmt.Sprintf("上游未下发可领取活动（showCampaign=%t, claimable=%t", list.ShowCampaign, list.Claimable)
-	switch {
-	case ended > 0 && notStarted > 0:
-		head += fmt.Sprintf("；CLAIM_BENEFIT 活动均不在有效期内：已结束 %d 条、未开始 %d 条", ended, notStarted)
-	case ended > 0:
-		head += fmt.Sprintf("；CLAIM_BENEFIT 活动已结束 %d 条（等上游刷新今日活动）", ended)
-	case notStarted > 0:
-		head += fmt.Sprintf("；CLAIM_BENEFIT 活动未开始 %d 条（到点后可领）", notStarted)
-	}
 	// 本机探测时刻（UTC+8 墙钟）：窗口判据两侧都是 epoch 秒，跨时区不受影响；
 	// 但本机时钟偏快会把「刚开放」判成未开始，偏慢会把「刚结束」当成可领，故把它摆出来。
 	tail := fmt.Sprintf("；本机时间 %s", time.Unix(now, 0).In(beijingLoc).Format("01-02 15:04"))
+	detail := ""
 	if len(list.Campaigns) == 0 {
-		return head + "）上游未下发任何活动" + tail
+		detail += "上游未下发任何活动"
+	} else {
+		detail += campaignsSummary(list.Campaigns, now)
 	}
-	return head + "；" + campaignsSummary(list.Campaigns, now) + tail + "）"
+	detail += tail
+
+	// ① 上游**本次根本没下发**领积分活动 ⇒ 该账号没有这个活动的资格，重试无意义。
+	// 判据来自实测（2026-10-18，本机 3 个 qodercom 账号 + 桌面端日志逐账号统计）：
+	// 同一个问题在桌面端与工具端结果**完全一致**（ku po 两边都有 CLAIM_BENEFIT，
+	// li li / fa af 两边都没有）⇒ 差异是**账号资格**，不是客户端类型、不是请求头、
+	// 也不是本工具的解析。所以这里必须直说「无资格」，而不是含糊的「上游未下发」——
+	// 后者会被用户读成「工具没实现」（这正是 10-17 起反复误判的根源）。
+	if ended == 0 && notStarted == 0 {
+		return fmt.Sprintf("该账号无积分领取活动资格：上游本次没有下发任何领积分活动（showCampaign=%t, claimable=%t；%s）。"+
+			"同一账号在官方客户端里也看不到该入口 ⇒ 不是本工具的问题，重试无意义", list.ShowCampaign, list.Claimable, detail)
+	}
+
+	// ② 有资格但不在窗口内：等上游刷新即可，窗口内会继续重试。
+	head := fmt.Sprintf("有资格但当前不可领（showCampaign=%t, claimable=%t", list.ShowCampaign, list.Claimable)
+	switch {
+	case ended > 0 && notStarted > 0:
+		head += fmt.Sprintf("；领积分活动均不在有效期内：已结束 %d 条、未开始 %d 条", ended, notStarted)
+	case ended > 0:
+		head += fmt.Sprintf("；领积分活动已结束 %d 条（等上游刷新今日活动）", ended)
+	case notStarted > 0:
+		head += fmt.Sprintf("；领积分活动未开始 %d 条（到点后可领）", notStarted)
+	}
+	return head + "；" + detail + "）"
 }
 
 // beijingLoc 固定的 UTC+8 时区（中国无夏令时）。诊断文案里的时刻一律按它换算，

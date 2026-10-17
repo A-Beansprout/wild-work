@@ -29,7 +29,6 @@ package qodercom
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +225,64 @@ func itoa(v int64) string {
 	return string(buf[i:])
 }
 
-// 编译期确认：本文件的假上游仍是 httptest.Server（与 checkin_variant_test.go 同款接线）。
-var _ = httptest.NewServer
+// TestNoEligibilityMessage 上游**完全没有**下发领积分活动时：
+// 必须直说「该账号无积分领取活动资格」，并点明「不是本工具的问题」——
+// 这是 2026-10-18 用户实测定性（上游按账号下发活动资格）之后的核心判据。
+// 实测依据：同一个号在官方客户端里也没有该入口；本机 3 个账号里只有 1 个有资格，
+// 工具端与桌面端逐账号结果完全一致（见 checkin.go 头部）。
+func TestNoEligibilityMessage(t *testing.T) {
+	withCheckinServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != EpCampaigns {
+			t.Errorf("无资格时不得发 claim：%s %s", r.Method, r.URL.Path)
+			return
+		}
+		// 真实形态：只有 VIEW_DETAILS（推广活动），没有任何 CLAIM_BENEFIT
+		w.Write([]byte(`{"showCampaign":true,"claimable":false,"campaigns":[
+		  {"campaignId":"c2","campaignKey":"act-20260901-493","actionType":"VIEW_DETAILS",
+		   "startAt":1788247200,"endAt":1793462340,"claimStatus":"CLAIMED"}]}`))
+	})
+
+	rep, err := checkin(newAuth())
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	if rep.Status != provider.CheckinNoCampaign || !rep.Status.Retryable() {
+		t.Fatalf("report = %+v, want no_campaign (retryable)", rep)
+	}
+	for _, want := range []string{"无积分领取活动资格", "不是本工具的问题"} {
+		if !strings.Contains(rep.Msg, want) {
+			t.Errorf("无资格文案缺 %q：%s", want, rep.Msg)
+		}
+	}
+	// 不得再说成「上游未下发可领取活动」那种含糊表述（历史误判的措辞）
+	if strings.Contains(rep.Msg, "上游未下发可领取活动") {
+		t.Errorf("无资格文案不得用含糊措辞「上游未下发可领取活动」：%s", rep.Msg)
+	}
+}
+
+// TestEligibleButOutOfWindowMessage 有资格但窗口不合时，文案要说「有资格」，
+// 且**不得**说成「无资格」——两者必须可区分，否则用户会误以为自己的号被判定成不合格。
+func TestEligibleButOutOfWindowMessage(t *testing.T) {
+	ended, _, _ := windowsAroundNow()
+	withCheckinServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != EpCampaigns {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			return
+		}
+		w.Write([]byte(`{"showCampaign":true,"claimable":false,"campaigns":[
+		  {"campaignId":"old","campaignKey":"act-20261013-119","actionType":"CLAIM_BENEFIT",` +
+			`"startAt":` + itoa(ended-3600) + `,"endAt":` + itoa(ended) + `,"claimStatus":"CLAIMED",` +
+			`"benefit":{"kind":"CREDITS","amount":100}}]}`))
+	})
+
+	rep, err := checkin(newAuth())
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	if !strings.Contains(rep.Msg, "有资格") {
+		t.Errorf("窗口不合时文案应说「有资格」：%s", rep.Msg)
+	}
+	if strings.Contains(rep.Msg, "无积分领取活动资格") {
+		t.Errorf("有活动的账号不得说成「无资格」：%s", rep.Msg)
+	}
+}

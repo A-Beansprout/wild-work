@@ -1381,11 +1381,19 @@ function friendlyCheckinMsg(m) {
 // （如「领取失败 http 400: …」「claim parse: …」），那是**真失败**，说成「暂未领到」
 // 等于换了说法的假成功。判据放在兜底分支之前，不给「先被 +N 命中」的机会。
 const CHECKIN_FAIL_RE = /失败|http \d{3}|error|无法解析|parse|未知状态|401|403|500/i;
+// 第五档「无领取资格」（2026-10-18 用户实测定性）：该活动由**上游按账号授予资格**，
+// 不是每个号都有；没资格的号在官方客户端里同样看不到入口。后端会直说「该账号无积分
+// 领取活动资格……不是本工具的问题，重试无意义」。
+// 为什么必须单独成档：这条 msg 既不含「失败」也不含错误码，会落到兜底分支被说成
+// 「暂未领到」，再叠加下面那句「窗口内会自动重试」——对一个永远不会有结果的账号，
+// 等于让用户一直等一个不会发生的事。这正是「以为工具没实现」的最后一处来源。
+const CHECKIN_NO_ELIGIBILITY_RE = /无积分领取活动资格|无领取资格/;
 function checkinToast(r) {
   const msg = r.msg || "";
   if (!r.ok) return `签到：${friendlyCheckinMsg(msg)}`;
   if (/^今日已领取/.test(msg)) return `今日已领过：${msg}（剩余 ${r.remain}）`;
   // 注意「领取失败 http 400」里也可能带数字，故失败判据必须先于「含 +N」判据。
+  if (CHECKIN_NO_ELIGIBILITY_RE.test(msg)) return `无领取资格：${msg}`;
   if (CHECKIN_FAIL_RE.test(msg)) return `签到失败：${friendlyCheckinMsg(msg)}`;
   if (/^签到成功/.test(msg) || /\+-?\d+/.test(msg)) return `签到成功：${msg}（剩余 ${r.remain}）`;
   return `暂未领到：${msg}（剩余 ${r.remain}）`;
@@ -1393,10 +1401,18 @@ function checkinToast(r) {
 async function checkin(uid) {
   try {
     const r = await api("/api/account/checkin", { uid });
-    // 未达成且可重试（活动尚未创建/上游瞬时故障）：说明会在签到窗口内自动重试，
-    // 避免用户看到「无可用签到活动」误以为失败。
-    if (!r.ok && r.retryable) toast(`暂未领到：${r.msg}（10:00–12:00 窗口内会自动重试）`);
-    else toast(checkinToast(r));
+    // 无资格优先于「可重试」：该状态 retryable 仍为 true（上游可能在当天补发资格，
+    // 窗口内重试是免费的），但对**当前**这个账号说「会自动重试」会让人白等，
+    // 故这里明说「无需重试」并点出这不是工具故障。
+    if (CHECKIN_NO_ELIGIBILITY_RE.test(r.msg || "")) {
+      toast(`无领取资格：${r.msg}`);
+    } else if (!r.ok && r.retryable) {
+      // 未达成且可重试（活动尚未创建/上游瞬时故障）：说明会在签到窗口内自动重试，
+      // 避免用户看到「无可用签到活动」误以为失败。
+      toast(`暂未领到：${r.msg}（10:00–12:00 窗口内会自动重试）`);
+    } else {
+      toast(checkinToast(r));
+    }
     delete detailCache[uid]; // 签到改变余额，旧明细缓存会与新顶层打架
     loadState();
   } catch (e) { toast(e.message); }

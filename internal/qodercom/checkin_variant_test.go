@@ -96,8 +96,12 @@ func TestRealPayloadWithoutClaimBenefitIsNoCampaign(t *testing.T) {
 	}
 }
 
-// TestEmptyCampaignListDiagnostics 列表为空（10:00 整点活动尚未创建）→ no_campaign，
-// 且文案要说明「上游没下发任何活动」，便于与解析故障区分。
+// TestEmptyCampaignListDiagnostics 列表为空 → no_campaign，文案要如实说明这是**账号资格**问题。
+//
+// 2026-10-18 定性更新：空列表不必然是「10:00 整点还没创建」。用户实测确认
+// **上游按账号下发活动资格**——没有资格的号，连活动体系开关都可能是关的（showCampaign=false），
+// 而在官方客户端里同样看不到入口。因此文案必须说「该账号无积分领取活动资格」+「不是本工具的问题」，
+// 否则用户会把资格问题读成工具故障（10-17 起反复误判的根源）。
 func TestEmptyCampaignListDiagnostics(t *testing.T) {
 	withCheckinServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != EpCampaigns || r.Method != http.MethodGet {
@@ -114,8 +118,10 @@ func TestEmptyCampaignListDiagnostics(t *testing.T) {
 	if rep.Status != provider.CheckinNoCampaign || !rep.Status.Retryable() {
 		t.Fatalf("report = %+v, want no_campaign (retryable)", rep)
 	}
-	if !strings.Contains(rep.Msg, "未下发任何活动") || !strings.Contains(rep.Msg, "showCampaign=false") {
-		t.Errorf("msg = %q, want 说明上游未下发任何活动且 showCampaign=false", rep.Msg)
+	for _, want := range []string{"无积分领取活动资格", "不是本工具的问题", "showCampaign=false", "上游未下发任何活动"} {
+		if !strings.Contains(rep.Msg, want) {
+			t.Errorf("msg 缺 %q：%s", want, rep.Msg)
+		}
 	}
 }
 
