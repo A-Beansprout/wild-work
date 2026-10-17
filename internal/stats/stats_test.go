@@ -323,6 +323,41 @@ func TestRotationView(t *testing.T) {
 	}
 }
 
+// 自定义渠道伪账号（R66：UID "custom-<名>"、仅单账号）不出现在轮换视图——
+// 无轮换语义（Current 恒为自己、Next 恒空），纯噪音；platformRows 等聚合视图不受影响。
+func TestRotationSkipsCustomChannel(t *testing.T) {
+	s := newTestStats(t)
+	now := time.Now()
+	s.ApplyPoll([]Account{
+		{UID: "custom-sgproxy", Group: "sgproxy", Nickname: "sgproxy (自定义)", Credits: 500},
+		{UID: "custom-cliproxy", Group: "cliproxy", Nickname: "cliproxy (自定义)", Credits: 300},
+		{UID: "a1", Group: "workbuddy", Nickname: "A1", Credits: 100},
+	}, now)
+	s.ApplySticky("sgproxy", "custom-sgproxy", 1, 50)
+	s.ApplySticky("workbuddy", "a1", 5, 50)
+
+	snap := s.Snapshot(now)
+	for _, v := range snap.Rotation {
+		if v.Group == "sgproxy" || v.Group == "cliproxy" {
+			t.Fatalf("自定义渠道不应出现在轮换视图: %+v", v)
+		}
+	}
+	// 多账号渠道不受影响
+	if len(snap.Rotation) != 1 || snap.Rotation[0].Group != "workbuddy" {
+		t.Fatalf("workbuddy 应正常显示: %+v", snap.Rotation)
+	}
+	// platformRows 不受影响：自定义渠道账号照常入平台表
+	found := false
+	for _, r := range snap.Platforms {
+		if r.Group == "sgproxy" && r.Accounts == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("自定义渠道应仍在平台表: %+v", snap.Platforms)
+	}
+}
+
 // 粘性账号被删/冷却后 Current 自动为 null（平台视图随之隐藏）。
 func TestRotationCurrentEvaporates(t *testing.T) {
 	s := newTestStats(t)

@@ -703,16 +703,26 @@ func (s *Stats) platformRowsLocked(now time.Time) []PlatformRow {
 	return out
 }
 
+// customUIDPrefix 自定义渠道伪账号 UID 前缀（R66，buildCustomRuntimes 构造：
+// UID = "custom-"+渠道名，Nickname = 渠道名+" (自定义)"）。渠道仅此单账号，
+// Current 永远是自己、Next 永远为空，进轮换视图纯噪音。
+const customUIDPrefix = "custom-"
+
+// isCustomAcct 该账号是否为自定义渠道伪账号（仅作轮换视图过滤用；
+// platformRows 等聚合视图不过滤，自定义渠道的余额/花费照常入表）。
+func isCustomAcct(a *acct) bool { return strings.HasPrefix(a.uid, customUIDPrefix) }
+
 // rotationLocked 生成「使用中 / 接棒顺序」视图（调用方须持锁）。
 // 排序复刻上游 pool 选号两级排序：临期额度降序 → 余额降序（再以 uid 升序保证稳定）；
 // 排除冷却/停用；接棒顺序剔除当前粘性账号。粘性账号被删/冷却后 Current 自动为
 // null（上游下一请求会重建粘性记录，下一轮喂入自然纠正）。
 // 只下发有使用记录（Current 非 null）的平台——无粘性记录=今日未用过，
 // 展示「暂无使用记录」行没有信息量。
+// 自定义渠道（单伪账号）整组跳过：无轮换语义，展示恒为「当前=自己」纯噪音（R75）。
 func (s *Stats) rotationLocked() []RotationView {
 	groups := map[string]bool{}
 	for _, a := range s.accts {
-		if a.group != "" {
+		if a.group != "" && !isCustomAcct(a) {
 			groups[normalizePlatform(a.group)] = true
 		}
 	}
