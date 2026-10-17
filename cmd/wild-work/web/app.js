@@ -2629,9 +2629,10 @@ function renderUsageChart(st) {
     tooltip: {
       trigger: "axis",
       // 全 0 的时刻点不弹悬浮（避免清晨无用量时一片 0 刷屏）；
-      // 有数据时也过滤掉 0 值系列，只看当下真正在跑的渠道。
+      // 有数据时也过滤掉 0 值系列，只看当下真正在跑的渠道；
+      // 并按该时刻用量从多到少排序（与图例「主力在前」同一口径，不再按系列声明序）。
       formatter: (params) => {
-        const list = params.filter((p) => p.value > 0);
+        const list = params.filter((p) => p.value > 0).sort((a, b) => b.value - a.value);
         if (!list.length) return "";
         const head = `<div style="font-weight:600;margin-bottom:4px">${esc(params[0].axisValue)}</div>`;
         return head + list.map((p) =>
@@ -2690,7 +2691,8 @@ function renderCreditChart(entries, names) {
     tooltip: {
       trigger: "axis", valueFormatter: (v) => fmtCredits(v),
       formatter: (params) => {
-        const list = params.filter((p) => p.value > 0);
+        // 同 token 图：悬浮按该时刻消耗从多到少排序，最大的一条在最上面。
+        const list = params.filter((p) => p.value > 0).sort((a, b) => b.value - a.value);
         if (!list.length) return "";
         const head = `<div style="font-weight:600;margin-bottom:4px">${esc(params[0].axisValue)}</div>`;
         return head + list.map((p) =>
