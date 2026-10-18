@@ -111,6 +111,7 @@
 | R76 | 登录态失效走可自愈的 `SessionDead` 标记（不 `Disable`）；重登后按 auth 文件 mtime 自动清除标记 |
 | R77 | 上游声明可重试的 429（14003 瞬时拥塞，retry_policy.retry / actions 含 RETRY）必须请求内重试一次（独立预算，20s 退避）；6004 用量配额无信号，维持冷却到重置点 |
 | R78 | **网关 HTML 401 也是「登录态失效」**（APISIX/openresty 拦截页 → `ErrSessionDead`，不是 `ErrClient`）；对话路径先 refresh 再决定是否落失效标记；目录/费率接口必须返回类型化错误 |
+| R79 | **模型降级链 = 模型维度的替换机制**，只在「换号已用尽」后出手；三维归因（账号/模型/请求）对应四类处置（request / account-transparent / account-rotate / model），同维替换、跨维禁止；详见 [`docs/模型降级链定义.md`](docs/模型降级链定义.md) |
 
 > ⚠️ **R71 附带的实测纪律**（也是 §0.1 的来源）：上游校验的是**头族齐全**而非单点
 > （只补 `X-Conversation-ID` 仍被拒）；且 `X-Conversation-ID` 的**取值形态不被校验**
@@ -367,6 +368,7 @@ bash scripts/probe-dump.sh summarize                # 汇总各渠道 usage 字�
 | [docs/决议项.md](docs/决议项.md) | **R1–R78 决议全文**（证据链、反例、已知限制） |
 | [docs/渠道接入备忘.md](docs/渠道接入备忘.md) | 各渠道协议要点、凭据模型、已知限制与踩坑 |
 | [docs/接口参考.md](docs/接口参考.md) | 面板区块规划 + 管理 API 全量清单 |
+| [docs/模型降级链定义.md](docs/模型降级链定义.md) | **模型降级链的唯一权威定义**：三维归因、错误类型全量归属、两条触发路径、三条硬规则、已知限制（R78） |
 | [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) | 三接口（Chat/Responses/Anthropic）兼容层架构决策与验证清单 |
 | [docs/用量积分流水记账备忘.md](docs/用量积分流水记账备忘.md) | 双流水统计架构、差分算法、实测验证、已知限制（R17） |
 | [docs/GitHub直连下载与加速代理调研备忘.md](docs/GitHub直连下载与加速代理调研备忘.md) | 自动更新取源调研：证伪 DNS 污染、IP 级秒级轮换、公共代理实测 |
