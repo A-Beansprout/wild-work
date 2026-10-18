@@ -497,6 +497,13 @@ body {
 .custom-models-table td { border-bottom: 1px solid var(--line, #f1f5f9); overflow: hidden; text-overflow: ellipsis; }
 .custom-model-add-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; margin-top: 6px; padding: 6px 8px; background: var(--card, #fff); border-radius: 6px; border: 1px solid var(--line, #e2e8f0); }
 
+/* 模型导入弹层（R81）：勾选列表。max-height 让长列表自己滚，弹层高度不失控。 */
+.import-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--line, #e2e8f0); border-radius: 6px; padding: 4px 6px; background: var(--card, #fff); }
+.import-row { display: flex; align-items: center; gap: 8px; padding: 4px 4px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+.import-row:hover { background: var(--bg, #f8fafc); }
+.import-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.import-row input[type="checkbox"] { flex-shrink: 0; }
+
 /* 账号名可点击编辑 */
 .acct-name.editable { cursor: pointer; border-bottom: 1px dashed transparent; }
 .acct-name.editable:hover { color: var(--primary); border-bottom-color: var(--primary); }

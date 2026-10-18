@@ -2147,6 +2147,7 @@ function renderCustomChList() {
         <span class="hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
         ${offTag}
         <button class="btn small" data-test-custom="${i}">测试连通</button>
+        <button class="btn small" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入模型</button>
         <button class="btn small" data-toggle-custom="${i}">${isOff ? "启用" : "停用"}</button>
         <button class="icon-btn" data-del-custom="${i}" title="删除该渠道">🗑</button>
       </div>
@@ -2336,10 +2337,6 @@ function openSettings() {
   $("effGlobalInput").value = effs["*"] || "";
   renderEffList();
   $("effModelInput").value = ""; $("effEffortInput").value = "";
-  // 自定义渠道
-  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
-  renderCustomChList();
-  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = "";
   // 自动签到 + 开机自启 + 临期阈值
   $("chkAutostart").checked = !!state.autostart;
   $("selExpiring").value = String(state.expiring_days || 1);
@@ -2351,6 +2348,99 @@ function openSettings() {
 
 function closeSettings() {
   $("settingsOverlay").classList.add("hidden");
+}
+
+// ---------- 自定义渠道弹层（R81：从设置弹层独立，主面板一键直达） ----------
+// 为什么独立：设置弹层有 10+ 个 cfg-section，自定义渠道埋在最后，用户「找不到」。
+// 提到主面板渠道按钮末尾后，配置面从「设置里的一个小节」变成「和添加账号平级的入口」。
+// 功能完全保留：增删改渠道、增删改模型、测试连通、保存全部配置，行为与设置里一致。
+function openCustomChannels() {
+  $("modelSearchOverlay").classList.add("hidden"); // 弹层互斥
+  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
+  renderCustomChList();
+  $("inCustomName").value = ""; $("inCustomURL").value = ""; $("inCustomKey").value = "";
+  $("customChErr").textContent = "";
+  $("customChOk").textContent = "";
+  $("customChannelOverlay").classList.remove("hidden");
+}
+
+function closeCustomChannels() {
+  $("customChannelOverlay").classList.add("hidden");
+}
+
+// ---------- 模型一键导入（R81） ----------
+// 背景：反代/官方 API 的 /models 端点通常能列出全部可用模型，手填模型 ID 既慢又容易
+// 打错字（打错的模型名不会报错，只在真正请求时 404）。这里拉一次 /models、勾选、批量加入。
+//
+// 默认参数取「保守可用」而不是「最优」：上下文 1M / 输出 64k / 三能力全开，与
+// 手填输入框的默认值一致（用户要精确值可再改表格）。导入只负责把模型**加进编辑态**，
+// 仍需点「保存全部配置」才落盘 —— 与既有「添加模型」交互一致，不引入新的隐式写入。
+let importCtx = { chIdx: -1, models: [] };
+
+function renderImportList() {
+  const kw = $("importFilter").value.trim().toLowerCase();
+  const rows = importCtx.models.map((m, i) => {
+    if (kw && !m.id.toLowerCase().includes(kw)) return "";
+    return `<label class="import-row"><input type="checkbox" data-import-pick="${i}"${m.checked ? " checked" : ""}${m.exists ? " disabled" : ""}>` +
+      `<code>${esc(m.id)}</code>` +
+      (m.exists ? '<span class="tag neutral" style="margin-left:auto">已存在</span>' : "") +
+      `</label>`;
+  }).join("");
+  $("importList").innerHTML = rows || '<div class="hint">（没有匹配的模型）</div>';
+}
+
+async function openModelImport(chIdx) {
+  const ch = editCustomChannels[chIdx];
+  if (!ch) return;
+  importCtx = { chIdx, models: [] };
+  $("importHint").textContent = `从 [${ch.name}] 的 /models 拉取…`;
+  $("importErr").textContent = "";
+  $("importFilter").value = "";
+  $("importList").innerHTML = '<div class="hint">加载中…</div>';
+  $("modelImportOverlay").classList.remove("hidden");
+  try {
+    const res = await api("/api/config/custom_channel_test", { name: ch.name, base_url: ch.base_url, api_key: ch.api_key });
+    if (!res.ok) {
+      $("importErr").textContent = `拉取失败：${res.error || "上游未返回模型列表"}`;
+      $("importList").innerHTML = "";
+      $("importHint").textContent = "";
+      return;
+    }
+    const have = new Set((ch.models || []).map((m) => (typeof m === "string" ? m : m.id)));
+    const ids = (res.models || []).filter((id) => id);
+    importCtx.models = ids.map((id) => ({ id, exists: have.has(id), checked: !have.has(id) }));
+    const fresh = importCtx.models.filter((m) => !m.exists).length;
+    $("importHint").textContent = `上游共 ${ids.length} 个模型，其中 ${fresh} 个未添加（已存在的不可勾选）。勾选后点「导入选中」，再点「保存全部配置」生效。`;
+    renderImportList();
+  } catch (e) {
+    $("importErr").textContent = `拉取失败：${e.message}`;
+    $("importList").innerHTML = "";
+  }
+}
+
+function closeModelImport() {
+  $("modelImportOverlay").classList.add("hidden");
+  importCtx = { chIdx: -1, models: [] };
+}
+
+function confirmModelImport() {
+  const ch = editCustomChannels[importCtx.chIdx];
+  if (!ch) return closeModelImport();
+  ch.models = ch.models || [];
+  let added = 0;
+  for (const m of importCtx.models) {
+    if (!m.checked || m.exists) continue;
+    // 与「添加模型」按钮同款默认值（见 custom-model-add-row 的 input 默认值）
+    ch.models.push({ id: m.id, context_window: 1000000, max_tokens: 64000,
+      supports_images: true, supports_reasoning: true, supports_tools: true, reasoning_efforts: [] });
+    added++;
+  }
+  closeModelImport();
+  renderCustomChList();
+  $("customChOk").textContent = added
+    ? `已导入 ${added} 个模型，点击「保存全部配置」生效`
+    : "没有新增模型（选中的都已存在）";
+  $("customChErr").textContent = "";
 }
 
 // validateBackupProxy 校验备用上游通道地址，返回 [url, err]（空串合法 = 关闭）。
@@ -2905,6 +2995,11 @@ function bind() {
       }
       return;
     }
+    const importBtn = e.target.closest("[data-import-custom]");
+    if (importBtn) {
+      openModelImport(+importBtn.dataset.importCustom);
+      return;
+    }
     const toggleBtn = e.target.closest("[data-toggle-custom]");
     if (toggleBtn) {
       const idx = +toggleBtn.dataset.toggleCustom;
@@ -3035,6 +3130,25 @@ function bind() {
 
   // 点击弹层空白处关闭
   $("settingsOverlay").onclick = (e) => { if (e.target === $("settingsOverlay")) closeSettings(); };
+
+  // ---- 自定义渠道弹层（R81） ----
+  $("btnCustomChannels").onclick = () => openCustomChannels();
+  $("btnCustomClose").onclick = () => closeCustomChannels();
+  $("customChannelOverlay").onclick = (e) => { if (e.target === $("customChannelOverlay")) closeCustomChannels(); };
+
+  // ---- 模型导入弹层（R81） ----
+  $("btnImportCancel").onclick = () => closeModelImport();
+  $("btnImportConfirm").onclick = () => confirmModelImport();
+  $("modelImportOverlay").onclick = (e) => { if (e.target === $("modelImportOverlay")) closeModelImport(); };
+  $("importFilter").oninput = () => renderImportList();
+  $("btnImportAll").onclick = () => { importCtx.models.forEach((m) => { if (!m.exists) m.checked = true; }); renderImportList(); };
+  $("btnImportNone").onclick = () => { importCtx.models.forEach((m) => { m.checked = false; }); renderImportList(); };
+  $("importList").onchange = (e) => {
+    const cb = e.target.closest("[data-import-pick]");
+    if (!cb) return;
+    const i = +cb.dataset.importPick;
+    if (importCtx.models[i]) importCtx.models[i].checked = cb.checked;
+  };
   $("renameOverlay").onclick = (e) => { if (e.target === $("renameOverlay")) closeRename(); };
   $("helpOverlay").onclick = (e) => { if (e.target === $("helpOverlay")) closeHelp(); };
 

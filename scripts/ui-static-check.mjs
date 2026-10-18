@@ -554,8 +554,8 @@ for (const [label, re] of uniq) {
     // 响应式：断点是按实测溢出阈值卡位的，调宽会破坏桌面端逐像素一致性，调窄则手机仍溢出。
     ["渠道按钮基础为 6 列（PC 默认宽度 6+5 两行，消除第三行孤行）", css.includes("repeat(6, auto)")],
     ["渠道按钮摆位全归 CSS（index.html 不再内联 grid-column，否则窄屏无法重排）", !/btnAdd\w+" style="grid-column/.test(html)],
-    ["渠道按钮 DOM 顺序 = 列配对（同列上下 = 同渠道国内/国际版；Cline 占第一行末位）",
-      /btnAddWB\b[\s\S]*?btnAddQoderCN\b[\s\S]*?btnAddTrae\b[\s\S]*?btnAddMonkeyCode\b[\s\S]*?btnAddLoomy\b[\s\S]*?btnAddCline\b[\s\S]*?btnAddWBAI\b[\s\S]*?btnAddQoderCOM\b[\s\S]*?btnAddQwen\b[\s\S]*?btnAddRaccoon\b[\s\S]*?btnAddGLM\b/.test(html)],
+    ["渠道按钮 DOM 顺序 = 列配对（同列上下 = 同渠道国内/国际版；自定义渠道垫底）",
+      /btnAddWB\b[\s\S]*?btnAddQoderCN\b[\s\S]*?btnAddTrae\b[\s\S]*?btnAddMonkeyCode\b[\s\S]*?btnAddLoomy\b[\s\S]*?btnAddCline\b[\s\S]*?btnAddWBAI\b[\s\S]*?btnAddQoderCOM\b[\s\S]*?btnAddQwen\b[\s\S]*?btnAddRaccoon\b[\s\S]*?btnAddGLM\b[\s\S]*?btnCustomChannels\b/.test(html)],
     ["窄屏渠道按钮自适应列（auto-fit，118px 可在 320px 竖屏排出两列）", css.includes("repeat(auto-fit, minmax(118px, 1fr))")],
     ["按钮紧凑档字号（12px，PC 一行放下 6 个）", /\.panel-actions-wrap \.btn \{ font-size: 12px;/.test(css)],
     // Cline 实测元数据链路：Go 侧（measuredCaps 表 / ContextFromAPI=false / solar 不支持图像）
@@ -682,11 +682,29 @@ for (const [label, re] of uniq) {
   const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
   const need = [
-    ["设置弹层有自定义渠道编辑区", html.includes('id="customChList"') && html.includes('id="inCustomName"') && html.includes('id="inCustomURL"')],
+    ["自定义渠道有独立弹层（R81：不再埋在设置弹层里）",
+      html.includes('id="customChannelOverlay"') && html.includes('id="customChList"') && html.includes('id="inCustomName"') && html.includes('id="inCustomURL"')],
+    ["主面板有「自定义渠道」入口按钮（R81）", html.includes('id="btnCustomChannels"')],
+    ["app.js 接线了 btnCustomChannels", raw.includes('$("btnCustomChannels").onclick')],
+    // 用「函数体边界」判定而不是跨函数正则：openCustomChannels 紧跟 closeSettings，
+    // 宽松正则会把它的 editCustomChannels 也算进 openSettings 里（误报）。
+    ["openSettings 不再初始化自定义渠道（职责已移交给 openCustomChannels）", (() => {
+      const at = raw.indexOf("function openSettings()");
+      if (at < 0) return false;
+      const brace = raw.indexOf("{", at);
+      let depth = 0;
+      for (let i = brace; i < raw.length; i++) {
+        if (raw[i] === "{") depth++;
+        else if (raw[i] === "}" && --depth === 0) return !raw.slice(brace, i).includes("editCustomChannels");
+      }
+      return false;
+    })()],
+    ["openCustomChannels 从 state.custom_channels 初始化编辑态",
+      /function openCustomChannels\(\)[\s\S]{0,500}?editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
     ["app.js 接线自定义渠道测试/添加/保存按钮", raw.includes('$("btnCustomTest").onclick') && raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
     ["app.js 调 POST /api/config/custom_channels", raw.includes('"/api/config/custom_channels"')],
     ["app.js 调 POST /api/config/custom_channel_test", raw.includes('"/api/config/custom_channel_test"')],
-    ["openSettings 从 state.custom_channels 初始化编辑态", /editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
+
     // 内建同名拒绝（R66）：前后端各自守一道——前端给即时反馈，后端 Validate 会拒。
     ["前端有内建渠道名保留集（防与内建同名）", raw.includes("RESERVED_CHANNEL_NAMES") && raw.includes('"workbuddy"') && raw.includes('"cline-free"')],
     ["后端拒绝内建同名的文案已在 hint 写清", html.includes("不得与内建渠道同名")],
@@ -954,6 +972,46 @@ for (const [label, re] of uniq) {
     !/byAcct\[uid\]\[d\] \|\| 0/.test(creditBody));
 
   for (const [label, pass, extra] of need4) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 场景 5：自定义渠道弹层独立 + 模型一键导入（R81）----
+{
+  const need5 = [];
+  const check5 = (name, pass, extra = "") => need5.push([name, pass, extra]);
+
+  check5("主面板按钮排在所有内建渠道之后（语义=兜底，且凑满 6+6+6 三行）",
+    /btnAddCodeArts\b[\s\S]{0,400}?btnCustomChannels\b/.test(html));
+  check5("自定义渠道弹层有独立 overlay（不与 settingsOverlay 复用）",
+    /<div class="overlay hidden" id="customChannelOverlay">/.test(html));
+  check5("独立弹层保留了原有的全部输入框与按钮",
+    ['customChList', 'inCustomName', 'inCustomURL', 'inCustomKey',
+     'btnCustomTest', 'btnCustomAdd', 'btnCustomSave', 'customChErr', 'customChOk']
+      .every((id) => html.includes(`id="${id}"`)));
+  check5("设置弹层里已移除自定义渠道小节（避免两处入口/两份编辑态）",
+    !/cfg-heading">自定义渠道/.test(html));
+
+  // 一键导入
+  check5("渠道卡片有「导入模型」按钮", /data-import-custom=/.test(raw));
+  check5("导入弹层存在且带筛选/全选/全不选/确认", 
+    ['modelImportOverlay', 'importFilter', 'btnImportAll', 'btnImportNone', 'btnImportConfirm']
+      .every((id) => html.includes(`id="${id}"`)));
+  check5("导入走既有 custom_channel_test 端点（不新增后端接口）",
+    /openModelImport[\s\S]{0,600}?\/api\/config\/custom_channel_test/.test(raw));
+  check5("已存在的模型不可勾选（避免重复导入）",
+    /exists: have\.has\(id\)/.test(raw) && /\$\{m\.exists \? " disabled" : ""\}/.test(raw));
+  check5("导入只改编辑态、仍需「保存全部配置」落盘（不隐式写盘）",
+    /confirmModelImport[\s\S]{0,900}?保存全部配置/.test(raw));
+  check5("导入的模型默认参数与手填输入框一致（1M/64k/三能力开）",
+    /context_window: 1000000, max_tokens: 64000/.test(raw) &&
+    /supports_images: true, supports_reasoning: true, supports_tools: true/.test(raw));
+  check5("导入列表有滚动容器样式", /\.import-list \{ max-height/.test(css));
+  check5("导入失败时给出可见错误（不静默）",
+    /拉取失败：/.test(raw) && /\(\"importErr\"\)\.textContent = /.test(raw));
+
+  for (const [label, pass, extra] of need5) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
   }
