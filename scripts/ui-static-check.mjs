@@ -900,6 +900,50 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 场景 4：折线图不得画「全 0 系列」----
+// 背景（用户实测）：某渠道只在一个小时点有量、其余点全 0，图上却有一条贯穿
+// 到底的贴 0 轴长线，既白占图例又把 Y 轴视觉压扁。修法是按「区间总量 > 0」
+// 过滤系列（与 tooltip 过滤 0 值系列同口径）。
+{
+  const need4 = [];
+  const check4 = (name, pass, extra = "") => need4.push([name, pass, extra]);
+  // 同 fnBody（上面那个是局部作用域内的，这里需要独立定义）
+  const bodyOf = (name) => {
+    const at = raw.indexOf(`function ${name}(`);
+    if (at < 0) return "";
+    const brace = raw.indexOf("{", at);
+    let depth = 0;
+    for (let i = brace; i < raw.length; i++) {
+      if (raw[i] === "{") depth++;
+      else if (raw[i] === "}" && --depth === 0) return raw.slice(brace, i + 1);
+    }
+    return "";
+  };
+
+  // 函数体源码断言（图表依赖 echarts，stub 环境跑不了真实渲染，
+  // 但「是否按总量过滤」是纯源码性质，可静态锁死）。
+  const usageBody = bodyOf("renderUsageChart");
+  check4("renderUsageChart 函数体可定位", usageBody.length > 200, `len=${usageBody.length}`);
+  check4("token 图按总量过滤掉 0 渠道（active 变量）",
+    /const active = chans\.filter\(\(ch\) => \(totalOf\[ch\] \|\| 0\) > 0\)/.test(usageBody),
+    usageBody.slice(0, 200));
+  check4("token 图的 series 用过滤后的 active（不再直接用 chans）",
+    /const series = active\.map/.test(usageBody) && !/const series = chans\.map/.test(usageBody));
+  check4("token 图的 color 也用过滤后的 active",
+    /color: active\.map\(\(ch\) => chColor\(ch\)\)/.test(usageBody));
+
+  const creditBody = bodyOf("renderCreditChart");
+  check4("renderCreditChart 函数体可定位", creditBody.length > 200, `len=${creditBody.length}`);
+  check4("积分图按总量过滤掉 0 账号",
+    /\.filter\(\(uid\) => \(totals\[uid\] \|\| 0\) > 0\)/.test(creditBody),
+    creditBody.slice(0, 200));
+
+  for (const [label, pass, extra] of need4) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 

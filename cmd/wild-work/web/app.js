@@ -3254,13 +3254,18 @@ function renderUsageChart(st) {
   const chans = [...new Set(byDay.flatMap((d) => Object.keys(d.by_channel || {})))];
   for (const d of byDay) for (const [ch, v] of Object.entries(d.by_channel || {})) totalOf[ch] = (totalOf[ch] || 0) + v;
   chans.sort((a, b) => (totalOf[b] || 0) - (totalOf[a] || 0));
-  const series = chans.map((ch) => ({
+  // 区间内总量为 0 的渠道不画：它们只会在 0 轴上拉出一条贴底长线，
+  // 既白占图例、又把 Y 轴视觉压扁（实测：某渠道只在一个小时点有量，
+  // 其余 9 个点全 0，图上却有一条贯穿到底的线）。
+  // 口径与 tooltip「过滤 0 值系列」一致——图表只呈现真正有量的渠道。
+  const active = chans.filter((ch) => (totalOf[ch] || 0) > 0);
+  const series = active.map((ch) => ({
     name: CH_NAMES[ch] || ch, type: "line", smooth: true,
     itemStyle: { color: chColor(ch) }, lineStyle: { color: chColor(ch) },
     data: byDay.map((d) => d.by_channel[ch] || 0),
   }));
   usageChart.setOption({
-    color: chans.map((ch) => chColor(ch)),
+    color: active.map((ch) => chColor(ch)),
     tooltip: {
       trigger: "axis",
       // 全 0 的时刻点不弹悬浮（避免清晨无用量时一片 0 刷屏）；
@@ -3302,7 +3307,10 @@ function renderCreditChart(entries, names) {
     (byAcct[e.uid] ||= {})[d] = (byAcct[e.uid][d] || 0) + -e.amount;
     totals[e.uid] = (totals[e.uid] || 0) + -e.amount;
   }
-  const top10 = Object.keys(totals).sort((a, b) => totals[b] - totals[a]).slice(0, 10);
+  // 消耗总量为 0 的账号不画（同 token 图口径）：只有退款的账号净消耗可能为 0，
+  // 画出来就是一条贴 0 轴的长线。
+  const top10 = Object.keys(totals).sort((a, b) => totals[b] - totals[a])
+    .filter((uid) => (totals[uid] || 0) > 0).slice(0, 10);
   // 系列名带渠道前缀（跨渠道同名昵称可区分）：取该账号消耗条目中最多的渠道
   const mainChOf = (uid) => {
     const cnt = {};
