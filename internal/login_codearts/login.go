@@ -48,6 +48,14 @@ import (
 // 又不至于让一个被放弃的回调口长期挂着。
 const flowTTL = 10 * time.Minute
 
+// FlowTTL 暴露本次登录流程的最长存活时间，供调用方（app.pollLogin）对齐等待上限。
+//
+// 为什么要暴露：app 侧有通用登录上限 loginTimeout（5 分钟），比本包的 flowTTL 短。
+// 直接用 5 分钟会在「用户仍在授权页输入账号」时先放弃并 Shutdown 掉回调口，
+// 浏览器随后跳回 127.0.0.1:<port> 只能得到连接被拒 —— 真机实测踩到过
+// （2026-10-18：登录用时约 50s 侥幸赶上，慢一点必失败）。调用方应以较长者为准。
+func FlowTTL() time.Duration { return flowTTL }
+
 // ErrPending 表示授权尚未完成（用户还没在浏览器里登录完）。
 // 与 login_trae / login_qwenwork / login_lobsterai 同名同义，app.pollLogin 用 errors.Is 判定。
 var ErrPending = errors.New("login pending")
@@ -361,8 +369,13 @@ func (s *session) applyCallback(q url.Values) (bool, string) {
 	}
 	code := strings.TrimSpace(q.Get("code"))
 	if code == "" {
-		s.fail("回调缺少 code 参数")
-		return false, "回调缺少 code 参数"
+		// 语义保持上游原状（缺 code = 参数异常 ⇒ 终态，见 TestPollMissingCode）；
+		// 但文案必须可执行：粘贴场景下用户最常见的错是只复制了 `…/oauth/callback`
+		// 而丢了查询串，光说「缺少 code 参数」他不知道自己该复制什么。
+		const msg = "回调缺少 code 参数：请复制登录完成后浏览器地址栏里含 code=… 的整条 URL" +
+			"（若地址栏里只有 …/oauth/callback 而没有 code=，说明授权没完成，请重新登录）"
+		s.fail(msg)
+		return false, msg
 	}
 	s.setCode(code)
 	return true, ""

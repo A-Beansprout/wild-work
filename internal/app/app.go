@@ -871,6 +871,12 @@ func (a *App) pollLogin(ctx context.Context) {
 		a.finishLogin()
 	}()
 	deadline := time.Now().Add(loginTimeout)
+	// CodeArts 的本机回调存活时间（flowTTL，10m）比通用 loginTimeout（5m）长：
+	// 以较短者为上限会在用户还在授权页时先放弃并关掉回调口，浏览器随后跳回
+	// 127.0.0.1:<port> 只会得到连接被拒（2026-10-18 真机实测）。故对齐到该包的 TTL。
+	if a.loginKind == provider.CodeArts {
+		deadline = time.Now().Add(logincodearts.FlowTTL())
+	}
 	log.Printf("登录流程已发起，等待浏览器完成…")
 	t := time.NewTicker(loginPollEvery)
 	defer t.Stop()
