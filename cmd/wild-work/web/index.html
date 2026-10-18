@@ -697,9 +697,12 @@
   </div>
 </div>
 
-<div class="overlay hidden" id="modelSearchOverlay">
+<div class="overlay hidden" id="modelSearchOverlay" style="z-index:120">
   <div class="modal modal-search">
-    <div class="modal-title">查找模型</div>
+    <div class="modal-title">
+      <span>查找模型</span>
+      <button class="modal-close-btn" id="btnModelSearchClose" title="关闭">✕</button>
+    </div>
     <input id="modelSearchInput" class="input" type="text" spellcheck="false" autocomplete="off"
       placeholder="输入关键字过滤（模型名 / 渠道 / 完整 ID）">
     <div class="ms-list" id="modelSearchList"></div>
