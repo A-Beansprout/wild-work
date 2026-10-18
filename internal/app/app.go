@@ -625,6 +625,28 @@ func (a *App) Quit() {
 // 账号操作
 // ---------------------------------------------------------------------------
 
+// manualCallbackKind 报告该渠道的授权回调是否**写死回环地址**，因而需要一条
+// 「把浏览器地址栏 URL 粘回来」的人工兜底通道。
+//
+// 为什么要有这个单一来源：/api/login/start 用它决定 `manual_callback`（前端显隐输入行），
+// /api/login/callback 用它决定是否接受提交。两处各写一份条件，漏改一处就是
+// 「输入框显示了、提交却 400」或「后端支持、前端没入口」的半接线状态。
+//
+// 判据（不是所有渠道都需要）：portal 侧只能把浏览器跳回 `http://127.0.0.1:<port>/…`
+// 的，才是「浏览器必须与网关同机」——
+//   - CodeArts：授权页只接受 `port` 参数，跳转目标由 portal 写死（见 internal/login_codearts）；
+//   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）。
+//
+// 其余渠道的回调**不是**这种形状：有的由网关侧轮询/捕获（glm、小浣熊、OfficeAce），
+// 有的是本机引导页（Loomy），不接受也不知道怎么消费用户粘回来的 URL，故一律为 false。
+func manualCallbackKind(kind provider.Kind) bool {
+	switch kind {
+	case provider.CodeArts, provider.LobsterAI:
+		return true
+	}
+	return false
+}
+
 // StartLoginFor 发起指定渠道登录：workbuddy / workbuddyai / traework / qoder / qodercn。
 func (a *App) StartLoginFor(kind string) (string, error) {
 	k := provider.Kind(strings.TrimSpace(kind))
@@ -741,9 +763,12 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		// 短暂窗口内有效），随后由 pollLogin 轮询换 token。
 		authURL, err = loginminimax.Start(a.loginClient, a.loginStateFP)
 	case provider.LobsterAI:
-		// 本机回调授权：Start 起 127.0.0.1 随机端口的回调监听并**立即**返回登录页地址
-		// （前端 window.open 只在用户点击后的短暂窗口内有效），回调到达后由 pollLogin 收尾。
-		authURL, err = loginlobsterai.Start(a.loginClient, a.loginStateFP)
+		// 本机回调授权：Start 起回调监听并**立即**返回登录页地址（前端 window.open 只在
+		// 用户点击后的短暂窗口内有效），回调到达后由 pollLogin 收尾。
+		// 回调端口可固定（config.login.lobsterai_callback_port）：portal 只认
+		// http://127.0.0.1:<port>/auth/callback，固定端口才能让「浏览器所在机器」预先
+		// 建一条端口转发（ssh -L），从而在局域网/远程访问面板时也自动完成回调。
+		authURL, err = loginlobsterai.StartWithPort(a.loginClient, a.loginStateFP, a.cfg.Login.LobsterAICallbackPort)
 	case provider.ZCode:
 		// 服务端中介设备授权流：Start 发起 init 并**立即**返回授权链接
 		// （前端 window.open 只在用户点击后的短暂窗口内有效），随后由 pollLogin 轮询。
@@ -883,11 +908,14 @@ func (a *App) pollLogin(ctx context.Context) {
 		a.finishLogin()
 	}()
 	deadline := time.Now().Add(loginTimeout)
-	// CodeArts 的本机回调存活时间（flowTTL，10m）比通用 loginTimeout（5m）长：
+	// CodeArts / LobsterAI 的本机回调存活时间（flowTTL，10m）比通用 loginTimeout（5m）长：
 	// 以较短者为上限会在用户还在授权页时先放弃并关掉回调口，浏览器随后跳回
-	// 127.0.0.1:<port> 只会得到连接被拒（2026-10-18 真机实测）。故对齐到该包的 TTL。
-	if a.loginKind == provider.CodeArts {
+	// 127.0.0.1:<port> 只会得到连接被拒（2026-10-18 真机实测）。故对齐到各包的 TTL。
+	switch a.loginKind {
+	case provider.CodeArts:
 		deadline = time.Now().Add(logincodearts.FlowTTL())
+	case provider.LobsterAI:
+		deadline = time.Now().Add(loginlobsterai.FlowTTL())
 	}
 	log.Printf("登录流程已发起，等待浏览器完成…")
 	t := time.NewTicker(loginPollEvery)
@@ -3316,16 +3344,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"auth_url":       url,
 			"backend_opened": opened,
-			// manual_callback：该渠道的授权回调是**写死回环地址**（当前仅 CodeArts，
-			// 见 internal/login_codearts 的协议说明）。浏览器与网关不同机时（局域网/
-			// 远程访问面板），回调只能靠用户把地址栏 URL 粘回来，前端据此显示输入框。
-			"manual_callback": kind == provider.CodeArts,
+			// manual_callback：该渠道的授权回调写死回环地址时，浏览器与网关不同机
+			// （局域网/远程访问面板）就收不到授权码，只能靠用户把地址栏 URL 粘回来。
+			// 前端据此显示输入框。判据见 manualCallbackKind（单一来源）。
+			"manual_callback": manualCallbackKind(kind),
 		})
 	})
 	// 手动提交授权回调地址（回环回调渠道的远程/局域网兜底）。
 	//
 	// 背景：CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
-	// 因此只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
+	// LobsterAI 的 portal 按 `redirect_uri` 原样跳回 `http://127.0.0.1:<port>/auth/callback`，
+	// 两者都只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
 	// 浏览器跳到的是**用户自己机器**的 127.0.0.1（连接被拒），流程只能等到超时。
 	// 这里提供一条人工通道：把跳水后打不开的那条 URL 原样提交，网关解析出 code 后
 	// 走与自动回调**完全相同**的兑换路径（凭据仍由网关侧换，用户不需要交出任何 token）。
@@ -3341,16 +3370,24 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			apiError(w, http.StatusBadRequest, "没有进行中的登录流程，请先发起登录")
 			return
 		}
+		// 白名单与 /api/login/start 的 manual_callback 同源（manualCallbackKind），
+		// 避免出现「前端显示了输入框、这里却 400」的半接线状态。
+		if !manualCallbackKind(kind) {
+			apiError(w, http.StatusBadRequest, fmt.Sprintf(
+				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
+			return
+		}
 		switch kind {
 		case provider.CodeArts:
 			if err := logincodearts.SubmitCallbackURL(req.URL); err != nil {
 				apiError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-		default:
-			apiError(w, http.StatusBadRequest, fmt.Sprintf(
-				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
-			return
+		case provider.LobsterAI:
+			if err := loginlobsterai.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})

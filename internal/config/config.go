@@ -142,6 +142,21 @@ type Config struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	// Login 登录流程的可调项。
+	Login struct {
+		// LobsterAICallbackPort 固定 LobsterAI 的 OAuth 回调端口（0 = 每次随机）。
+		//
+		// 为什么需要它：有道 portal 的回调派发器**只认**
+		// `http://127.0.0.1:<port>/auth/callback`（hostname 严格等于 127.0.0.1，
+		// 否则丢弃该地址、改发 `lobsterai://` deep-link —— 见 docs/决议项.md R97）。
+		// 所以「浏览器与网关不同机」（局域网/远程访问面板）时要自动完成回调，
+		// 只能让浏览器侧也能连到那个环回端口：在那台机器上建端口转发
+		// （`ssh -L 127.0.0.1:<port>:127.0.0.1:<port> <网关>`）。
+		// 随机端口无法预建隧道，故允许写死一个端口。留空/0 保持随机（更省心，
+		// 但异地浏览器只能用面板的「粘贴回调地址」兜底）。
+		LobsterAICallbackPort int `json:"lobsterai_callback_port,omitempty"`
+	} `json:"login"`
+
 	// Compat 三接口兼容层（OpenAI Responses / Anthropic Messages）配置。
 	// 零值即关闭模型名映射，仅接受 "channel/model" 形式。
 	Compat struct {

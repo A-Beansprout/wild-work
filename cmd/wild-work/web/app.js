@@ -1717,13 +1717,18 @@ async function startLogin(channel, accountLabel) {
     }
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
-    // 手动回调兜底（CodeArts）：它的授权回调写死 http://127.0.0.1:<port>/oauth/callback。
-    // 只有「浏览器与网关同一台机器」时授权码才会自动回到网关；从局域网/远程打开面板时，
-    // 浏览器会跳到用户自己机器的 127.0.0.1（打不开），流程只能等到超时。
+    // 手动回调兜底（LobsterAI / CodeArts）。
+    // LobsterAI 的上游 portal **只认** http://127.0.0.1:<port>/auth/callback
+    // （hostname 严格等于 127.0.0.1，否则它丢弃该地址、改发 lobsterai:// deep-link，
+    // 见 docs/决议项.md R97）。所以浏览器与网关不同机时，浏览器会停在一条打不开的
+    // 127.0.0.1 页面上 —— 那条 URL 里就有 code：把它粘回来即可（后端用 code 自行换凭据）。
+    // 想全自动：把该端口固定（config.login.lobsterai_callback_port）并在浏览器所在机器上
+    // 建一条 `ssh -L 127.0.0.1:<port>:127.0.0.1:<port> <网关>` 转发，之后无需粘贴。
     if (r.manual_callback) {
       $("lcCallbackHint").textContent =
-        "若登录完成后浏览器跳到一个打不开的 127.0.0.1 地址：把那条完整 URL（含 code=…）复制到下面提交，"
-        + "网关会立刻换取凭据。浏览器与网关是同一台机器时无需理会此项。";
+        "登录完成后若浏览器停在一条打不开的 127.0.0.1 地址上（上游只允许回调到 127.0.0.1，"
+        + "从别的机器打开面板时必然如此）：把那条完整 URL（含 code=…）复制到下面提交，网关会立刻换取凭据。"
+        + "浏览器与网关同一台机器时无需理会此项；若已在浏览器所在机器建好端口转发，也会自动完成。";
       $("lcCallbackRow").classList.remove("hidden");
     } else {
       $("lcCallbackRow").classList.add("hidden");
@@ -1814,7 +1819,8 @@ function copyUrl() {
   copyText(url, "链接");
 }
 
-// 手动提交授权回调地址（局域网/远程兜底，当前只对 CodeArts 显示）。
+// 手动提交授权回调地址（局域网/远程兜底，只对 manual_callback=true 的渠道显示，
+// 当前是 CodeArts 与 LobsterAI）。
 // 语义：只把 code 交给网关换凭据，用户不需要交出任何 token。
 async function submitCallback() {
   const url = ($("lcCallbackUrl").value || "").trim();

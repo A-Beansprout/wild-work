@@ -205,9 +205,9 @@
         <button class="btn small" id="btnCopyUrl">复制链接</button>
         <button class="btn small danger" id="btnCancelLogin">取消</button>
       </div>
-      <!-- 手动回调兜底：授权回调写死回环地址的渠道（CodeArts）在「浏览器与网关不同机」
-           （局域网/远程打开面板）时，跳转会落到用户自己机器的 127.0.0.1 而打不开，
-           授权码到不了网关。由 startLogin 按后端 manual_callback 显隐本行。
+      <!-- 手动回调兜底：授权回调写死回环地址的渠道（CodeArts / LobsterAI）在「浏览器与
+           网关不同机」（局域网/远程打开面板）时，跳转会落到用户自己机器的 127.0.0.1
+           而打不开，授权码到不了网关。由 startLogin 按后端 manual_callback 显隐本行。
            样式走项目既有令牌（.hint / .input / .btn），不用内联字号与内联宽高。 -->
       <div class="hidden" id="lcCallbackRow">
         <div class="hint" id="lcCallbackHint"></div>

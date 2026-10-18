@@ -1,0 +1,61 @@
+package app
+
+// login_manual_callback_test.go 锁死「人工回调通道」的白名单与单一来源。
+//
+// 背景（R96 / issue #160 的同类面）：授权回调写死回环地址的渠道，浏览器与网关不同机时
+// 授权码到不了网关，必须靠用户把地址栏 URL 粘回来。这条链路跨两处，**漏改一处不报错**：
+//
+//	GET  /api/login/start     → manual_callback 字段（前端据此显隐输入行）
+//	POST /api/login/callback  → 接受白名单（决定提交是否被 400）
+//
+// 若 start 说 true 而 callback 的 switch 没有对应分支，提交会「成功但什么都不做」
+// （校验通过、无分派、直接回 ok），用户看到「已提交，正在换取凭据…」后一直等到超时；
+// 若 start 说 false 而 callback 支持，则前端根本没有入口。故两处都必须走 manualCallbackKind。
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"wild-work/internal/provider"
+)
+
+// TestManualCallbackKindWhitelist 需要人工通道的渠道必须为 true，其余必须为 false。
+func TestManualCallbackKindWhitelist(t *testing.T) {
+	want := map[provider.Kind]bool{
+		provider.CodeArts:  true,  // portal 只接受 port 参数，跳转目标写死回环
+		provider.LobsterAI: true,  // redirect_uri 回环 + 回调口绝不监听非环回
+		provider.Gemini:    false, // 本机 loopback OAuth，但不提供粘贴消费入口
+		provider.GLM:       false, // 网关侧 CDP 捕获
+		provider.Raccoon:   false, // 网关侧 CDP 捕获
+		provider.OfficeAce: false, // 云端轮询捕获
+		provider.Loomy:     false, // 本机登录引导页（用户直接在上面填手机号验证码）
+	}
+	for kind, exp := range want {
+		if got := manualCallbackKind(kind); got != exp {
+			t.Errorf("manualCallbackKind(%s) = %v，期望 %v（前端显隐/后端白名单都依赖它）", kind, got, exp)
+		}
+	}
+}
+
+// TestManualCallbackSingleSource 两处 handler 都必须调用 manualCallbackKind，
+// 不得各自内联 `kind == provider.X` 条件（那正是漏改一处的来源）。
+func TestManualCallbackSingleSource(t *testing.T) {
+	raw, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatalf("读 app.go 失败（签名变化会让本测试静默失效）：%v", err)
+	}
+	src := string(raw)
+	// 定义 1 处 + 调用 2 处。
+	if n := strings.Count(src, "manualCallbackKind("); n < 3 {
+		t.Errorf("manualCallbackKind 只出现 %d 次，期望 ≥3（定义 1 + start/callback 各 1）", n)
+	}
+	for _, bad := range []string{
+		"kind == provider.CodeArts || kind == provider.LobsterAI",
+		"kind == provider.LobsterAI || kind == provider.CodeArts",
+	} {
+		if strings.Contains(src, bad) {
+			t.Errorf("发现内联白名单 %q —— 必须改走 manualCallbackKind，否则两处会漂移", bad)
+		}
+	}
+}
