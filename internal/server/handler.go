@@ -34,8 +34,19 @@ type Runtime struct {
 	// NoCooldownOnServerError 声明该渠道的上游 5xx 属于网关/基础设施抖动
 	// （账号本身健康），不应计入账号错误触发冷却。
 	// WorkBuddy 国际版开启（其 openresty 网关实测间歇性 502/503/504）。
-	// 其余渠道保持 false，行为不变。
+	//
+	// ⚠️ 2026-10-18 起本字段**不再决定计数行为**（5xx 已默认不计数，见
+	// CountServerErrorAsAccountFault），仅保留作渠道差异的文档标注。
 	NoCooldownOnServerError bool
+
+	// CountServerErrorAsAccountFault 显式要求「本渠道的上游 5xx 计入账号错误」。
+	//
+	// 默认 false（5xx 不计入账号错误）：5xx 的语义是服务端故障，与客户端凭据健康无关。
+	// 曾经的默认行为是「计入」，导致一次上游 500 风暴把整池健康账号打成
+	// consecutive errors 冷却 10 分钟，整条渠道 503（2026-10-18 lobsterai 实测）。
+	//
+	// 仅当某渠道**确实用 5xx 表达账号级封禁/欠费**时才置 true —— 当前无一渠道如此。
+	CountServerErrorAsAccountFault bool
 
 	// SingleAccount 声明该渠道只有唯一一个、且**无法人工恢复**的账号（当前仅 oczen 匿名）。
 	// 语义：任何账号级惩罚（冷却/计数/禁用）都等价于「整条渠道下线」，故一律不适用——
@@ -828,8 +839,23 @@ func (h *Handler) serveRotation(
 				// （monkeycode / loomy / raccoon / minimax）最容易触发这条路径。
 				transparentError(w, status, respBody)
 				return
-			case provider.ErrWafBlock, provider.ErrAccountFault, provider.ErrModelBlocked:
-				// 账号级风控/故障/模型不存在：软冷却，不累计错误计数。
+			case provider.ErrModelBlocked:
+				// (账号,模型) 级负缓存避让 —— 兑现 provider.go:193 的注释承诺。
+				//
+				// ⚠️ 2026-10-18 修正：本 case 原先与 ErrWafBlock/ErrAccountFault 合并，
+				// 走 Pool.Cooldown(uid) **冻结整个账号**。后果是「一个模型在上游不存在」
+				// 会拖垮同一账号下的所有模型：officeace 里 glm-5.3-flash 上游回 404，
+				// 三个账号接连被 model_blocked 冻结 60s，整条渠道 503。
+				// 而 provider.go:193 对 ErrModelBlocked 的定义明明写着「(账号,模型) 负缓存避让」。
+				// 现在改为只冻这一个 (账号,模型)；CooldownModel 内部在「≥2 个模型同时冷」
+				// 时才升级为整号冷却（见 pool.go 的同款注释），那时才是真正的账号问题。
+				escalated := rt.Pool.CooldownModel(acct.UID, model, h.cfg.SoftCooldown, kind.String())
+				log.Printf("model cooldown platform=%s uid=%s model=%s escalated=%v reason=%s",
+					rt.Kind, acct.UID, model, escalated, kind)
+				transparentError(w, status, respBody)
+				return
+			case provider.ErrWafBlock, provider.ErrAccountFault:
+				// 账号级风控/授权故障：软冷却，不累计错误计数。
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, kind.String())
 				if kind != provider.ErrAccountFault {
 					transparentError(w, status, respBody)
@@ -843,13 +869,28 @@ func (h *Handler) serveRotation(
 				// 仅轮转以兼容「同模型不同账号权益差异」场景；候选耗尽后透传最后
 				// 错误（与上游分类器注释「BadParams：不罚号但仍轮转」对齐）。
 			case provider.ErrServer:
-				if rt.NoCooldownOnServerError {
-					// 该渠道声明 5xx 为上游网关抖动（账号本身健康），
-					// 不计入账号错误，避免一夜抖动把所有账号冷却。
-					log.Printf("upstream server error platform=%s uid=%s status=%d（不计入账号错误）",
+				// 上游 5xx = 服务端故障，与账号健康无关 ⇒ **不计入账号错误**。
+				//
+				// ⚠️ 2026-10-18 翻转（原先只有声明 NoCooldownOnServerError 的渠道豁免）：
+				// 实测事故（lobsterai）—— 上游对带 developer 角色的请求返回 500，
+				// ErrServer 可轮换 ⇒ 一次客户端请求打 3 个账号各 +1 errCount，
+				// 而 err_threshold 默认 3 ⇒ **重试一次就把三个健康账号全冷却 10 分钟**，
+				// 期间整条渠道 503。账号本身完全健康（积分/签到/session 全正常）。
+				//
+				// 判据：5xx 的语义就是「服务端出问题了」，记到客户端凭据头上既不合因果，
+				// 也会把一次上游故障放大成整条渠道下线。轮转保留（ErrServer 仍 Rotatable），
+				// 「换个账号重试」的机会还在，只是不再拿 5xx 惩罚账号。
+				//
+				// 逃生门：NoCooldownOnServerError 字段保留，但语义不变（仍表示「不豁免」），
+				// 仅用于审计/文档层面标注渠道差异；真正的计数开关由 CountServerErrorAsAccountFault
+				// 单独表达，当前无一渠道开启。
+				if rt.CountServerErrorAsAccountFault {
+					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					log.Printf("upstream server error platform=%s uid=%s status=%d（渠道显式要求计入账号错误）",
 						rt.Kind, acct.UID, status)
 				} else {
-					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					log.Printf("upstream server error platform=%s uid=%s status=%d（不计入账号错误）",
+						rt.Kind, acct.UID, status)
 				}
 			default:
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
