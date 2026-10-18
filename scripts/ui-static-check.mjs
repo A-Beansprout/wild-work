@@ -1254,6 +1254,41 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 手动回调兜底（CodeArts 异地浏览器，issue #160 / R96）----
+// 背景：CodeArts 的授权回调由 portal 写死成 http://127.0.0.1:<port>/oauth/callback，
+// 只有「浏览器与网关同机」时授权码才会自动回到网关。从局域网/远程打开面板时，浏览器
+// 跳到的是用户自己机器的回环地址（连接被拒），流程只能等到超时。修法是补一条人工通道。
+// 这里锁住三件事：① 输入框/按钮存在；② 按后端 manual_callback 显隐（不是恒显示，
+// 否则同机用户会被要求粘贴一条本来就能自动回来的地址）；③ 失败时**保留输入**并就地
+// 显示错误——端口粘错是很常见的可恢复错误，关掉弹层等于把输入丢了。
+{
+  const needCb = [];
+  const checkCb = (name, pass, extra = "") => needCb.push([name, pass, extra]);
+
+  checkCb("登录弹层里有「粘贴回调地址」输入框与提交按钮",
+    html.includes('id="lcCallbackUrl"') && html.includes('id="btnSubmitCallback"'));
+  checkCb("兜底行默认隐藏（同机场景不该被要求手动粘贴）",
+    /<div class="hidden" id="lcCallbackRow">/.test(html));
+  checkCb("按后端 manual_callback 显隐该行（不是恒显示）",
+    raw.includes("if (r.manual_callback)") &&
+    raw.includes('$("lcCallbackRow").classList.remove("hidden")') &&
+    raw.includes('$("lcCallbackRow").classList.add("hidden")'));
+  checkCb("非手动回调渠道会清空上次残留的输入（避免误提交上一条地址）",
+    raw.includes('$("lcCallbackUrl").value = ""'));
+  checkCb("提交走 POST /api/login/callback",
+    raw.includes('await api("/api/login/callback", { url })'));
+  checkCb("提交失败保留输入并就地显示错误（不 toast 后关弹层）",
+    raw.includes('$("lcCallbackHint").textContent = "提交失败："'));
+  checkCb("输入框与按钮用项目既有样式令牌（.input/.btn），不用内联字号宽高",
+    html.includes('<input class="input grow" type="text" id="lcCallbackUrl"') &&
+    !/id="lcCallbackUrl"[^>]*style=/.test(html));
+
+  for (const [label, pass, extra] of needCb) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 
