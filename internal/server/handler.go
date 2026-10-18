@@ -238,10 +238,19 @@ func (h *Handler) pickWithSticky(rt *Runtime, model string) *auth.Auth {
 		if acct != nil {
 			status, ok := rt.Pool.Status(sticky.uid)
 			modelCooled := ok && status.ModelCooling != nil && status.ModelCooling[model].After(time.Now())
-			if ok && !status.Cooling && !status.Disabled && !modelCooled {
+			// ⚠️ 2026-10-18 补 SessionDead：本判据曾只查 Cooling/Disabled/模型级冷却，
+			// 而 `healthy()`（pool.go:103）明确把 sessionDead 也算不健康。
+			// 粘性路由直接调 AuthByUID、**绕过了 healthy()**，于是登录态已失效的账号
+			// 仍被粘住 ⇒ 每个请求都白打一次必 401 的上游探测。
+			// （MonkeyCode 实测：全日志 16 条 session_dead 401，且一次刷新都没发起。）
+			if ok && !status.Cooling && !status.Disabled && !status.SessionDead && !modelCooled {
 				log.Printf("sticky route platform=%s uid=%s count=%d/%d",
 					rt.Kind, sticky.uid, sticky.reqCount, sticky.maxReqs)
 				return acct
+			}
+			if ok && status.SessionDead {
+				log.Printf("sticky route skipped platform=%s uid=%s reason=session_dead",
+					rt.Kind, sticky.uid)
 			}
 		}
 	}
@@ -1050,7 +1059,7 @@ func (h *Handler) serveRotation(
 	statRow.Status = http.StatusServiceUnavailable
 	sts := rt.Pool.List()
 	now := time.Now()
-	var bound, disabled, cooling, modelAvail int
+	var bound, disabled, cooling, sessionDead, modelAvail int
 	var earliest time.Time // 全池对该模型最早的解冻时刻（账号级与模型级冷却取最小）
 	consider := func(t time.Time) {
 		if t.After(now) && (earliest.IsZero() || t.Before(earliest)) {
@@ -1060,6 +1069,14 @@ func (h *Handler) serveRotation(
 	for _, s := range sts {
 		if s.Disabled {
 			disabled++
+			continue
+		}
+		// ⚠️ 2026-10-18 补 sessionDead：登录态失效的账号原先**被计入 bound（可用账号）**，
+		// 于是 503 文案说「其余余额耗尽或出错」，把「需要重新登录」这个唯一可行动的
+		// 结论彻底掩盖掉（MonkeyCode 实测：用户看到的是"余额耗尽"，实际要重登）。
+		// pool.healthy() 早已把 sessionDead 视为不健康（pool.go:103），此处统计口径对齐它。
+		if s.SessionDead {
+			sessionDead++
 			continue
 		}
 		if s.Cooling {
@@ -1109,13 +1126,18 @@ func (h *Handler) serveRotation(
 		if cooling > 0 && !earliest.IsZero() {
 			hint = fmt.Sprintf("最早约 %s 解冻（多为限流冷却，到点自动恢复；若长时间未恢复再检查登录态）", formatUnfreeze(earliest))
 		}
+		// 登录态失效优先于限流文案：这是唯一「用户自己动手就能恢复」的原因，
+		// 被限流文案盖住会让人白等（2026-10-18 MonkeyCode 实测的误导）。
+		if sessionDead > 0 && !noLoginChannel(rt.Kind) && !keyPasteChannel(rt.Kind) {
+			hint = fmt.Sprintf("%d 个账号登录态已失效，需重新登录后才能恢复", sessionDead)
+		}
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
-			fmt.Sprintf("渠道 %s 的 %d 个账号当前全部不可用（禁用 %d / 冷却 %d）：可在面板查看原因；%s",
-				rt.Kind, len(sts), disabled, cooling, hint))
+			fmt.Sprintf("渠道 %s 的 %d 个账号当前全部不可用（禁用 %d / 冷却 %d / 登录态失效 %d）：可在面板查看原因；%s",
+				rt.Kind, len(sts), disabled, cooling, sessionDead, hint))
 		return
 	}
-	msg := fmt.Sprintf("渠道 %s 暂无可用账号（共 %d 个：禁用 %d / 冷却 %d；其余余额耗尽或出错）",
-		rt.Kind, len(sts), disabled, cooling)
+	msg := fmt.Sprintf("渠道 %s 暂无可用账号（共 %d 个：禁用 %d / 冷却 %d / 登录态失效 %d；其余余额耗尽或出错）",
+		rt.Kind, len(sts), disabled, cooling, sessionDead)
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}

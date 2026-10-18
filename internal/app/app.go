@@ -80,6 +80,17 @@ type Runtime struct {
 
 	// Custom 标记该渠道为用户自定义 OpenAI 兼容第三方渠道（R66）。
 	Custom bool
+
+	// SplitCredential 声明该渠道的**控制面与数据面用两套不同凭据**。
+	//
+	// 首例 MonkeyCode：推理用 `X-Api-Key`（agent 的 oma_ key），积分/签到用控制台
+	// Cookie 或百智云 Cookie —— 两者是完全独立的凭据，一个可用不代表另一个可用。
+	//
+	// 影响：积分刷新成功**不得**清除推理侧打上的 SessionDead 标记。
+	// 2026-10-18 修复的正是这一条：此前 RefreshCredits/RefreshAll 成功即无条件
+	// ClearSessionDead ⇒ 推理侧凭据明明失效，却被「积分查得到」反复洗掉标记，
+	// 表现为「标了又清、清了又标」，而每次都得白打一次必 401 的上游请求。
+	SplitCredential bool
 }
 
 // Options 构建 App 的依赖。
@@ -2231,7 +2242,15 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		}
 		return 0, err
 	}
-	rt.Pool.ClearSessionDead(uid)
+	// 只有「控制面与数据面共用同一凭据」的渠道，积分成功才能证明凭据可用、才允许清除
+	// SessionDead。SplitCredential 渠道（MonkeyCode）积分走控制台 Cookie、推理走
+	// agent key —— 积分查得到不代表推理凭据没失效，清了标记只会让下一次请求白打一次 401。
+	if !rt.SplitCredential {
+		rt.Pool.ClearSessionDead(uid)
+	} else if st, ok := rt.Pool.Status(uid); ok && st.SessionDead {
+		log.Printf("credits refresh success but session dead kept platform=%s uid=%s reason=%s"+
+			"（控制面与数据面凭据独立，积分成功不能证明推理凭据可用）", rt.Kind, uid, st.SessionDeadReason)
+	}
 	log.Printf("credits refresh success platform=%s uid=%s remain=%d expiring=%d unusable=%d", rt.Kind, uid, usable, expiring, unusable)
 	return usable, nil
 }
@@ -2281,7 +2300,10 @@ func (a *App) RefreshAll() RefreshSummary {
 			if usable, _, _, err := a.creditTotals(rt, au); err == nil {
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: usable})
-				rt.Pool.ClearSessionDead(st.UID)
+				// 同 RefreshCredits：SplitCredential 渠道的积分成功不能证明推理凭据可用。
+				if !rt.SplitCredential {
+					rt.Pool.ClearSessionDead(st.UID)
+				}
 			} else {
 				ps.Failed++
 				msg := shortErr(err)

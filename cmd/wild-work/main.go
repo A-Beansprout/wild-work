@@ -32,22 +32,21 @@ import (
 	"wild-work/internal/app"
 	"wild-work/internal/auth"
 	"wild-work/internal/cline"
+	"wild-work/internal/codearts"
 	"wild-work/internal/config"
 	"wild-work/internal/custom"
 	"wild-work/internal/devdump"
 	"wild-work/internal/gateway"
+	"wild-work/internal/gemini"
 	"wild-work/internal/glm"
+	"wild-work/internal/kilo"
 	"wild-work/internal/ledger"
+	"wild-work/internal/lobsterai"
 	"wild-work/internal/loomy"
 	"wild-work/internal/loopguard"
-	"wild-work/internal/monkeycode"
-	"wild-work/internal/codearts"
-	"wild-work/internal/gemini"
-	"wild-work/internal/kilo"
-	"wild-work/internal/lobsterai"
 	"wild-work/internal/minimax"
+	"wild-work/internal/monkeycode"
 	"wild-work/internal/oczen"
-	"wild-work/internal/zcode"
 	"wild-work/internal/officeace"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
@@ -64,6 +63,7 @@ import (
 	"wild-work/internal/traework"
 	"wild-work/internal/upstream"
 	"wild-work/internal/workbuddyai"
+	"wild-work/internal/zcode"
 )
 
 //go:embed all:web
@@ -625,19 +625,23 @@ func main() {
 		provider.QoderCN:     {Kind: provider.QoderCN, Pool: qcnPool, Upstream: qcnUp, Scheduler: qcnSch},
 		provider.QoderCOM:    {Kind: provider.QoderCOM, Pool: qcmPool, Upstream: qcmUp, Scheduler: qcmSch},
 		provider.QwenWork:    {Kind: provider.QwenWork, Pool: qwPool, Upstream: qwUp, Scheduler: qwSch},
-		provider.MonkeyCode:  {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch},
-		provider.Raccoon:     {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
-		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
-		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
-		provider.Cline:       {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
-		provider.OfficeAce:   {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
-		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
-		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
-		provider.Minimax:     {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
-		provider.LobsterAI:   {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
-		provider.ZCode:       {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
-		provider.Gemini:      {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
-		provider.CodeArts:    {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
+		// MonkeyCode 的控制面与数据面用两套独立凭据：推理走 X-Api-Key（agent 的
+		// oma_ key），积分/签到走控制台 Cookie（或派生出它的百智云 Cookie）。
+		// 一个可用不代表另一个可用，故标记 SplitCredential —— 积分刷新成功时
+		// 不得清除推理侧打上的 SessionDead（2026-10-18 实测：标了又清、清了又标）。
+		provider.MonkeyCode: {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch, SplitCredential: true},
+		provider.Raccoon:    {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
+		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
+		provider.GLM:        {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
+		provider.Cline:      {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
+		provider.OfficeAce:  {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
+		provider.Oczen:      {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
+		provider.Kilo:       {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
+		provider.Minimax:    {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
+		provider.LobsterAI:  {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
+		provider.ZCode:      {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
+		provider.Gemini:     {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
+		provider.CodeArts:   {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)

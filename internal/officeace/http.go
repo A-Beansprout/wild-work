@@ -46,6 +46,11 @@ func (c *Client) chatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 		return nil, 0, []byte("officeace: missing base_url"), fmt.Errorf("officeace: missing base_url")
 	}
 	out := rewriteBody(body)
+	// 出站节流：ModelArts 对对话端点限 1 req/s，超限回 429 ModelArts.81101，
+	// 进而被 handler 当成整号软冷却、MaxRotate 轮空后整渠道 503。
+	// 按 base_url 共享（实测两个不同账号同秒各 429 ⇒ 限的是网关×调用方，不是账号）。
+	// 详见 throttle.go 的注释。ChatThrottleInterval <= 0 时关闭节流（逃生门）。
+	throttleFor(ac.BaseURL, c.throttleInterval()).wait()
 	req, err := http.NewRequest(http.MethodPost, ac.chatURL(), bytes.NewReader(out))
 	if err != nil {
 		return nil, 0, nil, err
