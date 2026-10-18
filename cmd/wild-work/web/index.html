@@ -205,6 +205,18 @@
         <button class="btn small" id="btnCopyUrl">复制链接</button>
         <button class="btn small danger" id="btnCancelLogin">取消</button>
       </div>
+      <!-- 手动回调兜底：授权回调写死回环地址的渠道（CodeArts）在「浏览器与网关不同机」
+           （局域网/远程打开面板）时，跳转会落到用户自己机器的 127.0.0.1 而打不开，
+           授权码到不了网关。由 startLogin 按后端 manual_callback 显隐本行。 -->
+      <div class="hidden" id="lcCallbackRow" style="margin-top:10px">
+        <div id="lcCallbackHint" style="font-size:12px;margin-bottom:4px;opacity:.8"></div>
+        <input type="text" id="lcCallbackUrl" autocomplete="off"
+               style="width:100%;box-sizing:border-box;padding:6px 8px"
+               placeholder="粘贴登录后浏览器地址栏里的完整 URL">
+        <div style="margin-top:6px;text-align:right">
+          <button class="btn small primary" id="btnSubmitCallback">提交回调</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>

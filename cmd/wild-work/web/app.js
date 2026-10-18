@@ -1654,6 +1654,18 @@ async function startLogin(channel, accountLabel) {
     }
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
+    // 手动回调兜底（CodeArts）：它的授权回调写死 http://127.0.0.1:<port>/oauth/callback。
+    // 只有「浏览器与网关同一台机器」时授权码才会自动回到网关；从局域网/远程打开面板时，
+    // 浏览器会跳到用户自己机器的 127.0.0.1（打不开），流程只能等到超时。
+    if (r.manual_callback) {
+      $("lcCallbackHint").textContent =
+        "若登录完成后浏览器跳到一个打不开的 127.0.0.1 地址：把那条完整 URL（含 code=…）复制到下面提交，"
+        + "网关会立刻换取凭据。浏览器与网关是同一台机器时无需理会此项。";
+      $("lcCallbackRow").classList.remove("hidden");
+    } else {
+      $("lcCallbackRow").classList.add("hidden");
+      $("lcCallbackUrl").value = "";
+    }
     startLoginPoll();
   } catch (e) {
     toast(e.message);
@@ -1737,6 +1749,23 @@ function copyUrl() {
   // 必须走 copyText：局域网 http:// 是非安全上下文，navigator.clipboard 被浏览器
   // 直接禁用，需降级 execCommand（与顶栏 API-Key 复制同一 helper）。
   copyText(url, "链接");
+}
+
+// 手动提交授权回调地址（局域网/远程兜底，当前只对 CodeArts 显示）。
+// 语义：只把 code 交给网关换凭据，用户不需要交出任何 token。
+async function submitCallback() {
+  const url = ($("lcCallbackUrl").value || "").trim();
+  if (!url) { toast("请先粘贴浏览器地址栏里的完整 URL"); return; }
+  try {
+    await api("/api/login/callback", { url });
+    $("lcCallbackUrl").value = "";
+    $("lcCallbackHint").textContent = "已提交，正在换取凭据…";
+  } catch (e) {
+    // 保留弹层与已填内容：端口粘错、缺 code 这类错误下登录流程往往仍在进行，
+    // 用户需要就地改正后重试（关掉弹层等于把输入丢了）。
+    // 真正的终态失败（授权被拒/超时）由 2s 状态轮询统一收尾，避免重复提示。
+    $("lcCallbackHint").textContent = "提交失败：" + e.message;
+  }
 }
 
 // 登录轮询
@@ -2841,6 +2870,7 @@ function bind() {
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
   $("btnCopyUrl").onclick = copyUrl;
+  $("btnSubmitCallback").onclick = submitCallback;
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
   // 模型查找面板（纯前端）：入口按钮 + 关闭 + 输入即过滤 + 结果点击复制完整 ID。
