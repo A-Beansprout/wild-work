@@ -1,4 +1,9 @@
-// login_manual_test.go 手动回调（局域网/远程兜底）回归测试：**零真实网络**。
+// login_manual_test.go 手动回调（局域网/远程兜底）的**契约测试**：**零真实网络**。
+//
+// 注意用词：这不是「回归测试」。回归测试必须能修复前失败、修复后通过；而本文件测的是
+// 本 PR 新增的 SubmitCallbackURL 入口，在未修复的 v2.9.0 上连编译都过不去
+// （实测 undefined: SubmitCallbackURL），不可能呈现红→绿。
+// 它的作用是锁定契约：端口自检、缺 code/拒绝的语义、人工通道与自动回调共用同一结论通道。
 package login_codearts
 
 import (
