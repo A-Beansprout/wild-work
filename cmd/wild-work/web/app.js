@@ -316,6 +316,7 @@ function attachModelPicker(input, opts) {
     nodes[hlIdx].scrollIntoView({ block: "nearest" });
   }
   input.addEventListener("focus", render);
+  input.addEventListener("click", render);
   input.addEventListener("input", render);
   input.addEventListener("keydown", (e) => {
     if (!menu.classList.contains("open")) { if (e.key === "Enter" && opts.enterAction) opts.enterAction(e); return; }
@@ -373,6 +374,7 @@ function attachEffortPicker(input, opts) {
     nodes.forEach((n, k) => n.classList.toggle("pk-hl", k === hlIdx));
   }
   input.addEventListener("focus", render);
+  input.addEventListener("click", render);
   input.addEventListener("input", render);
   input.addEventListener("keydown", (e) => {
     if (!menu.classList.contains("open")) { if (e.key === "Enter" && opts.enterAction) opts.enterAction(e); return; }
@@ -2254,6 +2256,7 @@ function openSettings() {
   $("oczenKeyInput").value = state.oczen_api_key || ""; // 回显脱敏值；未改动则原样回传，后端按脱敏值识别为「未变」
   $("oczenKeyInput").dataset.touched = "";
   // 模型降级链
+  if (!lastFees) loadFees();
   fbRules = JSON.parse(JSON.stringify(state.model_fallback || []));
   renderFbList();
   $("fbFromInput").value = ""; $("fbToInput").value = "";

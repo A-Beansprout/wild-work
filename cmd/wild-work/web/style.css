@@ -1548,7 +1548,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   font-size: 12px; font-weight: 500; white-space: nowrap; margin-left: 8px;
 }
 
-/* 规则/映射卡片区块（custom-ch-card 同款） */
+/* 规则/映射卡片区块（custom-ch-card 同款）
    覆盖「模型降级链」「思考强度」两区：
    - .pk-wrap：输入框定位容器（下拉锚点，input 直接子元素）；.half2 底部行对半分。
    - .pk-menu：下拉面板（渠道徽标 + 完整 ID + 价格两行富信息，字段与「查找模型」弹层同源）。
@@ -1562,10 +1562,10 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 /* 下拉面板：绝对定位贴输入框下沿，全局同时只开一个（pkOpenMenu 管理闭菜单）。
    display:none / .open 才显示——渲染与显隐解耦，避免空菜单占位。 */
 .pk-menu {
-  display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 60;
+  display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 100;
   background: var(--card); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.14);
-  max-height: 320px; overflow-y: auto; overflow-x: hidden;
+  max-height: 280px; overflow-y: auto; overflow-x: hidden;
   font-size: 12.5px; padding: 4px;
 }
 .pk-menu.open { display: block; }
