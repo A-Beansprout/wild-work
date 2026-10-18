@@ -521,17 +521,21 @@
   <div class="modal modal-wide">
     <div class="modal-title">自定义模型（OpenAI 兼容）</div>
     <div class="modal-body">
-      <div class="hint" style="margin:0 0 10px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
+      <div class="hint cm-notice" style="margin:0 0 12px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
       <div id="customChList" class="cm-list"></div>
-      <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
-        <button class="btn small" id="btnCustomAdd">＋ 新增 Provider</button>
-        <button class="btn small primary" id="btnCustomSave" style="margin-left:auto">保存</button>
+      <div class="cm-add-bar">
+        <button class="btn small cm-btn-add-provider" id="btnCustomAdd">＋ 新增 Provider</button>
       </div>
-      <div class="hint" id="customChErr" style="color:var(--danger);margin-top:4px"></div>
-      <div class="hint" id="customChOk" style="color:var(--success);margin-top:4px"></div>
     </div>
-    <div class="modal-actions">
-      <button class="btn small" id="btnCustomClose">关闭</button>
+    <div class="modal-actions cm-modal-actions">
+      <div class="cm-status-group">
+        <div class="hint" id="customChErr" style="color:var(--danger)"></div>
+        <div class="hint" id="customChOk" style="color:var(--success)"></div>
+      </div>
+      <div class="cm-action-buttons">
+        <button class="btn small" id="btnCustomClose">关闭</button>
+        <button class="btn small primary" id="btnCustomSave">保存</button>
+      </div>
     </div>
   </div>
 </div>

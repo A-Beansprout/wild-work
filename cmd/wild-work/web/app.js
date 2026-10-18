@@ -2081,8 +2081,7 @@ function formatTokenCount(num) {
 function renderCustomChList() {
   // R85：每个 Provider 一个区块，Provider 自己一行（信息 + 操作），
   // 它下面的每个模型也各占一行（模型信息 + 操作）。**任何一行都不换行**，
-  // 靠横向滚动兜底而不是折行——之前把模型 chip 挤进 Provider 那一行，
-  // 渠道一多就换行，看着很乱。
+  // 靠横向滚动兜底而不是折行。
   const blocks = editCustomChannels.map((c, i) => {
     const keyMask = c.api_key ? (c.api_key.length > 8 ? c.api_key.slice(0, 3) + "…" + c.api_key.slice(-4) : "••••••") : "无密钥";
     const models = c.models || [];
@@ -2098,13 +2097,14 @@ function renderCustomChList() {
       if (typeof m === "object" && m.supports_images) caps.push("识图");
       if (typeof m === "object" && (m.supports_reasoning || efforts.length)) caps.push("思考");
       if (typeof m !== "object" || m.supports_tools !== false) caps.push("工具");
+      const capTags = caps.map((cap) => `<span class="cm-cap-tag">${esc(cap)}</span>`).join("");
       return `<div class="cm-model-row">
         <div class="cm-info">
           <code class="cm-model-id" title="${esc(mid)}">${esc(mid)}</code>
-          <span class="cm-meta">上下文 ${esc(ctx)}</span>
-          <span class="cm-meta">输出 ${esc(out)}</span>
-          <span class="cm-meta">${efforts.length ? "档位 " + esc(efforts.join("/")) : "无思考"}</span>
-          <span class="cm-meta">${esc(caps.join("·") || "—")}</span>
+          <span class="cm-meta cm-meta-spec">上下文 <b>${esc(ctx)}</b></span>
+          <span class="cm-meta cm-meta-spec">输出 <b>${esc(out)}</b></span>
+          <span class="cm-meta ${efforts.length ? "cm-meta-effort" : "cm-meta-dim"}">${efforts.length ? "档位 " + esc(efforts.join("/")) : "无思考"}</span>
+          <span class="cm-meta cm-caps">${capTags || '<span class="cm-meta-dim">—</span>'}</span>
         </div>
         <button class="btn small cm-btn-edit" data-edit-model-in="${i}:${j}">编辑</button>
         <button class="btn small danger cm-btn-del" data-del-model-in="${i}:${j}">删除</button>
@@ -2117,17 +2117,15 @@ function renderCustomChList() {
           <span class="badge custom">${esc(c.name)}</span>
           <span class="cm-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
           <span class="cm-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
-          <span class="cm-meta">${models.length} 个模型</span>
+          <span class="cm-meta cm-models-count">${models.length} 个模型</span>
         </div>
-        <div class="cm-actions">
-          <button class="btn small cm-btn-edit" data-edit-custom="${i}">编辑</button>
-          <button class="btn small cm-btn-import" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
-          <button class="btn small cm-btn-add" data-add-model-in="${i}">＋ 模型</button>
-          <button class="btn small danger cm-btn-del" data-del-custom="${i}">删除</button>
-        </div>
+        <button class="btn small cm-btn-edit" data-edit-custom="${i}">编辑</button>
+        <button class="btn small cm-btn-import" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
+        <button class="btn small cm-btn-add" data-add-model-in="${i}">＋ 模型</button>
+        <button class="btn small danger cm-btn-del" data-del-custom="${i}">删除</button>
       </div>
       <div class="cm-models">
-        ${modelRows || '<div class="cm-model-row"><span class="hint" style="margin:0">（该 Provider 还没有模型，点「＋ 模型」或「导入」）</span></div>'}
+        ${modelRows || '<div class="cm-model-row cm-empty-row"><span class="hint" style="margin:0">（该 Provider 还没有模型，点「＋ 模型」或「导入」）</span></div>'}
       </div>
     </div>`;
   }).join("");
