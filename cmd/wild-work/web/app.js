@@ -2079,45 +2079,36 @@ function formatTokenCount(num) {
 }
 
 function renderCustomChList() {
-  // 一行一个渠道（R82）：渠道信息 + 模型数 + 操作按钮全部挤在一行，不再展开模型表。
-  // 模型的新增/修改/删除都走弹窗（openChannelEditor / openModelEditor），
-  // 这样 10 个渠道也不会把弹层撑成几屏高。
+  // 一行一个渠道，**模型也挤在同一行**（R83）：渠道信息 + 模型文字按钮 + 操作按钮。
+  // 为什么不再折叠模型：用户要在列表上一眼看到"这个 provider 有哪些模型"，
+  // 点进弹窗才能看到等于没有。模型 chip 是文字按钮（点开模型编辑弹窗），不是纯标签。
   const rows = editCustomChannels.map((c, i) => {
-    const isOff = c.enabled === false;
-    const offTag = isOff ? '<span class="tag neutral">已禁用</span>' : '<span class="tag ok">已启用</span>';
     const keyMask = c.api_key ? (c.api_key.length > 8 ? c.api_key.slice(0, 3) + "…" + c.api_key.slice(-4) : "••••••") : "无密钥";
     const models = c.models || [];
+    const modelChips = models.length
+      ? models.map((m, j) => {
+          const mid = typeof m === "string" ? m : m.id;
+          const efforts = typeof m === "object" && m.reasoning_efforts ? m.reasoning_efforts : [];
+          const tip = efforts.length ? `点击编辑 ${mid}（思考档位：${efforts.join("/")}）` : `点击编辑 ${mid}`;
+          return `<button class="model-chip" data-edit-model-in="${i}:${j}" title="${esc(tip)}">${esc(mid)}</button>`;
+        }).join("")
+      : '<span class="hint" style="margin:0">（无模型）</span>';
     return `<div class="custom-ch-row">
       <span class="badge custom">${esc(c.name)}</span>
       <span class="cch-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
       <span class="cch-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
-      ${offTag}
-      <span class="cch-count hint" title="已配置模型数">${models.length} 个模型</span>
-      <button class="btn small" data-edit-custom="${i}" title="编辑渠道（地址/密钥/名称）">编辑</button>
-      <button class="btn small" data-models-custom="${i}" title="管理该渠道的模型（增删改）">模型</button>
-      <button class="btn small" data-test-custom="${i}">测试连通</button>
-      <button class="btn small" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入模型</button>
-      <button class="btn small" data-toggle-custom="${i}">${isOff ? "启用" : "停用"}</button>
-      <button class="icon-btn" data-del-custom="${i}" title="删除该渠道">🗑</button>
+      <span class="cch-models" title="${esc(models.map((m) => (typeof m === "string" ? m : m.id)).join(", "))}">${modelChips}</span>
+      <button class="btn small" data-models-custom="${i}" title="管理该渠道的模型（新增/批量导入）">模型管理</button>
+      <button class="btn small" data-edit-custom="${i}" title="编辑渠道（地址/密钥）">编辑</button>
+      <button class="btn small" data-test-custom="${i}">测试</button>
+      <button class="btn small" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
+      <button class="btn small danger" data-del-custom="${i}" title="删除该渠道及其全部模型">删除</button>
     </div>`;
   }).join("");
 
   $("customChList").innerHTML = rows || `<div class="hint">（暂无自定义渠道，点下方「＋ 新增渠道」开始配置）</div>`;
   $("customChErr").textContent = "";
   $("customChOk").textContent = "";
-}
-
-async function saveCustomChannels() {
-  try {
-    await api("/api/config/custom_channels", { channels: editCustomChannels });
-    toast("自定义渠道已保存（热生效）");
-    $("customChErr").textContent = "";
-    $("customChOk").textContent = "渠道及模型配置已成功保存并立即生效";
-    loadState();
-  } catch (e) {
-    $("customChErr").textContent = e.message;
-    $("customChOk").textContent = "";
-  }
 }
 
 // ---------- 思考强度注入（设置弹层：客户端未传 reasoning_effort 时按模型注入档位） ----------
@@ -2254,29 +2245,15 @@ function openSettings() {
   $("selExpiring").value = String(state.expiring_days || 1);
   $("chkLoopGuard").checked = state.loop_guard !== false; // 缺省（旧后端）按开启显示
   $("chkBodyLog").checked = !!state.body_log;
+  // 自定义渠道（R84：搬回设置内，与其它 section 同批初始化）
+  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
+  renderCustomChList();
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
   $("settingsOverlay").classList.remove("hidden");
 }
 
 function closeSettings() {
   $("settingsOverlay").classList.add("hidden");
-}
-
-// ---------- 自定义渠道弹层（R81：从设置弹层独立，主面板一键直达） ----------
-// 为什么独立：设置弹层有 10+ 个 cfg-section，自定义渠道埋在最后，用户「找不到」。
-// 提到主面板渠道按钮末尾后，配置面从「设置里的一个小节」变成「和添加账号平级的入口」。
-// 功能完全保留：增删改渠道、增删改模型、测试连通、保存全部配置，行为与设置里一致。
-function openCustomChannels() {
-  $("modelSearchOverlay").classList.add("hidden"); // 弹层互斥
-  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
-  renderCustomChList();
-  $("customChErr").textContent = "";
-  $("customChOk").textContent = "";
-  $("customChannelOverlay").classList.remove("hidden");
-}
-
-function closeCustomChannels() {
-  $("customChannelOverlay").classList.add("hidden");
 }
 
 // ---------- 渠道编辑弹窗（R82） ----------
@@ -2353,7 +2330,7 @@ function renderModelManager() {
       ${effTxt ? `<span class="tag ok">${esc(effTxt)}</span>` : ""}
       <span class="mm-meta">${esc(caps.join("·") || "—")}</span>
       <button class="btn small" data-edit-model="${j}">编辑</button>
-      <a data-del-model="${j}" style="cursor:pointer;color:var(--danger);font-weight:bold;font-size:15px;padding:0 4px" title="移除该模型">×</a>
+      <button class="btn small danger" data-del-model="${j}" title="移除该模型">删除</button>
     </div>`;
   }).join("");
 }
@@ -2391,6 +2368,9 @@ function openModelEditor(modelIdx) {
 function closeModelEditor() {
   $("modelEditorOverlay").classList.add("hidden");
   editModelIdx = -1;
+  // 从列表直接点 chip 进来时模型管理弹窗是关着的，关掉编辑弹窗后复位 mgrChIdx，
+  // 否则后续「导入」会误用这个残留渠道。
+  if ($("modelManagerOverlay").classList.contains("hidden")) mgrChIdx = -1;
 }
 
 function saveModelEditor() {
@@ -2622,6 +2602,15 @@ async function saveSettings() {
     try {
       await api("/api/config/loop_guard", { on: loopGuardOn });
     } catch (e) { toast(e.message); return; }
+  }
+
+  // 4.7) 自定义渠道（R84：搬回设置内，随「保存」一起落盘）
+  // 与独立弹层时期一致：只在内容真变了才提交，避免每次保存设置都重装一次渠道运行时。
+  const customJSON = JSON.stringify(editCustomChannels);
+  if (customJSON !== JSON.stringify(state.custom_channels || [])) {
+    try {
+      await api("/api/config/custom_channels", { channels: editCustomChannels });
+    } catch (e) { toast("自定义渠道保存失败：" + e.message); return; }
   }
 
   // 5) API-Key（最后保存：改 Key 可能影响当前会话的后续请求）
@@ -3063,6 +3052,14 @@ function bind() {
       openChannelEditor(+editChBtn.dataset.editCustom);
       return;
     }
+    // 列表里点模型 chip：直接打开该模型的编辑弹窗（不必先进模型管理）
+    const chipBtn = e.target.closest("[data-edit-model-in]");
+    if (chipBtn) {
+      const [ci, mi] = chipBtn.dataset.editModelIn.split(":").map(Number);
+      mgrChIdx = ci;                      // 模型编辑弹窗依赖 mgrChIdx 定位渠道
+      openModelEditor(mi);
+      return;
+    }
     const modelsBtn = e.target.closest("[data-models-custom]");
     if (modelsBtn) {
       openModelManager(+modelsBtn.dataset.modelsCustom);
@@ -3071,16 +3068,6 @@ function bind() {
     const importBtn = e.target.closest("[data-import-custom]");
     if (importBtn) {
       openModelImport(+importBtn.dataset.importCustom);
-      return;
-    }
-    const toggleBtn = e.target.closest("[data-toggle-custom]");
-    if (toggleBtn) {
-      const idx = +toggleBtn.dataset.toggleCustom;
-      if (editCustomChannels[idx]) {
-        const cur = editCustomChannels[idx].enabled !== false;
-        editCustomChannels[idx].enabled = !cur;
-        renderCustomChList();
-      }
       return;
     }
     const delBtn = e.target.closest("[data-del-custom]");
@@ -3094,7 +3081,17 @@ function bind() {
 
   // R82：新增渠道走独立弹窗（不再依赖底部输入行）
   $("btnCustomAdd").onclick = () => openChannelEditor(-1);
-  $("btnCustomSave").onclick = saveCustomChannels;
+
+  // 设置弹层的快捷跳转（R84）：滚到对应 section 并高亮一下
+  document.querySelectorAll(".cfg-jump a").forEach((a) => {
+    a.onclick = () => {
+      const el = document.getElementById(a.dataset.jump);
+      if (!el) return;
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+      el.classList.add("cfg-flash");
+      setTimeout(() => el.classList.remove("cfg-flash"), 1200);
+    };
+  });
 
   // ---- 渠道编辑弹窗（R82） ----
   $("btnCeCancel").onclick = () => closeChannelEditor();
@@ -3131,11 +3128,6 @@ function bind() {
 
   // 点击弹层空白处关闭
   $("settingsOverlay").onclick = (e) => { if (e.target === $("settingsOverlay")) closeSettings(); };
-
-  // ---- 自定义渠道弹层（R81） ----
-  $("btnCustomChannels").onclick = () => openCustomChannels();
-  $("btnCustomClose").onclick = () => closeCustomChannels();
-  $("customChannelOverlay").onclick = (e) => { if (e.target === $("customChannelOverlay")) closeCustomChannels(); };
 
   // ---- 模型导入弹层（R81） ----
   $("btnImportCancel").onclick = () => closeModelImport();

@@ -82,9 +82,6 @@
           <button class="btn primary alt zcode" id="btnAddZCode" title="ZCode（智谱）：设备授权登录；积分领取依赖网页验证码，本工具不自动领取">＋ ZCode</button>
           <button class="btn primary alt gemini" id="btnAddGemini" title="Gemini（Google Code Assist）：本机回调授权登录，支持多账号">＋ Gemini</button>
           <button class="btn primary alt codearts" id="btnAddCodeArts" title="CodeArts（华为云）：PKCE 授权登录，支持多账号；免费额度按 UTC+8 自然日重置">＋ CodeArts</button>
-          <!-- 第 18 个：自定义 OpenAI 兼容渠道（R81）。放在内建渠道之后 —— 语义上「兜底」，
-               且凑满 6+6+6 三行（此前 17 个会留一格孤行）。点击打开独立弹层，不再进设置。 -->
-          <button class="btn primary alt custom" id="btnCustomChannels" title="自定义渠道（OpenAI 兼容）：接入任意 /v1 端点（反代、官方 API、本地服务），支持从上游 /models 一键导入模型">＋ 自定义渠道</button>
         </div>
       </div>
     </div>
@@ -350,12 +347,23 @@
 
 <!-- 设置弹层（统一配置入口：监听/API-Key/模型路由/备用上游通道） -->
 <div class="overlay hidden" id="settingsOverlay">
-  <div class="modal modal-wide">
+  <div class="modal modal-xwide">
     <div class="modal-title">设置</div>
+    <!-- 快捷跳转（R84）：设置里有 10+ 个小节，自定义渠道在最底部；
+         没有跳转就只能靠滚，等于"藏起来了"。 -->
+    <div class="cfg-jump">
+      <a data-jump="secBasic">接口</a>
+      <a data-jump="secRoute">模型路由</a>
+      <a data-jump="secCheckin">签到自启</a>
+      <a data-jump="secProxy">备用通道</a>
+      <a data-jump="secFallback">降级链</a>
+      <a data-jump="secEffort">思考强度</a>
+      <a data-jump="secCustom">自定义渠道</a>
+    </div>
     <div class="modal-body settings-body">
 
       <!-- 接口与鉴权 -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secBasic">
         <div class="cfg-heading">接口与鉴权</div>
         <div class="row">
           <label class="lbl wide">监听</label>
@@ -386,7 +394,7 @@
       </div>
 
       <!-- 模型路由（cc/codex 映射） -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secRoute">
         <div class="cfg-heading">模型路由（Claude Code / Codex 映射）</div>
         <div class="row">
           <label class="lbl wide">默认渠道</label>
@@ -413,7 +421,7 @@
       </div>
 
       <!-- 自动签到与开机自启 -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secCheckin">
         <div class="cfg-heading">自动签到与开机自启</div>
         <div class="row">
           <label class="lbl wide">签到时间</label>
@@ -448,7 +456,7 @@
       </div>
 
       <!-- 备用上游通道（全局单一代理；<b>不参与常规请求</b>，仅渠道命中地区拒绝时自动取用） -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secProxy">
         <div class="cfg-heading">备用上游通道</div>
         <div class="hint" style="margin:0 0 8px">全局只配<b>一个</b>备用代理（http/https/socks5），留空 = 无备用通道。
           它<b>不影响本工具的任何常规请求</b>：所有渠道一律直连；只有上游回「地区限制」时，
@@ -471,7 +479,7 @@
       </div>
 
       <!-- 模型降级链 -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secFallback">
         <div class="cfg-heading">模型降级链 <button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button></div>
         <div class="hint" style="margin:0 0 8px">原模型在该渠道已无账号可承载（请求模型的全部账号限流冷却，或整渠道账号全部不可用 / 已禁用）时，按顺序找第一个可用的备胎模型顶上，响应头 <span style="font-family:ui-monospace,monospace">X-Model-Fallback</span> 标注实际备胎；原模型恢复后自动切回，不粘滞。主力模型ID 与备胎模型ID 均用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），备胎可跨渠道。备胎链内可拖动 chip 调整顺序。</div>
         <div id="fbList" class="proxy-list"></div>
@@ -488,7 +496,7 @@
       </div>
 
       <!-- 思考强度注入 -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secEffort">
         <div class="cfg-heading">思考强度 <button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button></div>
         <div class="hint" style="margin:0 0 8px">客户端请求<b>未带</b> <span style="font-family:ui-monospace,monospace">reasoning_effort</span> 时，按请求模型 ID 注入配置的思考档位；客户端显式传了的（任意值）一律不覆盖；精确未命中回退全局默认。哑管道不校验档位取值（支持什么档位由渠道模型自己决定）；<b>TraeWork 渠道协议无 reasoning 注入点，注入无害但无效</b>。模型ID 用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），<span style="font-family:ui-monospace,monospace">*</span> 为全局默认。</div>
         <div class="row" style="margin-top:8px">
@@ -508,31 +516,26 @@
         <div class="hint" id="effErr" style="color:var(--danger)"></div>
       </div>
 
+      <!-- 自定义渠道（R66 起，R84 从独立弹层搬回设置内）：
+           放回设置是因为弹窗宽度已统一到 1180px，设置里放得下；
+           独立弹层的真正动因是「设置太窄」，宽度修好后没必要多一层。 -->
+      <div class="cfg-section" id="secCustom">
+        <div class="cfg-heading">自定义渠道（OpenAI 兼容）</div>
+        <div class="hint" style="margin:0 0 10px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
+      <div id="customChList" class="custom-channels-list"></div>
+      <!-- R84：搬回设置后，保存由设置弹窗底部的「保存」统一承担，
+           这里只留「新增渠道」；不再放重复的「保存全部配置」（两个保存按钮只会让人犹豫）。 -->
+      <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
+        <button class="btn small" id="btnCustomAdd">＋ 新增渠道</button>
+      </div>
+      <div class="hint" id="customChErr" style="color:var(--danger);margin-top:4px"></div>
+      <div class="hint" id="customChOk" style="color:var(--success);margin-top:4px"></div>
+      </div>
+
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnSettingsCancel">取消</button>
       <button class="btn small primary" id="btnSettingsSave">保存</button>
-    </div>
-  </div>
-</div>
-
-<!-- 自定义渠道弹层（R81：从设置弹层独立出来，主面板可直接进入） -->
-<div class="overlay hidden" id="customChannelOverlay">
-  <div class="modal modal-xwide">
-    <div class="modal-title">自定义渠道（OpenAI 兼容）</div>
-    <div class="modal-body">
-      <div class="hint" style="margin:0 0 10px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
-      <div id="customChList" class="custom-channels-list"></div>
-      <!-- R82：新增渠道改走弹窗（底部不再保留输入行），这里只留「新增」与「保存」两个动作 -->
-      <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
-        <button class="btn small" id="btnCustomAdd">＋ 新增渠道</button>
-        <button class="btn small primary" id="btnCustomSave" style="margin-left:auto">保存全部配置</button>
-      </div>
-      <div class="hint" id="customChErr" style="color:var(--danger);margin-top:4px"></div>
-      <div class="hint" id="customChOk" style="color:var(--success);margin-top:4px"></div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn small" id="btnCustomClose">关闭</button>
     </div>
   </div>
 </div>

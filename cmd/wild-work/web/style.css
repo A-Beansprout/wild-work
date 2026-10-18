@@ -485,11 +485,21 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 
 /* 弹层 */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+/* ===== 弹层宽度规范（R84）=====
+   只有三档，别再造第四档：
+     .modal            400px  单行输入类（改名/确认/关于/登录）
+     .modal-wide       720px  表单类（添加账号/说明文档）
+     .modal-xwide     1180px  表格与多列编辑类（设置、自定义渠道、模型管理）
+   「设置」与「自定义渠道」必须同档（用户明确要求）——此前 720 vs 1180
+   宽度不一致，在两者之间切换会明显跳动，也让「设置里放不下自定义渠道」
+   这个伪问题一直存在。 */
 .modal { background: var(--card); border-radius: 12px; padding: 20px 22px; width: 400px; max-width: 92vw; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
 /* 宽弹层：统一设置 / 帮助（风险声明多，需宽松排版） */
 .modal.modal-wide { width: 720px; max-width: 94vw; max-height: 86vh; display: flex; flex-direction: column; }
+/* xwide 的 min-height 让内容少的弹层不至于塌成一条（自定义渠道只有 4 行时） */
+.modal.modal-xwide { min-height: 320px; }
 /* 更宽的一档（自定义渠道：一行要塞 badge+URL+密钥+状态+模型数+6 个按钮） */
-.modal.modal-xwide { width: 1040px; max-width: 96vw; max-height: 86vh; display: flex; flex-direction: column; }
+.modal.modal-xwide { width: 1180px; max-width: 97vw; max-height: 86vh; display: flex; flex-direction: column; }
 .modal-xwide .modal-body { overflow-y: auto; min-height: 0; }
 .modal-wide .modal-body { overflow-y: auto; min-height: 0; }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
@@ -499,6 +509,20 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 
 /* 统一设置弹层内部分区 */
 .settings-body { word-break: normal; }
+/* 设置弹层的快捷跳转条（R84）：吸顶，滚动时始终可点 */
+.cfg-jump {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 8px 0 10px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--line, #e2e8f0);
+  position: sticky; top: 0; z-index: 2;
+  background: var(--card, #fff);
+}
+.cfg-jump a {
+  font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line, #e2e8f0); color: var(--muted, #64748b);
+  cursor: pointer; white-space: nowrap;
+}
+.cfg-jump a:hover { border-color: var(--primary, #2563eb); color: var(--primary, #2563eb); }
 .cfg-section { padding: 12px 0 4px; border-top: 1px solid var(--border); }
 .cfg-section:first-child { border-top: none; padding-top: 2px; }
 .cfg-heading { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
@@ -527,8 +551,30 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   color: var(--text); overflow: hidden; text-overflow: ellipsis;
 }
 .custom-ch-row .cch-key { flex-shrink: 0; margin: 0; }
-.custom-ch-row .tag { flex-shrink: 0; }
-.custom-ch-row .cch-count { flex-shrink: 0; margin: 0; }
+/* 模型 chips：与渠道同处一行。整体不换行（nowrap），超出部分横向滚动——
+   这样「provider + 它的全部模型 + 操作按钮」始终是一条线，不会因为模型多而折行。 */
+.custom-ch-row .cch-models {
+  display: flex; align-items: center; gap: 4px;
+  flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;           /* 行内滚动条太吵，隐藏但仍可滚 */
+  padding: 1px 0;
+}
+.custom-ch-row .cch-models::-webkit-scrollbar { display: none; }
+/* 模型 chip 是**文字按钮**（点击打开模型编辑弹窗），不是纯展示标签 */
+.model-chip {
+  flex-shrink: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px; line-height: 1.5;
+  padding: 2px 7px;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 999px;
+  background: var(--card, #fff);
+  color: var(--text, #1e293b);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.model-chip:hover { border-color: var(--primary, #2563eb); color: var(--primary, #2563eb); }
 .custom-ch-row .btn, .custom-ch-row .icon-btn { flex-shrink: 0; }
 
 /* 模型管理弹层：一行一个模型 */
@@ -1332,3 +1378,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 @media (max-width: 640px) {
   .fb-foot-row .half2 { flex: 1 1 100%; }
 }
+
+/* 快捷跳转后的高亮（1.2s 淡出，帮助定位） */
+.cfg-section.cfg-flash { animation: cfgFlash 1.2s ease-out; }
+@keyframes cfgFlash { from { background: color-mix(in srgb, var(--primary, #2563eb) 12%, transparent); } to { background: transparent; } }

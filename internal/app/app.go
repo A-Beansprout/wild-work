@@ -2360,17 +2360,9 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 	if rt.Kind == provider.Kilo {
 		return fmt.Errorf("Kilo 免费池账号不可停用/启用")
 	}
-	if rt.Custom {
-		var next []custom.ChannelConfig
-		for _, cc := range a.cfg.CustomChannels {
-			if strings.EqualFold(cc.Name, rt.Kind.String()) {
-				en := !disabled
-				cc.Enabled = &en
-			}
-			next = append(next, cc)
-		}
-		return a.SetCustomChannels(next)
-	}
+	// R83 起自定义渠道没有 enabled 概念（要么在列表里=启用，要么被删除），
+	// 故不再走「停用即写配置」的特例；落到下面常规的 pool.SetDisabled。
+	// 效果差异：面板重启后自定义渠道的停用状态不再持久化 —— 这正是删除该功能的本意。
 	rt.Pool.SetDisabled(uid, disabled)
 	if disabled {
 		log.Printf("已停用账号 %s", shortUID(uid))

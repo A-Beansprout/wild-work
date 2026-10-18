@@ -1119,9 +1119,6 @@ func buildCustomRuntimes(channels []custom.ChannelConfig, stateDir string) (map[
 	var names []string
 
 	for _, cc := range channels {
-		if !cc.IsEnabled() {
-			continue
-		}
 		k := provider.Kind(cc.Name)
 		client := custom.New(cc)
 		p := pool.New(filepath.Join(stateDir, "state-custom-"+cc.Name+".json"))
