@@ -267,6 +267,27 @@ body {
    凡是直接位于 .cfg-section 下的 .input.grow 一律撑满宽度。 */
 .cfg-section > .input.grow { flex: none; width: 100%; box-sizing: border-box; }
 .select { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 14px; background: var(--card); outline: none; }
+
+/* 下拉框统一自绘箭头（原生箭头在 Chrome 上是又小又贴边的灰色三角，和圆角边框不搭）。
+   做法：appearance:none 去掉原生控件，再画一个 CSS 三角贴在右侧。
+   为什么用 background-image 而不是 ::after：<select> 是替换元素，伪元素在多数
+   浏览器里不渲染（Chrome 明确不支持）。三角用 border 拼，颜色走 currentColor
+   的近似值（CSS 变量在 gradient 里可用，但三角需要 border，故直接写 muted 色）。 */
+.select, select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted, #64748b) 50%),
+                    linear-gradient(135deg, var(--muted, #64748b) 50%, transparent 50%);
+  background-position: calc(100% - 15px) calc(50% + 1px), calc(100% - 10px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;   /* 给箭头留位，避免长选项文字压到三角 */
+  cursor: pointer;
+}
+/* Firefox 不认 background-image 定位三角时会退化成无箭头，补一条 border 兜底；
+   同时禁用 IE 时代的 ::-ms-expand（虽然已无用户，成本为零）。 */
+select.input::-ms-expand, .select::-ms-expand { display: none; }
 .muted { color: var(--muted); }
 .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .risk-tip { font-size: 12px; color: var(--warn); background: #fefce8; border: 1px solid #fde68a; padding: 8px 10px; border-radius: 8px; margin-top: 8px; }
@@ -485,8 +506,45 @@ body {
 .proxy-row { margin-bottom: 0; }
 .proxy-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
-/* 自定义渠道层级卡片（R64） */
-.custom-channels-list { display: flex; flex-direction: column; gap: 8px; }
+/* 自定义渠道一行式列表（R82：原来每个渠道展开一张模型表，10 个渠道要滚好几屏） */
+.custom-channels-list { display: flex; flex-direction: column; gap: 6px; }
+.custom-ch-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: var(--bg, #f8fafc);
+  border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
+  white-space: nowrap;            /* 一行展示，绝不换行 */
+  overflow-x: auto;               /* 极窄屏兜底：宁可横滚也不换行挤压 */
+  scrollbar-width: thin;
+}
+.custom-ch-row .badge { flex-shrink: 0; }
+/* URL 是最容易撑爆的字段：给弹性宽度 + 省略号，而不是让它把按钮挤出去 */
+.custom-ch-row .cch-url {
+  flex: 1 1 auto; min-width: 60px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis;
+}
+.custom-ch-row .cch-key { flex-shrink: 0; margin: 0; }
+.custom-ch-row .tag { flex-shrink: 0; }
+.custom-ch-row .cch-count { flex-shrink: 0; margin: 0; }
+.custom-ch-row .btn, .custom-ch-row .icon-btn { flex-shrink: 0; }
+
+/* 模型管理弹层：一行一个模型 */
+.model-mgr-list { display: flex; flex-direction: column; gap: 6px; }
+.model-mgr-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: var(--bg, #f8fafc);
+  border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
+  white-space: nowrap; overflow-x: auto;
+}
+.model-mgr-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; flex: 1 1 auto; min-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+.model-mgr-row .mm-meta { flex-shrink: 0; font-size: 11px; color: var(--muted, #64748b); }
+.model-mgr-row .tag, .model-mgr-row .btn, .model-mgr-row .icon-btn { flex-shrink: 0; }
+
+/* 弹层内的「标签 + 输入框」一行（新增/编辑弹窗用） */
+.cfg-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cfg-label { flex-shrink: 0; width: 76px; font-size: 13px; color: var(--muted, #64748b); }
+
+/* 自定义渠道层级卡片（R64，保留给旧样式引用） */
 .custom-ch-card { background: var(--bg, #f8fafc); border: 1px solid var(--line, #e2e8f0); border-radius: 8px; padding: 10px 12px; }
 .custom-ch-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px dashed var(--line, #e2e8f0); }
 .custom-models-box { margin-top: 8px; }

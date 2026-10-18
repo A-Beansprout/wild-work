@@ -683,7 +683,7 @@ for (const [label, re] of uniq) {
   const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
   const need = [
     ["自定义渠道有独立弹层（R81：不再埋在设置弹层里）",
-      html.includes('id="customChannelOverlay"') && html.includes('id="customChList"') && html.includes('id="inCustomName"') && html.includes('id="inCustomURL"')],
+      html.includes('id="customChannelOverlay"') && html.includes('id="customChList"')],
     ["主面板有「自定义渠道」入口按钮（R81）", html.includes('id="btnCustomChannels"')],
     ["app.js 接线了 btnCustomChannels", raw.includes('$("btnCustomChannels").onclick')],
     // 用「函数体边界」判定而不是跨函数正则：openCustomChannels 紧跟 closeSettings，
@@ -701,7 +701,7 @@ for (const [label, re] of uniq) {
     })()],
     ["openCustomChannels 从 state.custom_channels 初始化编辑态",
       /function openCustomChannels\(\)[\s\S]{0,500}?editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
-    ["app.js 接线自定义渠道测试/添加/保存按钮", raw.includes('$("btnCustomTest").onclick') && raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
+    ["app.js 接线自定义渠道新增/保存按钮", raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
     ["app.js 调 POST /api/config/custom_channels", raw.includes('"/api/config/custom_channels"')],
     ["app.js 调 POST /api/config/custom_channel_test", raw.includes('"/api/config/custom_channel_test"')],
 
@@ -724,13 +724,13 @@ for (const [label, re] of uniq) {
       return ["app.js 的 $() DOM 引用无悬空（防 openSettings 抛 TypeError 打不开弹层）", missing.length === 0];
     })(),
     // ---- 跟进项（PR #121：自定义渠道 UI 打磨，R66 延续）----
-    ["模型添加按钮为 ➕ emoji（紧凑单行）", raw.includes('data-add-model="${i}"') && raw.includes("➕")],
+    ["模型新增走弹窗（R82：列表里不再内嵌添加行）", raw.includes('$("btnMgrAdd").onclick') && raw.includes("function openModelEditor(")],
     ["上下文/输出输入支持 k/M 单位（parseTokens）", raw.includes("function parseTokens(") && raw.includes("function formatTokenCount(")],
-    ["上下文/输出默认值使用 1M / 64k 单位串", raw.includes('value="1M"') && raw.includes('value="64k"')],
-    ["模型行含工具能力勾选（supports_tools）", raw.includes('data-m-tools="${i}"') && raw.includes("supports_tools: hasTools")],
-    ["模型表格有固定列宽 colgroup（对齐）", raw.includes('<colgroup>') && css.includes("table-layout: fixed")],
+    ["模型编辑弹窗默认值使用 1M / 64k 单位串", html.includes('id="meCtx"') && html.includes('value="1M"') && html.includes('value="64k"')],
+    ["模型编辑弹窗含工具能力勾选（supports_tools）", html.includes('id="meTools"') && raw.includes('supports_tools: $("meTools").checked')],
+    ["渠道与模型列表都用一行式 flex 行（R82）", css.includes(".custom-ch-row {") && css.includes(".model-mgr-row {") && css.includes("white-space: nowrap")],
     ["openSettings 不再引用已移除的 inCustomModels", !raw.includes('$("inCustomModels")')],
-    ["模型添加行回车快捷提交", raw.includes("模型添加输入框回车快捷添加")],
+    ["模型编辑弹窗回车快捷提交", /meId"\)\.onkeydown = \(e\) => \{ if \(e\.key === "Enter"\) saveModelEditor\(\)/.test(raw)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
@@ -986,10 +986,32 @@ for (const [label, re] of uniq) {
     /btnAddCodeArts\b[\s\S]{0,400}?btnCustomChannels\b/.test(html));
   check5("自定义渠道弹层有独立 overlay（不与 settingsOverlay 复用）",
     /<div class="overlay hidden" id="customChannelOverlay">/.test(html));
-  check5("独立弹层保留了原有的全部输入框与按钮",
-    ['customChList', 'inCustomName', 'inCustomURL', 'inCustomKey',
-     'btnCustomTest', 'btnCustomAdd', 'btnCustomSave', 'customChErr', 'customChOk']
+  check5("独立弹层保留了渠道列表与新增/保存动作",
+    ['customChList', 'btnCustomAdd', 'btnCustomSave', 'customChErr', 'customChOk']
       .every((id) => html.includes(`id="${id}"`)));
+  // R82：一行展示 + 增改走弹窗
+  check5("渠道列表一行式（不换行，URL 省略号收窄）",
+    /\.custom-ch-row \{[^}]*white-space: nowrap/.test(css) && /\.cch-url \{[^}]*text-overflow: ellipsis/.test(css));
+  check5("渠道行有编辑/模型两个弹窗入口",
+    /data-edit-custom=/.test(raw) && /data-models-custom=/.test(raw));
+  check5("三个新弹层都存在（渠道编辑/模型管理/模型编辑）",
+    ['channelEditorOverlay', 'modelManagerOverlay', 'modelEditorOverlay'].every((id) => html.includes(`id="${id}"`)));
+  check5("模型管理弹窗一行式 + 可增删改",
+    /function renderModelManager\(\)/.test(raw) && /data-edit-model=/.test(raw) && /data-del-model=/.test(raw));
+  check5("渠道标识在编辑态不可改（它是模型前缀，改名=换路由）",
+    /\$\("ceName"\)\.disabled = !!ch/.test(raw));
+  check5("新增渠道不再依赖底部输入行（旧输入框已移除）",
+    !html.includes('id="inCustomName"') && !raw.includes('addPendingCustomInputs'));
+  // 下拉框自绘箭头（原生箭头又小又贴边）
+  // 判定方式：截取 `.select, select.input {` 到下一个 `}` 的块，断言块内含 appearance:none
+  // （用跨块正则容易误匹配到别处的 appearance，测不出回退）。
+  check5("select 统一 appearance:none + 自绘箭头", (() => {
+    const at = css.indexOf(".select, select.input {");
+    if (at < 0) return false;
+    const end = css.indexOf("}", at);
+    const block = css.slice(at, end);
+    return /appearance:\s*none/.test(block) && /background-image:\s*linear-gradient\(45deg/.test(block);
+  })());
   check5("设置弹层里已移除自定义渠道小节（避免两处入口/两份编辑态）",
     !/cfg-heading">自定义渠道/.test(html));
 
