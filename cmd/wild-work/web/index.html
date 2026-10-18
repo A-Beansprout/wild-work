@@ -357,13 +357,13 @@
         <div class="cfg-heading">接口与鉴权</div>
         <div class="row">
           <label class="lbl wide">监听</label>
-          <select id="selHost" class="select">
+          <select id="selHost" class="select" style="min-width:140px">
             <option value="127.0.0.1">127.0.0.1（本机）</option>
             <option value="0.0.0.0">0.0.0.0（全部）</option>
             <option value="__custom__">自定义…</option>
           </select>
           <span class="muted">:</span>
-          <input id="inPort" class="input port" type="number" min="1" max="65535">
+          <input id="inPort" class="input port" type="number" min="1" max="65535" placeholder="端口">
         </div>
         <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.168.1.100" spellcheck="false"></div>
         <div class="row">
@@ -374,11 +374,10 @@
           <label class="lbl wide" title="面板登录口令（与给 AI 客户端用的 API-Key 是两套）">管理密码<span id="adminPassReq" class="req hidden" title="监听非本机地址时必填">*</span></label>
           <input id="adminPassInput" class="input grow" type="password" spellcheck="false" placeholder="留空 = 面板不鉴权（仅本机监听时允许）" autocomplete="new-password">
         </div>
-        <div class="row" style="align-items:center">
-          <label class="lbl wide"></label>
+        <div class="row row-sub" style="align-items:center">
           <button class="btn small" id="btnAdminLogout">退出登录</button>
           <button class="btn small" id="btnClearAdminPass" title="关闭面板鉴权（仅监听 127.0.0.1 时允许）">清除密码</button>
-          <span class="hint" style="margin-left:8px">改密码后所有已登录会话立即失效</span>
+          <span class="hint" style="margin-left:8px;margin-top:0">改密码后所有已登录会话立即失效</span>
         </div>
         <div id="listenRiskTip" class="risk-tip hidden">⚠️ 监听 0.0.0.0 时必须设置管理密码，否则局域网内任何设备都可访问本 API 与账号管理。</div>
       </div>
@@ -388,17 +387,17 @@
         <div class="cfg-heading">模型路由（Claude Code / Codex 映射）</div>
         <div class="row">
           <label class="lbl wide">默认渠道</label>
-          <select id="selCh" class="select"></select>
+          <select id="selCh" class="select" style="min-width:160px"></select>
         </div>
         <div class="row">
           <label class="lbl wide">封顶 tokens</label>
           <input id="inMaxTok" class="input port" type="number" min="0" step="1000">
-          <span class="hint" style="margin-left:6px">0=不限制</span>
+          <span class="hint" style="margin-left:6px;margin-top:0">0=不限制</span>
         </div>
         <div class="row" style="align-items:center">
           <label class="lbl wide">映射表</label>
           <span class="btn small" id="btnCompatMap">编辑</span>
-          <span class="hint" id="mapSummary" style="margin-left:6px"></span>
+          <span class="hint" id="mapSummary" style="margin-left:6px;margin-top:0"></span>
         </div>
         <div id="mapEditor" class="map-editor hidden">
           <div class="hint" style="margin-bottom:4px">一行一条，格式：<code>客户端模型名 = 渠道/模型名</code>；支持通配 <code>claude-* = workbuddy/glm-5.2</code>；以 # 开头为注释。</div>
@@ -413,35 +412,37 @@
       <!-- 自动签到与开机自启 -->
       <div class="cfg-section" id="secCheckin">
         <div class="cfg-heading">自动签到与开机自启</div>
-        <div class="row">
-          <label class="lbl wide">签到时间</label>
-          <div id="timesBox" class="times"></div>
-          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+        <div class="row times-row" style="align-items:flex-start">
+          <label class="lbl wide" style="margin-top:4px">签到时间</label>
+          <div class="times-wrap">
+            <div id="timesBox" class="times"></div>
+            <button class="time-add-btn" id="btnAddTime" title="增加一个签到时间">＋ 时间</button>
+          </div>
         </div>
-        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
-        <div class="row" style="margin-top:8px">
+        <div class="hint" style="margin-left:98px;margin-top:-2px;margin-bottom:8px">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+        <div class="row row-switch">
           <label class="lbl wide" title="到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废">临期阈值</label>
-          <select id="selExpiring" class="input" style="width:100px">
+          <select id="selExpiring" class="select" style="width:110px">
             <option value="1">1 天</option>
             <option value="2">2 天</option>
             <option value="3">3 天</option>
           </select>
-          <span class="hint" style="margin-left:8px">该范围内到期的积分优先消耗</span>
+          <span class="hint">该范围内到期的积分优先消耗</span>
         </div>
-        <div class="row" style="margin-top:8px">
+        <div class="row row-switch">
           <label class="lbl wide">开机自启</label>
           <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
-          <span class="hint" style="margin-left:8px">程序随系统启动自动运行</span>
+          <span class="hint">程序随系统启动自动运行</span>
         </div>
-        <div class="row" style="margin-top:8px">
+        <div class="row row-switch">
           <label class="lbl wide" title="流式生成中检测思考链复读/空转（发癫），命中即中断并返回错误，由下游 AI 客户端自行重试恢复">思考链防癫</label>
           <label class="switch"><input type="checkbox" id="chkLoopGuard"><span class="slider"></span></label>
-          <span class="hint" style="margin-left:8px">检测模型思维链死循环，命中即中断</span>
+          <span class="hint">检测模型思维链死循环，命中即中断</span>
         </div>
-        <div class="row" style="margin-top:8px">
+        <div class="row row-switch">
           <label class="lbl wide" title="把每次请求的上下文构成摘要（消息条数、系统提示/工具定义体量、Top10 最大内容块及前 200 字）写入 data/ledger/body-trace-*.jsonl，用于排查「上下文为何膨胀、为何变慢」。按会话一个文件（单文件超 8MB 自动滚动分片），分片保留 7 天。含消息内容片段，用完请关闭">请求体摘要</label>
           <label class="switch"><input type="checkbox" id="chkBodyLog"><span class="slider"></span></label>
-          <span class="hint" style="margin-left:8px">诊断用：按会话切片，保留 7 天</span>
+          <span class="hint">诊断用：按会话切片，保留 7 天</span>
         </div>
       </div>
 

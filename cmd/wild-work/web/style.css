@@ -296,11 +296,30 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .req { color: var(--danger); font-weight: 700; margin-left: 3px; }
 
 /* 签到时间（设置弹层内） */
-
-/* 签到时间 */
-.times { display: flex; flex-wrap: wrap; gap: 8px; }
-.time-chip { background: #eff6ff; border: 1px solid #bfdbfe; color: var(--primary); padding: 5px 10px; border-radius: 16px; font-size: 13px; cursor: pointer; }
-.time-chip:hover { background: #dbeafe; text-decoration: line-through; }
+.times-wrap {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1; min-width: 0;
+}
+.times { display: contents; }
+.time-chip {
+  background: var(--card); border: 1px solid var(--border); color: var(--text);
+  padding: 3px 8px; border-radius: 6px; font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  line-height: 1.4; transition: all .12s ease;
+}
+.time-chip:hover {
+  background: #fef2f2; border-color: #fca5a5; color: var(--danger);
+}
+.time-add-btn {
+  height: 25px; padding: 0 8px; font-size: 12px;
+  border-radius: 6px; border: 1px dashed var(--border);
+  background: var(--card); color: var(--muted);
+  display: inline-flex; align-items: center; gap: 2px;
+  cursor: pointer; transition: all .15s ease;
+}
+.time-add-btn:hover {
+  color: var(--primary); border-color: var(--primary); background: #f0f2f5;
+}
 .icon-btn { border: 1px dashed var(--border); background: transparent; color: var(--muted); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 16px; }
 .icon-btn:hover { color: var(--primary); border-color: var(--primary); }
 
@@ -508,11 +527,38 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .login-buttons { display: flex; gap: 8px; margin-top: 14px; }
 
 /* 统一设置弹层内部分区 */
-.settings-body { word-break: normal; }
-.cfg-section { padding: 12px 0 4px; border-top: 1px solid var(--border); }
-.cfg-section:first-child { border-top: none; padding-top: 2px; }
-.cfg-heading { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+.settings-body {
+  word-break: normal;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  padding-right: 4px;
+}
+.settings-body::-webkit-scrollbar { width: 6px; }
+.settings-body::-webkit-scrollbar-track { background: transparent; }
+.settings-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.settings-body::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+.cfg-section { padding: 14px 0 6px; border-top: 1px solid var(--border); }
+.cfg-section:first-child { border-top: none; padding-top: 0; }
+.cfg-heading {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;
+}
 .lbl.wide { width: 90px; flex-shrink: 0; white-space: nowrap; }
+
+/* 设置弹层表单行与开关行规整 */
+.settings-body .row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.settings-body .row-sub {
+  margin-left: 98px; margin-top: -2px; margin-bottom: 8px;
+}
+.settings-body .row-switch {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px; min-height: 28px;
+}
+.settings-body .row-switch .hint {
+  margin: 0; font-size: 12px; color: var(--muted);
+}
 
 /* 配置行列表（备用上游通道 / 模型降级链共用） */
 .proxy-list { display: flex; flex-direction: column; gap: 6px; }
