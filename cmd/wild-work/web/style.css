@@ -519,26 +519,14 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .proxy-row { margin-bottom: 0; }
 .proxy-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
-/* ===== 自定义模型弹层（R85/R87 优化）=====
+/* ===== 自定义模型弹层（R85/R87/R88 规范优化）=====
    结构：每个 Provider 一个 .cm-provider 区块；
    .cm-provider-row = Provider 自己一行；.cm-model-row = 它下面每个模型各一行。
    两类行都是 white-space:nowrap + 内部横向滚动，**绝不折行**。 */
-.cm-notice {
-  display: flex; align-items: flex-start; gap: 8px;
-  margin: 0 0 12px; padding: 10px 14px;
-  background: #f8fafc; border: 1px solid #e2e8f0;
-  border-radius: 8px; font-size: 12px; color: #475569; line-height: 1.6;
-}
-.cm-notice code {
-  background: #edf2f7; color: #1e293b; padding: 1px 5px;
-  border-radius: 4px; font-family: ui-monospace, monospace; font-size: 11.5px;
-}
+.cm-list { display: flex; flex-direction: column; gap: 8px; }
 
-.cm-list { display: flex; flex-direction: column; gap: 10px; }
-/* 按钮右对齐（R87 定稿）：用户要的不是「上下按列对齐」，而是
-   **每一行的按钮组整体贴右**，上一行和下一行按钮的右边缘在同一条竖线上。
-   做法：行是 flex，信息区 flex:1 吃掉剩余宽度，按钮组 margin-left:auto 顶到最右。
-   这样不管一行有几个按钮（Provider 4 个、模型 2 个），右边缘都严格对齐。 */
+/* 按钮右对齐（R87 定稿）：行是 flex，信息区 flex:1 吃掉剩余宽度，按钮组 margin-left:auto 顶到最右。
+   两类行容器内宽严格一致，使上一行与下一行按钮的右边缘在同一条垂直竖线上。 */
 .cm-provider-row, .cm-model-row {
   display: flex; align-items: center; gap: 6px;
   white-space: nowrap;   /* 每行是一个整体，绝不折行 */
@@ -548,152 +536,80 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   display: flex; align-items: center; gap: 8px;
   white-space: nowrap; overflow: hidden;
 }
-/* 按钮组：紧贴右边缘 */
-.cm-provider-row > .btn, .cm-model-row > .btn { flex-shrink: 0; }
-.cm-btn-edit { margin-left: auto; }   /* 按钮组的第一个把整组推到最右 */
+/* 按钮组首项靠右，整组推到最右 */
+.cm-btn-edit { margin-left: auto; }
 
+/* 卡片容器：遵循项目原生卡片风格（var(--border), var(--bg), var(--card)） */
 .cm-provider {
-  border: 1px solid var(--line, #e2e8f0); border-radius: 10px;
-  background: var(--card, #fff);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
-  overflow: hidden;
-  transition: border-color .15s ease, box-shadow .15s ease;
-}
-.cm-provider:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); overflow: hidden;
 }
 .cm-provider-row {
   padding: 8px 10px;
-  background: #fcfcfd;
-  border-bottom: 1px solid #f1f5f9;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
 }
-.cm-provider-row .badge {
-  flex-shrink: 0;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
-  padding: 2.5px 8px; border-radius: 6px;
-}
+.cm-provider-row .badge { flex-shrink: 0; }
 .cm-url {
   flex: 1 1 auto; min-width: 160px;
   font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
-  color: #1e293b;
+  color: var(--text);
   overflow: hidden; text-overflow: ellipsis;
 }
 .cm-key {
   flex-shrink: 0; margin: 0;
-  font-family: ui-monospace, monospace; font-size: 11px;
-  color: #64748b; background: #f1f5f9;
-  border: 1px solid #e2e8f0; border-radius: 4px;
-  padding: 1.5px 6px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px;
 }
-.cm-meta { flex-shrink: 0; font-size: 11px; color: var(--muted, #64748b); }
-.cm-models-count {
-  font-weight: 500; color: #475569;
-  background: #f1f5f9; border: 1px solid #e2e8f0;
-  border-radius: 999px; padding: 1.5px 8px;
+.cm-meta {
+  flex-shrink: 0; font-size: 11px; color: var(--muted);
+}
+.cm-effort {
+  color: #7c3aed; font-weight: 600; font-family: ui-monospace, Consolas, monospace;
 }
 
-/* 按钮微体系：统一步长、圆角与精致悬浮 */
+/* 按钮微体系：统一步长、圆角与精致悬浮，与项目 .btn.small 完全对齐 */
 .cm-provider-row .btn, .cm-model-row .btn {
   flex-shrink: 0;
-  font-size: 12px; padding: 4px 10px;
+  font-size: 12px; padding: 4px 8px;
   border-radius: 6px; line-height: 1.4;
-  font-weight: 500; transition: all .15s ease;
-}
-.cm-btn-edit, .cm-btn-import {
-  background: #ffffff; border: 1px solid #e2e8f0; color: #334155;
-}
-.cm-btn-edit:hover, .cm-btn-import:hover {
-  background: #f8fafc; border-color: #cbd5e1; color: #0f172a;
-}
-.cm-btn-add {
-  background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8;
-}
-.cm-btn-add:hover {
-  background: #2563eb; border-color: #2563eb; color: #ffffff;
-}
-/* 危险删除按钮：现代 Soft Danger 风格，消除刺眼的鲜红大方块视觉噪音 */
-.cm-provider-row .btn.danger, .cm-model-row .btn.danger {
-  background: #fef2f2; border: 1px solid #fecaca; color: #dc2626;
-}
-.cm-provider-row .btn.danger:hover, .cm-model-row .btn.danger:hover {
-  background: #dc2626; border-color: #dc2626; color: #ffffff;
-  box-shadow: 0 1px 2px rgba(220, 38, 38, 0.2);
 }
 
-/* 模型行：缩进表示从属关系，左侧一条竖线 */
-/* 右侧不留 margin：模型行按钮要和 Provider 行按钮落在同一条右边缘上
-   （留 10px 会差 10px，实测 1167 vs 1157）。 */
+/* 危险删除按钮：与项目质感统一，平时柔和浅边红字，悬停实心红，消除满屏刺眼色块 */
+.cm-provider-row .btn.danger, .cm-model-row .btn.danger {
+  background: var(--card);
+  border-color: #fca5a5;
+  color: var(--danger);
+}
+.cm-provider-row .btn.danger:hover, .cm-model-row .btn.danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* 模型行：从属于 Provider，左侧标准 2px 竖线缩进 */
+/* 右侧不留 margin：模型行按钮与 Provider 行按钮严格落在同一条右边缘（10px） */
 .cm-models {
   padding: 4px 0 4px 12px;
-  background: #f8fafc;
-  border-left: 2px solid #cbd5e1;
+  background: var(--bg);
+  border-left: 2px solid var(--border);
   margin-left: 10px;
 }
-/* 右侧不留 margin：模型行的按钮必须和 Provider 行按钮落在同一像素列上，
-   留 8px 会让删除按钮整体左移 8px（实测 1078 vs 1106）。 */
 .cm-model-row {
-  padding: 6px 10px; margin: 3px 0;
+  padding: 5px 10px; margin: 2px 0;
   border-radius: 6px;
-  background: #ffffff;
-  border: 1px solid #edf2f7;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
-  transition: all .15s ease;
+  background: var(--bg);
+  transition: background .12s ease;
 }
-.cm-model-row:hover {
-  background: #ffffff;
-  border-color: #cbd5e1;
-  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.04);
-}
+.cm-model-row:hover { background: var(--card); }
 .cm-model-row.cm-empty-row {
-  background: transparent; border: none; box-shadow: none;
+  background: transparent; color: var(--muted);
 }
 .cm-model-id {
   flex: 1 1 auto; min-width: 120px;
   font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
-  color: #0f172a;
+  color: var(--text);
   overflow: hidden; text-overflow: ellipsis;
 }
-.cm-meta-spec {
-  display: inline-flex; align-items: center; gap: 3px;
-  background: #f1f5f9; border-radius: 4px; padding: 1.5px 6px;
-  color: #475569;
-}
-.cm-meta-spec b { font-weight: 600; color: #1e293b; }
-.cm-meta-effort {
-  display: inline-flex; align-items: center;
-  background: #f3e8ff; border: 1px solid #e9d5ff;
-  color: #7c3aed; font-weight: 500;
-  border-radius: 4px; padding: 1px 6px;
-}
-.cm-meta-dim { color: #94a3b8; }
-.cm-caps { display: inline-flex; align-items: center; gap: 4px; }
-.cm-cap-tag {
-  display: inline-flex; align-items: center;
-  font-size: 10.5px; line-height: 1.3;
-  padding: 1px 5px; border-radius: 4px;
-  background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857;
-  font-weight: 500;
-}
-
-/* 列表底部添加栏与弹窗底栏规范化 */
-.cm-add-bar { margin-top: 10px; display: flex; align-items: center; }
-.cm-btn-add-provider {
-  background: #ffffff; border: 1px dashed #cbd5e1; color: #334155;
-  border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 500;
-  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
-  transition: all .15s ease;
-}
-.cm-btn-add-provider:hover {
-  background: #f8fafc; border-color: var(--primary, #2563eb); color: var(--primary, #2563eb);
-}
-
-.cm-modal-actions {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; width: 100%;
-}
-.cm-status-group { flex: 1; min-width: 0; text-align: left; }
-.cm-action-buttons { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* 自定义渠道一行式列表（R82：原来每个渠道展开一张模型表，10 个渠道要滚好几屏） */
 .custom-channels-list { display: flex; flex-direction: column; gap: 6px; }
