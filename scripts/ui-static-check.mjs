@@ -1034,42 +1034,6 @@ for (const [label, re] of uniq) {
   }
 }
 
-// ---- Qoder 双区签到：结果必须按 msg 区分「领到了」与「还没发」（2026-10-18）----
-// 背景：campaigns 路径有三个都是 ok=true 的结果（真领到 / 今日已领 / 上游还没发可领活动），
-// 旧 toast 一律写「签到成功：…」，把 no_campaign 也说成成功 —— 这是 10-17「签到没实现」
-// 误判的来源之一。断言 checkinToast 存在，且 checkin() 走它而不是内联三元表达式。
-{
-  const need = [
-    ["checkinToast 存在（按 msg 区分签到结果）", /function checkinToast\(/.test(raw)],
-    ["checkin 走 checkinToast（不再内联「签到成功：」）",
-      /toast\(checkinToast\(r\)\)/.test(raw) && !/toast\(r\.ok \? `签到成功：/.test(raw)],
-    ["checkinToast 区分「今日已领过」", /今日已领过/.test(raw)],
-    ["checkinToast 区分「暂未领到」", /暂未领到/.test(raw)],
-    // 独立复核（2026-10-18）抓到：ok=true 但 msg 是「领取失败 http 400」时旧实现仍说「暂未领到」，
-    // 等于换了说法的假成功。断言失败判据存在且排在「含 +N」之前。
-    ["checkinToast 有失败档（ok=true 的真失败不得说成「暂未领到」）", /签到失败：/.test(raw) && /CHECKIN_FAIL_RE = \/.+\/i;/.test(raw)],
-    // 2026-10-18 用户实测定性：活动资格由上游按账号授予，不是每个号都有。
-    // 无资格的 msg 既不含「失败」也不含错误码，若不单独成档会落到兜底被说成「暂未领到」，
-    // 再叠加「窗口内会自动重试」⇒ 用户白等一个永远不来的结果（「以为工具没实现」的最后来源）。
-    ["无领取资格档存在（该状态不得说成「暂未领到」）",
-      /CHECKIN_NO_ELIGIBILITY_RE = \/.+\;/.test(raw) && /无领取资格：/.test(raw)],
-    ["无资格判据先于失败判据（否则会先被兜底/失败分支吃掉）",
-      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(msg)') > 0 &&
-      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(msg)') < raw.indexOf('CHECKIN_FAIL_RE.test(msg)')],
-    ["checkin() 对无资格不再说「会自动重试」（先判无资格，再判 retryable）",
-      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(r.msg') > 0 &&
-      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(r.msg') < raw.indexOf('!r.ok && r.retryable')],
-    ["失败判据先于 \\+N 判据（否则「领取失败 http 400」会被数字命中）",
-      raw.indexOf('CHECKIN_FAIL_RE.test(msg)') > 0 && raw.indexOf('CHECKIN_FAIL_RE.test(msg)') < raw.indexOf('/\\+-?\\d+/.test(msg)')],
-    ["qodercom 不在无签到集合（campaigns 活动路径已实装）", !/NO_EXPLICIT_CHECKIN[^)]*"qodercom"/.test(raw)],
-    ["qodercn 不在无签到集合", !/NO_EXPLICIT_CHECKIN[^)]*"qodercn"/.test(raw)],
-  ];
-  for (const [label, pass] of need) {
-    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
-      if (!pass) failed++;
-    }
-  }
-
 // ---- 场景 4：折线图不得画「全 0 系列」----
 // 背景（用户实测）：某渠道只在一个小时点有量、其余点全 0，图上却有一条贯穿
 // 到底的贴 0 轴长线，既白占图例又把 Y 轴视觉压扁。修法是按「区间总量 > 0」
@@ -1249,6 +1213,77 @@ for (const [label, re] of uniq) {
     /拉取失败：/.test(raw) && /\(\"importErr\"\)\.textContent = /.test(raw));
 
   for (const [label, pass, extra] of need5) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- Qoder 双区签到：结果必须按 msg 区分「领到了」与「还没发」（2026-10-18）----
+// 背景：campaigns 路径有三个都是 ok=true 的结果（真领到 / 今日已领 / 上游还没发可领活动），
+// 旧 toast 一律写「签到成功：…」，把 no_campaign 也说成成功 —— 这是 10-17「签到没实现」
+// 误判的来源之一。断言 checkinToast 存在，且 checkin() 走它而不是内联三元表达式。
+{
+  const need = [
+    ["checkinToast 存在（按 msg 区分签到结果）", /function checkinToast\(/.test(raw)],
+    ["checkin 走 checkinToast（不再内联「签到成功：」）",
+      /toast\(checkinToast\(r\)\)/.test(raw) && !/toast\(r\.ok \? `签到成功：/.test(raw)],
+    ["checkinToast 区分「今日已领过」", /今日已领过/.test(raw)],
+    ["checkinToast 区分「暂未领到」", /暂未领到/.test(raw)],
+    // 独立复核（2026-10-18）抓到：ok=true 但 msg 是「领取失败 http 400」时旧实现仍说「暂未领到」，
+    // 等于换了说法的假成功。断言失败判据存在且排在「含 +N」之前。
+    ["checkinToast 有失败档（ok=true 的真失败不得说成「暂未领到」）", /签到失败：/.test(raw) && /CHECKIN_FAIL_RE = \/.+\/i;/.test(raw)],
+    // 2026-10-18 用户实测定性：活动资格由上游按账号授予，不是每个号都有。
+    // 无资格的 msg 既不含「失败」也不含错误码，若不单独成档会落到兜底被说成「暂未领到」，
+    // 再叠加「窗口内会自动重试」⇒ 用户白等一个永远不来的结果（「以为工具没实现」的最后来源）。
+    ["无领取资格档存在（该状态不得说成「暂未领到」）",
+      /CHECKIN_NO_ELIGIBILITY_RE = \/.+\;/.test(raw) && /无领取资格：/.test(raw)],
+    ["无资格判据先于失败判据（否则会先被兜底/失败分支吃掉）",
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(msg)') > 0 &&
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(msg)') < raw.indexOf('CHECKIN_FAIL_RE.test(msg)')],
+    ["checkin() 对无资格不再说「会自动重试」（先判无资格，再判 retryable）",
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(r.msg') > 0 &&
+      raw.indexOf('CHECKIN_NO_ELIGIBILITY_RE.test(r.msg') < raw.indexOf('!r.ok && r.retryable')],
+    ["失败判据先于 \\+N 判据（否则「领取失败 http 400」会被数字命中）",
+      raw.indexOf('CHECKIN_FAIL_RE.test(msg)') > 0 && raw.indexOf('CHECKIN_FAIL_RE.test(msg)') < raw.indexOf('/\\+-?\\d+/.test(msg)')],
+    ["qodercom 不在无签到集合（campaigns 活动路径已实装）", !/NO_EXPLICIT_CHECKIN[^)]*"qodercom"/.test(raw)],
+    ["qodercn 不在无签到集合", !/NO_EXPLICIT_CHECKIN[^)]*"qodercn"/.test(raw)],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 手动回调兜底（CodeArts 异地浏览器，issue #160 / R96）----
+// 背景：CodeArts 的授权回调由 portal 写死成 http://127.0.0.1:<port>/oauth/callback，
+// 只有「浏览器与网关同机」时授权码才会自动回到网关。从局域网/远程打开面板时，浏览器
+// 跳到的是用户自己机器的回环地址（连接被拒），流程只能等到超时。修法是补一条人工通道。
+// 这里锁住三件事：① 输入框/按钮存在；② 按后端 manual_callback 显隐（不是恒显示，
+// 否则同机用户会被要求粘贴一条本来就能自动回来的地址）；③ 失败时**保留输入**并就地
+// 显示错误——端口粘错是很常见的可恢复错误，关掉弹层等于把输入丢了。
+{
+  const needCb = [];
+  const checkCb = (name, pass, extra = "") => needCb.push([name, pass, extra]);
+
+  checkCb("登录弹层里有「粘贴回调地址」输入框与提交按钮",
+    html.includes('id="lcCallbackUrl"') && html.includes('id="btnSubmitCallback"'));
+  checkCb("兜底行默认隐藏（同机场景不该被要求手动粘贴）",
+    /<div class="hidden" id="lcCallbackRow">/.test(html));
+  checkCb("按后端 manual_callback 显隐该行（不是恒显示）",
+    raw.includes("if (r.manual_callback)") &&
+    raw.includes('$("lcCallbackRow").classList.remove("hidden")') &&
+    raw.includes('$("lcCallbackRow").classList.add("hidden")'));
+  checkCb("非手动回调渠道会清空上次残留的输入（避免误提交上一条地址）",
+    raw.includes('$("lcCallbackUrl").value = ""'));
+  checkCb("提交走 POST /api/login/callback",
+    raw.includes('await api("/api/login/callback", { url })'));
+  checkCb("提交失败保留输入并就地显示错误（不 toast 后关弹层）",
+    raw.includes('$("lcCallbackHint").textContent = "提交失败："'));
+  checkCb("输入框与按钮用项目既有样式令牌（.input/.btn），不用内联字号宽高",
+    html.includes('<input class="input grow" type="text" id="lcCallbackUrl"') &&
+    !/id="lcCallbackUrl"[^>]*style=/.test(html));
+
+  for (const [label, pass, extra] of needCb) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
   }

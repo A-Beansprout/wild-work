@@ -58,7 +58,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.9.0"
+const Version = "2.9.1"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -80,8 +80,6 @@ type Runtime struct {
 
 	// Custom 标记该渠道为用户自定义 OpenAI 兼容第三方渠道（R66）。
 	Custom bool
-
-	
 }
 
 // Options 构建 App 的依赖。
@@ -666,6 +664,16 @@ type loginFlow struct {
 	// 否则「想添加第二个账号，却总被授权成已登录的那个」（2026-10-17 用户实测）。
 	openIncognito bool
 
+	// pollTimeout 轮询登录结果的超时上限；零值 = 用通用 loginTimeout。
+	//
+	// 为什么需要：部分渠道的本机回调存活时间比通用 5m 长——CodeArts 是 flowTTL（10m）。
+	// 以较短者为上限会在用户还在授权页时先放弃并关掉回调口，浏览器随后跳回
+	// 127.0.0.1:<port> 只会得到「连接被拒」（2026-10-18 真机实测）。
+	//
+	// 该特例原先写在 pollLogin 里当成一个 `if a.loginKind == provider.CodeArts`，
+	// 属表外第二来源；现收进本表，保持「一个渠道一条记录」的约束。
+	pollTimeout func() time.Duration
+
 	// OnlyForRegion 非空时仅在该 region 生效（目前无人使用，留给地区差异渠道）。
 	OnlyForRegion string
 
@@ -775,6 +783,9 @@ func init() {
 		// 授权页会复用日常浏览器里已登录的华为云会话 ⇒ 必须用无痕窗口拉起，
 		// 否则「想添加第二个账号却总被授权成已登录的那个」。
 		openIncognito: true,
+		// 本机回调存活 10m（flowTTL）比通用 loginTimeout（5m）长；超时上限对齐该包，
+		// 否则用户还在授权页时就被放弃、回调口已关，浏览器跳回只会「连接被拒」。
+		pollTimeout: logincodearts.FlowTTL,
 	}
 	// Loomy：本机引导页 + 短信验证码，持有 127.0.0.1 监听端口。
 	loginFlows[provider.Loomy] = &loginFlow{
@@ -996,7 +1007,13 @@ func (a *App) pollLogin(ctx context.Context) {
 		a.shutdownLoginFlow(a.loginKind)
 		a.finishLogin()
 	}()
-	deadline := time.Now().Add(loginTimeout)
+	// 超时上限由 loginFlows 的 pollTimeout 决定（零值用通用 loginTimeout）。
+	// 原先这里是 `if a.loginKind == provider.CodeArts` 的表外特例，现收进表。
+	pollBudget := loginTimeout
+	if f, ok := loginFlows[a.loginKind]; ok && f.pollTimeout != nil {
+		pollBudget = f.pollTimeout()
+	}
+	deadline := time.Now().Add(pollBudget)
 	log.Printf("登录流程已发起，等待浏览器完成…")
 	t := time.NewTicker(loginPollEvery)
 	defer t.Stop()
@@ -3285,17 +3302,52 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		a.muLogin.Lock()
 		opened := a.loginBackendOpened
+		kind := a.loginKind
 		a.muLogin.Unlock()
-		// needs_poll 告知前端「这次登录是否需要轮询结果」。
-		//
-		// 2026-10-18（H9）：改造前前端只看 auth_url 是否非空就无条件 startLoginPoll()。
-		// GLM 的形态是「只给链接、不跑流程」（凭据靠粘贴 Cookie），后端不置 loginBusy、
-		// 不起 pollLogin；于是前端轮询看到 login_busy=false，便提示
-		// 「登录完成，正在同步账号…」—— 实际什么都没发生，是**假成功**。
-		// 现在由后端的单一来源表判定，前端不再靠「URL 非空」猜。
 		writeJSON(w, http.StatusOK, map[string]any{
-			"auth_url": url, "backend_opened": opened, "needs_poll": a.needsPollFor(req.Channel),
+			"auth_url":       url,
+			"backend_opened": opened,
+			// manual_callback：该渠道的授权回调是**写死回环地址**（当前仅 CodeArts，
+			// 见 internal/login_codearts 的协议说明）。浏览器与网关不同机时（局域网/
+			// 远程访问面板），回调只能靠用户把地址栏 URL 粘回来，前端据此显示输入框。
+			// needs_poll（2026-10-18 H9）：告知前端这次登录是否需要轮询结果。
+			// GLM 的形态是「只给链接、不跑流程」（凭据靠粘贴 Cookie），后端不置 loginBusy、
+			// 不起 pollLogin；改造前前端只看 auth_url 非空就无条件 startLoginPoll()，
+			// 于是轮询看到 login_busy=false 便提示「登录完成，正在同步账号…」——假成功。
+			"needs_poll":      a.needsPollFor(req.Channel),
+			"manual_callback": kind == provider.CodeArts,
 		})
+	})
+	// 手动提交授权回调地址（回环回调渠道的远程/局域网兜底）。
+	//
+	// 背景：CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
+	// 因此只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
+	// 浏览器跳到的是**用户自己机器**的 127.0.0.1（连接被拒），流程只能等到超时。
+	// 这里提供一条人工通道：把跳水后打不开的那条 URL 原样提交，网关解析出 code 后
+	// 走与自动回调**完全相同**的兑换路径（凭据仍由网关侧换，用户不需要交出任何 token）。
+	mux.HandleFunc("POST /api/login/callback", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		a.muLogin.Lock()
+		busy, kind := a.loginBusy, a.loginKind
+		a.muLogin.Unlock()
+		if !busy {
+			apiError(w, http.StatusBadRequest, "没有进行中的登录流程，请先发起登录")
+			return
+		}
+		switch kind {
+		case provider.CodeArts:
+			if err := logincodearts.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		default:
+			apiError(w, http.StatusBadRequest, fmt.Sprintf(
+				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
+			return
+		}
 	})
 	mux.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.CancelLogin(); err != nil {

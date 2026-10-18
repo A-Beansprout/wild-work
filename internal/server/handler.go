@@ -563,7 +563,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// dispModel=写进响应的模型名（无降级=客户端请求名，保持官方「回填请求名」语义；降级=备胎全路径，
 	// agent 读 chunk.model / resp.model 即可感知实际执行模型）。
 	var fbApplied string
-	fbID, primaryAvail := h.pickModelFallback(rt, model)
+	// skipSameChannel=false：入口降级不限制渠道（见请求内重入点的理由）。
+	fbID, primaryAvail := h.pickModelFallback(rt, model, false)
 	// 口径说明：降级期间 ledger/stats 的 token 流水按**实际执行模型**记账
 	// （statRow.Model、AddUsage(acctModel)、ledgerModelOf(acctModel)）——谁实际工作、
 	// 谁实际消耗 token/积分，就记在谁名下（2026-10-16 口径变更，推翻原「按客户端
@@ -641,15 +642,32 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if res.done {
 			return
 		}
-		// 候选耗尽待透传（res.lastStatus>0）：方案 B 判定——只对积分耗尽
-		// （ErrHardCredit：账号刚进 12h 硬冷却，本渠道容量已翻 false，此刻
-		// pickModelFallback 必然命中规则或返回空）；仅重入一次（防备胎再降备胎
-		// 死循环）；单账号渠道豁免（透传是惩罚豁免不变量的设计约束）；此刻未写过
-		// 任何字节（轮转失败路径天然成立——所有写出都发生在成功流式/非流式分支
-		// 内），降级头可安全补发；无规则/备胎无容量 → fb2 为空，维持原样透传，
-		// 与现状一致。
-		if fbAttempt == 0 && res.lastKind == provider.ErrHardCredit && !rt.SingleAccount {
-			if fb2, _ := h.pickModelFallback(rt, model); fb2 != "" {
+		// 候选耗尽待透传（res.lastStatus>0）：方案 B 判定——对两类「本渠道确实
+		// 顶不住」的错误就地换模型：
+		//   ① ErrHardCredit（积分耗尽）：账号刚进 12h 硬冷却，本渠道容量已翻 false；
+		//   ② ErrSoftRate（模型饱和）：14003「Model busy」/6004「usage exceeds
+		//      frequency limit」——上游明确按模型限额并建议「switch to the other
+		//      models」，本渠道全部账号对该模型都在模型级冷却，轮转已无可选号。
+		// 为什么 ② 必须纳入（2026-10-17 生产实录）：14003 被 Classify 判软限流后
+		// 只冷「账号×模型」60s，而请求内降级原先只认 ErrHardCredit ⇒ 饱和时段的
+		// **第一个**请求必然把 429 原样抛给客户端，第二个请求才由入口降级链顶上
+		// （app.log 20:46:00 吃 429、20:46:01 降级成功，同一分钟后续 8 个请求全绿）。
+		// 账号级 429 也会因此换模型：比让客户端直接失败更友好，代价是可能多烧
+		// 备胎额度——已由用户裁决接受。
+		// 仅重入一次（防备胎再降备胎死循环）；单账号渠道豁免（透传是惩罚豁免
+		// 不变量的设计约束）；此刻未写过任何字节（轮转失败路径天然成立——所有
+		// 写出都发生在成功流式/非流式分支内），降级头可安全补发；无规则/备胎无
+		// 容量 → fb2 为空，维持原样透传，与现状一致。
+		if fbAttempt == 0 && fallbackWorthy(res.lastKind) && !rt.SingleAccount {
+			// 请求内重入只跨渠道（skipSameChannel=true）：同渠道兄弟模型走的是同一批
+			// 账号，若本轮 429 其实是账号级限流（traework/qwenwork/qodercn/qodercom
+			// 等渠道把任意 429 都归 ErrSoftRate），再打一遍同一批账号必然二次撞墙；
+			// 且该账号第二个模型也撞墙后，pool 会把「模型级冷却」升级为「账号级冷却」
+			// ——冷却时长取已有条目的最晚到期时刻（不延长），变的是粒度：可用容量从
+			// 「1 个模型格子」缩到「0，整号对所有模型下线」。
+			// 入口降级不设此限：那里「该模型已全冷」是既有事实，换同渠道兄弟模型
+			// 正是降级链配置的本意（上游配额按模型计，模型 A 冷不代表模型 B 冷）。
+			if fb2, _ := h.pickModelFallback(rt, model, true); fb2 != "" {
 				if rt2, m2, err2 := h.runtimeForModel(fb2); err2 == nil {
 					nb, err3 := rewriteModel(body, m2)
 					if err3 == nil {
@@ -680,12 +698,25 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // rotationResult：serveRotation 的判定结果。done=true=响应已完整写回（成功/请求级
 // 错误/耗尽诊断引导），调用方直接收尾；done=false 且 lastStatus>0=候选耗尽待透传，
-// 由调用方决定原样透传还是按降级链请求内重入（方案 B，只认 ErrHardCredit）。
+// 由调用方决定原样透传还是按降级链请求内重入（fallbackWorthy 判定）。
 type rotationResult struct {
 	done       bool
 	lastKind   provider.ErrKind
 	lastStatus int
 	lastBody   []byte
+}
+
+// fallbackWorthy 报告「轮转耗尽后是否值得就地换模型」。
+//
+// 只认两类「本渠道对该模型已无承载能力」的错误：
+//   - ErrHardCredit：积分耗尽 → 账号进 12h 硬冷却，本渠道容量已翻 false；
+//   - ErrSoftRate：模型饱和（14003 Model busy / 6004 usage exceeds frequency
+//     limit）→ 全部账号对该模型都在模型级冷却，轮转已无号可选。
+//
+// 其余错误不换模型：内容类/请求类错误换模型必然复现（换模型只是白烧备胎额度），
+// 5xx/登录态问题换模型也治不了本，原样透传让客户端与运维看到真实原因。
+func fallbackWorthy(kind provider.ErrKind) bool {
+	return kind == provider.ErrHardCredit || kind == provider.ErrSoftRate
 }
 
 // serveRotation：chatCompletions 的轮转选号 + 上游交互 + 耗尽出口段（原代码整体
@@ -885,6 +916,12 @@ func (h *Handler) serveRotation(
 			return
 		}
 		defer rc.Close()
+		// 轮转内换号成功：清掉前面 status>=400 分支写进统计行的状态码。
+		// 否则「A 号 429、B 号成功」的请求会在运行统计/请求日志里记成 429——
+		// 出口 defer 只在 Status==0 时补 200，而该字段一旦被写就不会自愈。
+		// 模型饱和（14003/6004）是多账号渠道的高频形态，统计失真会让面板看不出
+		// 降级是否生效，故与请求内降级路径的 statRow.Status 清零同源处理。
+		statRow.Status = 0
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
 		if stream {
@@ -1212,12 +1249,17 @@ func modelHasCapacity(rt *Runtime, model string) bool {
 // 备胎允许跨渠道（To 为 "channel/model" 全路径，经 runtimeForModel 解析）——
 // 整渠道全灭时正需要跨渠道备胎顶上，而非直接 503。
 //
+// skipSameChannel=true：跳过与当前渠道相同的备胎候选（仍会继续往链后找跨渠道的）。
+// 只给「请求内重入」用——那里 429 可能只是账号级限流，同渠道兄弟模型共享同一批
+// 账号，重打一遍会二次撞墙，并可能把冷却粒度从模型级升级为账号级；入口降级传 false
+// （入口已知「该模型在本渠道全冷」，换同渠道兄弟模型正是链配置的本意）。
+//
 // 第二返回值 primaryAvail = 「原模型此刻有可用账号」，与降级与否无关，只给恢复探针用：
 // 旧实现「未降级就算恢复」会把两种情形谎报成已恢复——① 原模型仍全冷但备胎也没容量，
 // ② 整渠道无健康账号。仅面板事件记账受影响，但谎报会令「持续时长」失真。
 // 未配置规则时不做探测（守住「正常路由零开销」）：此时不会新增事件，
 // 代价是删规则后残留的进行中事件不会自动关闭（环形 200 条自然淘汰，重启即清）。
-func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
+func (h *Handler) pickModelFallback(rt *Runtime, model string, skipSameChannel bool) (string, bool) {
 	h.fbMu.RLock()
 	rules := h.fallbacks
 	h.fbMu.RUnlock()
@@ -1227,8 +1269,8 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
 	if modelHasCapacity(rt, model) {
 		return "", true // 未全冷：走原路由，并告知探针「容量已在」
 	}
-	// 未全冷之外（模型全冷 / 整渠道全灭）都继续往下遍历规则找备胎；
-	// 链路里落在同渠道的备胎会被 modelHasCapacity 自然跳过。
+	// 未全冷之外（模型全冷 / 整渠道全灭）都继续往下遍历规则找备胎：
+	// 链内无容量的候选由 modelHasCapacity 跳过；同渠道候选是否跳过由入参决定。
 	for _, rule := range rules {
 		// 规则里的 from 与请求模型都要按同一套 ID 解析（R59：cline 的 `cline-free/x`
 		// 与旧写法 `cline/cline-free/x` 必须都能命中同一条规则）。
@@ -1243,6 +1285,11 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string) (string, bool) {
 			}
 			rt2, m2, err := h.runtimeForModel(to)
 			if err != nil || rt2 == nil {
+				continue
+			}
+			if skipSameChannel && rt2.Kind == rt.Kind {
+				// 同渠道备胎共享同一批账号：请求内 429 可能只是账号级限流，
+				// 重打一遍必然二次撞墙（详见调用点注释）。继续往链后找跨渠道候选。
 				continue
 			}
 			if modelHasCapacity(rt2, m2) {
