@@ -415,7 +415,11 @@ func (p *Pool) ReenableIfCredits(uid string, remain, expiring, unusable int64) {
 func (p *Pool) RecordCheckin(uid string, ok bool, msg string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if e, ok := p.byUID[uid]; ok {
+	// ⚠️ 这里的第二个返回值**不能**命名为 ok：那会遮蔽同名参数 ok bool（issue #157），
+	// 使 e.lastCheckinOK 恒写 true、`if ok` 恒成立（每次都清掉 session_dead）、
+	// 且 `else if sessionDeadLike(msg)` 成为死代码 ⇒ 失效账号永远不显示「需重新登录」。
+	// 全仓同名遮蔽仅此一处（其余 `if e, ok := ...` 所在函数没有名为 ok 的参数）。
+	if e, found := p.byUID[uid]; found {
 		e.lastCheckinOK = ok
 		e.lastCheckinAt = time.Now()
 		e.lastCheckinMsg = msg
