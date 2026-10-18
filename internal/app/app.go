@@ -58,7 +58,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.9.1"
+const Version = "2.9.0"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -81,16 +81,7 @@ type Runtime struct {
 	// Custom 标记该渠道为用户自定义 OpenAI 兼容第三方渠道（R66）。
 	Custom bool
 
-	// SplitCredential 声明该渠道的**控制面与数据面用两套不同凭据**。
-	//
-	// 首例 MonkeyCode：推理用 `X-Api-Key`（agent 的 oma_ key），积分/签到用控制台
-	// Cookie 或百智云 Cookie —— 两者是完全独立的凭据，一个可用不代表另一个可用。
-	//
-	// 影响：积分刷新成功**不得**清除推理侧打上的 SessionDead 标记。
-	// 2026-10-18 修复的正是这一条：此前 RefreshCredits/RefreshAll 成功即无条件
-	// ClearSessionDead ⇒ 推理侧凭据明明失效，却被「积分查得到」反复洗掉标记，
-	// 表现为「标了又清、清了又标」，而每次都得白打一次必 401 的上游请求。
-	SplitCredential bool
+	
 }
 
 // Options 构建 App 的依赖。
@@ -2039,15 +2030,7 @@ func (a *App) refreshIfSessionDead(rt *Runtime, au *auth.Auth, err error) bool {
 	}
 	log.Printf("session dead, refreshing platform=%s uid=%s", rt.Kind, au.UID)
 	if rerr := rt.Upstream.RefreshToken(au); rerr != nil {
-		// 把刷新失败的原因带到上层：此前只打日志，面板只显示上游 401 原文，
-		// 用户无法区分「网络抖一下重试即可」与「会话被吊销必须重新登录」。
-		// 典型吊销形态（2026-10-17 实测）：
-		//   code 12153 / invalid_grant: Session doesn't have required client
-		// 这种重试永远不会成功，必须明说。
 		log.Printf("session dead refresh failed platform=%s uid=%s err=%v", rt.Kind, au.UID, rerr)
-		// 落 R76 的 SessionDead 标记（不是 Disable）：挑号跳过 + 面板「需重新登录」徽标 +
-		// 重登后按 auth 文件 mtime 自动清除。原因用提炼过的短句，面板直接可读。
-		rt.Pool.MarkSessionDead(au.UID, sessionDeadCause(rerr))
 		return false
 	}
 	// 刷新成功必须落盘：否则下次启动又拿旧 token，重回 401。
@@ -2236,20 +2219,7 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 	usable, expiring, unusable, err := a.creditTotals(rt, au)
 	if err != nil {
 		log.Printf("credits refresh failed platform=%s uid=%s err=%v", rt.Kind, uid, err)
-		// refresh 也失败时把可行动原因带回面板（否则前端只能看到上游 401 原文）。
-		if st, ok := rt.Pool.Status(uid); ok && st.SessionDead && st.SessionDeadReason != "" {
-			return 0, fmt.Errorf("需重新登录（refresh 也失败：%s）", st.SessionDeadReason)
-		}
 		return 0, err
-	}
-	// 只有「控制面与数据面共用同一凭据」的渠道，积分成功才能证明凭据可用、才允许清除
-	// SessionDead。SplitCredential 渠道（MonkeyCode）积分走控制台 Cookie、推理走
-	// agent key —— 积分查得到不代表推理凭据没失效，清了标记只会让下一次请求白打一次 401。
-	if !rt.SplitCredential {
-		rt.Pool.ClearSessionDead(uid)
-	} else if st, ok := rt.Pool.Status(uid); ok && st.SessionDead {
-		log.Printf("credits refresh success but session dead kept platform=%s uid=%s reason=%s"+
-			"（控制面与数据面凭据独立，积分成功不能证明推理凭据可用）", rt.Kind, uid, st.SessionDeadReason)
 	}
 	log.Printf("credits refresh success platform=%s uid=%s remain=%d expiring=%d unusable=%d", rt.Kind, uid, usable, expiring, unusable)
 	return usable, nil
@@ -2300,22 +2270,9 @@ func (a *App) RefreshAll() RefreshSummary {
 			if usable, _, _, err := a.creditTotals(rt, au); err == nil {
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: usable})
-				// 同 RefreshCredits：SplitCredential 渠道的积分成功不能证明推理凭据可用。
-				if !rt.SplitCredential {
-					rt.Pool.ClearSessionDead(st.UID)
-				}
 			} else {
 				ps.Failed++
-				msg := shortErr(err)
-				// refresh 也失败（会话被吊销）：给出可行动文案，而不是上游 HTML/401 原文。
-				// 面板 toast 只需一行就能告诉用户「该重登了」而不是「再点一次刷新」。
-				//
-				// 必须重新读一次状态：st 是循环开始时的快照，而 SessionDead 标记是
-				// 本次刷新失败之后才落的（读快照会恒 miss，文案退化回上游原文）。
-				if cur, ok := rt.Pool.Status(st.UID); ok && cur.SessionDead && cur.SessionDeadReason != "" {
-					msg = "需重新登录（refresh 也失败：" + cur.SessionDeadReason + "）"
-				}
-				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: false, Msg: msg})
+				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: false, Msg: shortErr(err)})
 				log.Printf("credits refresh failed platform=%s uid=%s err=%v", rt.Kind, st.UID, err)
 			}
 		}
@@ -2395,17 +2352,9 @@ func (a *App) DisableAccount(uid string, disabled bool) error {
 	if rt.Kind == provider.Kilo {
 		return fmt.Errorf("Kilo 免费池账号不可停用/启用")
 	}
-	if rt.Custom {
-		var next []custom.ChannelConfig
-		for _, cc := range a.cfg.CustomChannels {
-			if strings.EqualFold(cc.Name, rt.Kind.String()) {
-				en := !disabled
-				cc.Enabled = &en
-			}
-			next = append(next, cc)
-		}
-		return a.SetCustomChannels(next)
-	}
+	// R83 起自定义渠道没有 enabled 概念（要么在列表里=启用，要么被删除），
+	// 故不再走「停用即写配置」的特例；落到下面常规的 pool.SetDisabled。
+	// 效果差异：面板重启后自定义渠道的停用状态不再持久化 —— 这正是删除该功能的本意。
 	rt.Pool.SetDisabled(uid, disabled)
 	if disabled {
 		log.Printf("已停用账号 %s", shortUID(uid))
@@ -4261,43 +4210,6 @@ func shortUID(uid string) string {
 		return uid
 	}
 	return uid[:10] + "…"
-}
-
-// sessionDeadCause 把上游 refresh 失败原文提炼成一句人话。
-//
-// 为什么要提炼：上游回的是整包 JSON（`{"code":12153,"msg":"12153:refresh token is
-// invalid","requestId":"…"}`），直接塞进 toast 会被 shortErr 截成半截，用户只能看到
-// `refresh 也失败：upstream session_dead (http 401): {"code":12153,"msg":"12153:refresh to…`。
-// 这里只取 `msg` 字段（无则用分类名），并去掉上游重复的 `12153:` 前缀。
-func sessionDeadCause(err error) string {
-	if err == nil {
-		return ""
-	}
-	var ue *provider.Error
-	if errors.As(err, &ue) {
-		if i := strings.Index(ue.Msg, `{"code"`); i >= 0 {
-			var env struct {
-				Code int    `json:"code"`
-				Msg  string `json:"msg"`
-			}
-			if json.Unmarshal([]byte(ue.Msg[i:]), &env) == nil && env.Msg != "" {
-				return strings.TrimSpace(stripCodePrefix(env.Msg, env.Code))
-			}
-		}
-		if ue.Msg != "" {
-			return shortErr(errors.New(ue.Msg))
-		}
-	}
-	return shortErr(err)
-}
-
-// stripCodePrefix 去掉上游在 msg 里重复的业务码前缀（`12153:refresh token is invalid`）。
-func stripCodePrefix(msg string, code int) string {
-	if code <= 0 {
-		return msg
-	}
-	p := strconv.Itoa(code) + ":"
-	return strings.TrimSpace(strings.TrimPrefix(msg, p))
 }
 
 func shortErr(err error) string {

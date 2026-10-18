@@ -261,12 +261,37 @@ body {
 .input { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 14px; outline: none; }
 .input:focus { border-color: var(--primary); }
 .input.port { width: 80px; }
+/* 通用弹性自适应容器与包装层 */
+.grow { flex: 1 1 auto; min-width: 0; }
+.row > .pk-wrap.grow { flex: 1 1 auto; min-width: 0; }
+
 .input.grow { flex: 1; min-width: 120px; }
 /* 弹层里独立成行的输入框（不套在 .row 弹性容器里）：.grow 的 flex:1 不生效，
    浏览器会按默认 size 属性渲染成一个窄框（就是 Cline 的 API-Key 输入框过短的原因）。
    凡是直接位于 .cfg-section 下的 .input.grow 一律撑满宽度。 */
 .cfg-section > .input.grow { flex: none; width: 100%; box-sizing: border-box; }
 .select { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 14px; background: var(--card); outline: none; }
+
+/* 下拉框统一自绘箭头（原生箭头在 Chrome 上是又小又贴边的灰色三角，和圆角边框不搭）。
+   做法：appearance:none 去掉原生控件，再画一个 CSS 三角贴在右侧。
+   为什么用 background-image 而不是 ::after：<select> 是替换元素，伪元素在多数
+   浏览器里不渲染（Chrome 明确不支持）。三角用 border 拼，颜色走 currentColor
+   的近似值（CSS 变量在 gradient 里可用，但三角需要 border，故直接写 muted 色）。 */
+.select, select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted, #64748b) 50%),
+                    linear-gradient(135deg, var(--muted, #64748b) 50%, transparent 50%);
+  background-position: calc(100% - 16px) calc(50% + 2px), calc(100% - 11px) calc(50% + 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;   /* 给箭头留位，避免长选项文字压到三角 */
+  cursor: pointer;
+}
+/* Firefox 不认 background-image 定位三角时会退化成无箭头，补一条 border 兜底；
+   同时禁用 IE 时代的 ::-ms-expand（虽然已无用户，成本为零）。 */
+select.input::-ms-expand, .select::-ms-expand { display: none; }
 .muted { color: var(--muted); }
 .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .risk-tip { font-size: 12px; color: var(--warn); background: #fefce8; border: 1px solid #fde68a; padding: 8px 10px; border-radius: 8px; margin-top: 8px; }
@@ -275,11 +300,30 @@ body {
 .req { color: var(--danger); font-weight: 700; margin-left: 3px; }
 
 /* 签到时间（设置弹层内） */
-
-/* 签到时间 */
-.times { display: flex; flex-wrap: wrap; gap: 8px; }
-.time-chip { background: #eff6ff; border: 1px solid #bfdbfe; color: var(--primary); padding: 5px 10px; border-radius: 16px; font-size: 13px; cursor: pointer; }
-.time-chip:hover { background: #dbeafe; text-decoration: line-through; }
+.times-wrap {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1; min-width: 0;
+}
+.times { display: contents; }
+.time-chip {
+  background: var(--card); border: 1px solid var(--border); color: var(--text);
+  padding: 3px 8px; border-radius: 6px; font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  line-height: 1.4; transition: all .12s ease;
+}
+.time-chip:hover {
+  background: #fef2f2; border-color: #fca5a5; color: var(--danger);
+}
+.time-add-btn {
+  height: 25px; padding: 0 8px; font-size: 12px;
+  border-radius: 6px; border: 1px dashed var(--border);
+  background: var(--card); color: var(--muted);
+  display: inline-flex; align-items: center; gap: 2px;
+  cursor: pointer; transition: all .15s ease;
+}
+.time-add-btn:hover {
+  color: var(--primary); border-color: var(--primary); background: #f0f2f5;
+}
 .icon-btn { border: 1px dashed var(--border); background: transparent; color: var(--muted); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 16px; }
 .icon-btn:hover { color: var(--primary); border-color: var(--primary); }
 
@@ -316,7 +360,27 @@ body {
   height: 460px; max-height: 86vh;
   display: flex; flex-direction: column;
 }
-.modal-search .modal-title { margin-bottom: 10px; }
+.modal-search .modal-title {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-close-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: all .15s ease;
+}
+.modal-close-btn:hover {
+  color: var(--text);
+  background: var(--bg);
+}
 .modal-search #modelSearchInput { width: 100%; box-sizing: border-box; margin-bottom: 8px; flex: none; }
 /* overflow-y:auto + min-height:0：flex 子项默认 min-height:auto 会撑破容器而不滚动，必须显式归零 */
 .ms-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
@@ -464,29 +528,314 @@ body {
 
 /* 弹层 */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+/* ===== 弹层宽度规范（R84）=====
+   只有三档，别再造第四档：
+     .modal            400px  单行输入类（改名/确认/关于/登录）
+     .modal-wide       720px  表单类（添加账号/说明文档）
+     .modal-xwide     1180px  表格与多列编辑类（设置、自定义渠道、模型管理）
+   「设置」与「自定义渠道」必须同档（用户明确要求）——此前 720 vs 1180
+   宽度不一致，在两者之间切换会明显跳动，也让「设置里放不下自定义渠道」
+   这个伪问题一直存在。 */
 .modal { background: var(--card); border-radius: 12px; padding: 20px 22px; width: 400px; max-width: 92vw; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
 /* 宽弹层：统一设置 / 帮助（风险声明多，需宽松排版） */
 .modal.modal-wide { width: 720px; max-width: 94vw; max-height: 86vh; display: flex; flex-direction: column; }
+/* xwide 的 min-height 让内容少的弹层不至于塌成一条（自定义渠道只有 4 行时） */
+.modal.modal-xwide { min-height: 320px; }
+/* 更宽的一档（自定义渠道：一行要塞 badge+URL+密钥+状态+模型数+6 个按钮） */
+.modal.modal-xwide { width: 1180px; max-width: 97vw; max-height: 86vh; display: flex; flex-direction: column; }
+.modal-xwide .modal-body { overflow-y: auto; min-height: 0; }
 .modal-wide .modal-body { overflow-y: auto; min-height: 0; }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
 .modal-body { font-size: 14px; color: var(--text); margin-bottom: 14px; word-break: break-all; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .login-buttons { display: flex; gap: 8px; margin-top: 14px; }
 
+/* 帮助问号角标与浮动说明气泡（R90 规范） */
+.help-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: help;
+  margin-left: 5px;
+  vertical-align: middle;
+  line-height: 1;
+  user-select: none;
+  position: relative;
+  transition: all .15s ease;
+}
+.help-mark:hover,
+.help-mark:focus-within {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: #eff6ff;
+}
+
+.help-pop {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 250;
+  width: max-content;
+  max-width: min(400px, 80vw);
+  min-width: 200px;
+  box-sizing: border-box;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.05);
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: auto;
+  transition: opacity .15s ease, transform .15s ease, visibility .15s;
+  transform: translateY(4px);
+}
+.help-pop::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.help-mark:hover .help-pop,
+.help-mark:focus-within .help-pop {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.help-mark.pop-right .help-pop {
+  left: auto;
+  right: 0;
+}
+.help-mark.pop-right .help-pop::before {
+  left: auto;
+  right: 0;
+}
+
+.help-pop code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text);
+}
+.help-pop b {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* 统一设置弹层内部分区 */
-.settings-body { word-break: normal; }
-.cfg-section { padding: 12px 0 4px; border-top: 1px solid var(--border); }
-.cfg-section:first-child { border-top: none; padding-top: 2px; }
-.cfg-heading { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+.settings-body {
+  word-break: normal;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  padding-right: 4px;
+}
+.settings-body::-webkit-scrollbar { width: 6px; }
+.settings-body::-webkit-scrollbar-track { background: transparent; }
+.settings-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.settings-body::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+.cfg-section { padding: 14px 0 6px; border-top: 1px solid var(--border); }
+.cfg-section:first-child { border-top: none; padding-top: 0; }
+.cfg-heading {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;
+}
 .lbl.wide { width: 90px; flex-shrink: 0; white-space: nowrap; }
+
+/* 设置弹层表单行与开关行规整 */
+.settings-body .row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.settings-body .row-sub {
+  margin-left: 98px; margin-top: -2px; margin-bottom: 8px;
+}
+.settings-body .row-switch {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px; min-height: 28px;
+}
+.settings-body .row-switch .hint {
+  margin: 0; font-size: 12px; color: var(--muted);
+}
 
 /* 配置行列表（备用上游通道 / 模型降级链共用） */
 .proxy-list { display: flex; flex-direction: column; gap: 6px; }
 .proxy-row { margin-bottom: 0; }
 .proxy-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
-/* 自定义渠道层级卡片（R64） */
-.custom-channels-list { display: flex; flex-direction: column; gap: 8px; }
+/* ===== 自定义模型弹层（R85/R87/R88 规范优化）=====
+   结构：每个 Provider 一个 .cm-provider 区块；
+   .cm-provider-row = Provider 自己一行；.cm-model-row = 它下面每个模型各一行。
+   两类行都是 white-space:nowrap + 内部横向滚动，**绝不折行**。 */
+.cm-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* 按钮右对齐（R87 定稿）：行是 flex，信息区 flex:1 吃掉剩余宽度，按钮组 margin-left:auto 顶到最右。
+   两类行容器内宽严格一致，使上一行与下一行按钮的右边缘在同一条垂直竖线上。 */
+.cm-provider-row, .cm-model-row {
+  display: flex; align-items: center; gap: 6px;
+  white-space: nowrap;   /* 每行是一个整体，绝不折行 */
+}
+.cm-info {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  white-space: nowrap; overflow: hidden;
+}
+/* 按钮组首项靠右，整组推到最右 */
+.cm-btn-edit { margin-left: auto; }
+
+/* 卡片容器：遵循项目原生卡片风格（var(--border), var(--bg), var(--card)） */
+.cm-provider {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); overflow: hidden;
+}
+.cm-provider-row {
+  padding: 8px 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+.cm-provider-row .badge { flex-shrink: 0; }
+.cm-url {
+  flex: 1 1 auto; min-width: 160px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.cm-key {
+  flex-shrink: 0; margin: 0;
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+}
+.cm-meta {
+  flex-shrink: 0; font-size: 11px; color: var(--muted);
+}
+.cm-effort {
+  color: #7c3aed; font-weight: 600; font-family: ui-monospace, Consolas, monospace;
+}
+
+/* 按钮微体系：统一步长、圆角与精致悬浮，与项目 .btn.small 完全对齐 */
+.cm-provider-row .btn, .cm-model-row .btn {
+  flex-shrink: 0;
+  font-size: 12px; padding: 4px 8px;
+  border-radius: 6px; line-height: 1.4;
+}
+
+/* 危险删除按钮：与项目质感统一，平时柔和浅边红字，悬停实心红，消除满屏刺眼色块 */
+.cm-provider-row .btn.danger, .cm-model-row .btn.danger {
+  background: var(--card);
+  border-color: #fca5a5;
+  color: var(--danger);
+}
+.cm-provider-row .btn.danger:hover, .cm-model-row .btn.danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* 模型行：从属于 Provider，左侧标准 2px 竖线缩进 */
+/* 右侧不留 margin：模型行按钮与 Provider 行按钮严格落在同一条右边缘（10px） */
+.cm-models {
+  padding: 4px 0 4px 12px;
+  background: var(--bg);
+  border-left: 2px solid var(--border);
+  margin-left: 10px;
+}
+.cm-model-row {
+  padding: 5px 10px; margin: 2px 0;
+  border-radius: 6px;
+  background: var(--bg);
+  transition: background .12s ease;
+}
+.cm-model-row:hover { background: var(--card); }
+.cm-model-row.cm-empty-row {
+  background: transparent; color: var(--muted);
+}
+.cm-model-id {
+  flex: 1 1 auto; min-width: 120px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* 自定义渠道一行式列表（R82：原来每个渠道展开一张模型表，10 个渠道要滚好几屏） */
+.custom-channels-list { display: flex; flex-direction: column; gap: 6px; }
+.custom-ch-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: var(--bg, #f8fafc);
+  border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
+  white-space: nowrap;            /* 一行展示，绝不换行 */
+  overflow-x: auto;               /* 极窄屏兜底：宁可横滚也不换行挤压 */
+  scrollbar-width: thin;
+}
+.custom-ch-row .badge { flex-shrink: 0; }
+/* URL 是最容易撑爆的字段：给弹性宽度 + 省略号，而不是让它把按钮挤出去 */
+.custom-ch-row .cch-url {
+  flex: 1 1 auto; min-width: 180px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis;
+}
+.custom-ch-row .cch-key { flex-shrink: 0; margin: 0; }
+/* 模型 chips：与渠道同处一行。整体不换行（nowrap），超出部分横向滚动——
+   这样「provider + 它的全部模型 + 操作按钮」始终是一条线，不会因为模型多而折行。 */
+.custom-ch-row .cch-models {
+  display: flex; align-items: center; gap: 4px;
+  flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;           /* 行内滚动条太吵，隐藏但仍可滚 */
+  padding: 1px 0;
+}
+.custom-ch-row .cch-models::-webkit-scrollbar { display: none; }
+/* 模型 chip 是**文字按钮**（点击打开模型编辑弹窗），不是纯展示标签 */
+.model-chip {
+  flex-shrink: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px; line-height: 1.5;
+  padding: 2px 7px;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 999px;
+  background: var(--card, #fff);
+  color: var(--text, #1e293b);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.model-chip:hover { border-color: var(--primary, #2563eb); color: var(--primary, #2563eb); }
+.custom-ch-row .btn, .custom-ch-row .icon-btn { flex-shrink: 0; }
+
+/* 模型管理弹层：一行一个模型 */
+.model-mgr-list { display: flex; flex-direction: column; gap: 6px; }
+.model-mgr-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: var(--bg, #f8fafc);
+  border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
+  white-space: nowrap; overflow-x: auto;
+}
+.model-mgr-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; flex: 1 1 auto; min-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+.model-mgr-row .mm-meta { flex-shrink: 0; font-size: 11px; color: var(--muted, #64748b); }
+.model-mgr-row .tag, .model-mgr-row .btn, .model-mgr-row .icon-btn { flex-shrink: 0; }
+
+/* 弹层内的「标签 + 输入框」一行（新增/编辑弹窗用） */
+.cfg-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cfg-label { flex-shrink: 0; width: 76px; font-size: 13px; color: var(--muted, #64748b); }
+
+/* 自定义渠道层级卡片（R64，保留给旧样式引用） */
 .custom-ch-card { background: var(--bg, #f8fafc); border: 1px solid var(--line, #e2e8f0); border-radius: 8px; padding: 10px 12px; }
 .custom-ch-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px dashed var(--line, #e2e8f0); }
 .custom-models-box { margin-top: 8px; }
@@ -496,6 +845,14 @@ body {
 .custom-models-table th { text-align: left; font-size: 11px; font-weight: 500; color: var(--muted, #64748b); border-bottom: 1px solid var(--line, #e2e8f0); white-space: nowrap; }
 .custom-models-table td { border-bottom: 1px solid var(--line, #f1f5f9); overflow: hidden; text-overflow: ellipsis; }
 .custom-model-add-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; margin-top: 6px; padding: 6px 8px; background: var(--card, #fff); border-radius: 6px; border: 1px solid var(--line, #e2e8f0); }
+
+/* 模型导入弹层（R81）：勾选列表。max-height 让长列表自己滚，弹层高度不失控。 */
+.import-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--line, #e2e8f0); border-radius: 6px; padding: 4px 6px; background: var(--card, #fff); }
+.import-row { display: flex; align-items: center; gap: 8px; padding: 4px 4px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+.import-row:hover { background: var(--bg, #f8fafc); }
+.import-name { flex: 1; min-width: 0; cursor: pointer; }
+.import-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.import-row input[type="checkbox"] { flex-shrink: 0; }
 
 /* 账号名可点击编辑 */
 .acct-name.editable { cursor: pointer; border-bottom: 1px dashed transparent; }
@@ -1167,13 +1524,31 @@ body {
    文字，故宽度自适应；点击复用同一 #modelSearchOverlay 弹层（见 app.js 的 openModelSearch）。
    width: auto 必须显式写：本按钮同时带 .icon-btn 类，而该类是 width: 30px 的纯图标尺寸，
    不覆盖则文字标签会挣出 30px 的边框盒（overflow 默认 visible ⇒ 压到相邻内容上）。 */
+.cfg-heading {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 10px; display: flex; align-items: center;
+}
+.cfg-heading > span:first-child { order: 1; }
+.cfg-heading > .help-mark { order: 2; margin-left: 6px; }
+.cfg-heading > .cfg-search-btn { order: 3; margin-left: auto; }
+
 .cfg-heading .cfg-search-btn {
-  width: auto; height: 24px; font-size: 12px; border-radius: 6px;
-  vertical-align: middle; margin-left: 6px; padding: 0 8px; line-height: 1;
-  white-space: nowrap; font-family: inherit; font-weight: 400;
+  width: auto; height: 25px; font-size: 12px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  padding: 0 9px; line-height: 1;
+  white-space: nowrap; font-family: inherit; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 4px;
+  cursor: pointer; transition: all .15s ease;
+}
+.cfg-heading .cfg-search-btn:hover {
+  border-color: var(--primary); color: var(--primary); background: #eff6ff;
 }
 
-/* ---------- 配置区交互优化：combobox 模糊搜索下拉 + 规则卡片 + 备胎 chip 拖拽 ----------
+#backupProxyState {
+  font-size: 12px; font-weight: 500; white-space: nowrap; margin-left: 8px;
+}
+
+/* 规则/映射卡片区块（custom-ch-card 同款）
    覆盖「模型降级链」「思考强度」两区：
    - .pk-wrap：输入框定位容器（下拉锚点，input 直接子元素）；.half2 底部行对半分。
    - .pk-menu：下拉面板（渠道徽标 + 完整 ID + 价格两行富信息，字段与「查找模型」弹层同源）。
@@ -1187,10 +1562,10 @@ body {
 /* 下拉面板：绝对定位贴输入框下沿，全局同时只开一个（pkOpenMenu 管理闭菜单）。
    display:none / .open 才显示——渲染与显隐解耦，避免空菜单占位。 */
 .pk-menu {
-  display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 60;
+  display: none; position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 100;
   background: var(--card); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.14);
-  max-height: 320px; overflow-y: auto; overflow-x: hidden;
+  max-height: 280px; overflow-y: auto; overflow-x: hidden;
   font-size: 12.5px; padding: 4px;
 }
 .pk-menu.open { display: block; }
@@ -1254,8 +1629,41 @@ body {
   font-size: 12px; font-weight: 600; color: var(--primary);
 }
 
+/* 空态占位卡片 */
+.fb-empty {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+/* 添加新规则/新映射面板 */
+.fb-compose-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+.fb-compose-panel .fb-foot-row {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+.fb-compose-panel .fb-foot-actions {
+  margin-top: 0;
+  margin-bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* 底部添加行：主力/备选对半分，按钮组独立一行右对齐 */
-.fb-foot-row .half2 { flex: 1 1 calc(50% - 5px); min-width: 260px; }
+.fb-foot-row .half2 { flex: 1 1 calc(50% - 5px); min-width: 240px; }
 .fb-foot-actions { justify-content: flex-end; flex-wrap: wrap; }
 .fb-foot-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 

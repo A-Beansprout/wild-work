@@ -625,11 +625,7 @@ func main() {
 		provider.QoderCN:     {Kind: provider.QoderCN, Pool: qcnPool, Upstream: qcnUp, Scheduler: qcnSch},
 		provider.QoderCOM:    {Kind: provider.QoderCOM, Pool: qcmPool, Upstream: qcmUp, Scheduler: qcmSch},
 		provider.QwenWork:    {Kind: provider.QwenWork, Pool: qwPool, Upstream: qwUp, Scheduler: qwSch},
-		// MonkeyCode 的控制面与数据面用两套独立凭据：推理走 X-Api-Key（agent 的
-		// oma_ key），积分/签到走控制台 Cookie（或派生出它的百智云 Cookie）。
-		// 一个可用不代表另一个可用，故标记 SplitCredential —— 积分刷新成功时
-		// 不得清除推理侧打上的 SessionDead（2026-10-18 实测：标了又清、清了又标）。
-		provider.MonkeyCode: {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch, SplitCredential: true},
+		provider.MonkeyCode: {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch},
 		provider.Raccoon:    {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
 		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
 		provider.GLM:        {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
@@ -1123,9 +1119,6 @@ func buildCustomRuntimes(channels []custom.ChannelConfig, stateDir string) (map[
 	var names []string
 
 	for _, cc := range channels {
-		if !cc.IsEnabled() {
-			continue
-		}
 		k := provider.Kind(cc.Name)
 		client := custom.New(cc)
 		p := pool.New(filepath.Join(stateDir, "state-custom-"+cc.Name+".json"))

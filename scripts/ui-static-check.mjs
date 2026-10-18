@@ -666,7 +666,7 @@ for (const [label, re] of uniq) {
     // 响应式：断点是按实测溢出阈值卡位的，调宽会破坏桌面端逐像素一致性，调窄则手机仍溢出。
     ["渠道按钮基础为 6 列（PC 默认宽度 6+5 两行，消除第三行孤行）", css.includes("repeat(6, auto)")],
     ["渠道按钮摆位全归 CSS（index.html 不再内联 grid-column，否则窄屏无法重排）", !/btnAdd\w+" style="grid-column/.test(html)],
-    ["渠道按钮 DOM 顺序 = 列配对（同列上下 = 同渠道国内/国际版；Cline 占第一行末位）",
+    ["渠道按钮 DOM 顺序 = 列配对（同列上下 = 同渠道国内/国际版；自定义渠道垫底）",
       /btnAddWB\b[\s\S]*?btnAddQoderCN\b[\s\S]*?btnAddTrae\b[\s\S]*?btnAddMonkeyCode\b[\s\S]*?btnAddLoomy\b[\s\S]*?btnAddCline\b[\s\S]*?btnAddWBAI\b[\s\S]*?btnAddQoderCOM\b[\s\S]*?btnAddQwen\b[\s\S]*?btnAddRaccoon\b[\s\S]*?btnAddGLM\b/.test(html)],
     ["窄屏渠道按钮自适应列（auto-fit，118px 可在 320px 竖屏排出两列）", css.includes("repeat(auto-fit, minmax(118px, 1fr))")],
     ["按钮紧凑档字号（12px，PC 一行放下 6 个）", /\.panel-actions-wrap \.btn \{ font-size: 12px;/.test(css)],
@@ -794,14 +794,36 @@ for (const [label, re] of uniq) {
   const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
   const need = [
-    ["设置弹层有自定义渠道编辑区", html.includes('id="customChList"') && html.includes('id="inCustomName"') && html.includes('id="inCustomURL"')],
-    ["app.js 接线自定义渠道测试/添加/保存按钮", raw.includes('$("btnCustomTest").onclick') && raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
+    ["自定义模型是独立弹层（R85：设置里只留一个入口按钮）",
+      html.includes('id="customModelsOverlay"') && html.includes('id="customChList"') &&
+      html.includes('id="btnOpenCustomModels"')],
+    ["主面板的自定义模型入口在「＋ CodeArts」右侧（R86）",
+      html.includes('id="btnAddCodeArts"') && html.includes('id="btnOpenCustomModels"') &&
+      html.indexOf('id="btnAddCodeArts"') < html.indexOf('id="btnOpenCustomModels"')],
+    ["app.js 不再引用 btnCustomChannels", !raw.includes('btnCustomChannels')],
+    ["openSettings 不再初始化自定义渠道（职责归 openCustomModels）", (() => {
+      const at = raw.indexOf("function openSettings()");
+      if (at < 0) return false;
+      const brace = raw.indexOf("{", at);
+      let depth = 0;
+      for (let i = brace; i < raw.length; i++) {
+        if (raw[i] === "{") depth++;
+        else if (raw[i] === "}" && --depth === 0) return !raw.slice(brace, i).includes("editCustomChannels");
+      }
+      return false;
+    })()],
+    ["openCustomModels 从 state.custom_channels 初始化编辑态",
+      /function openCustomModels\(\)[\s\S]{0,400}?editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
+    ["openCustomChannels 已移除（不再有独立弹层）", !raw.includes("function openCustomChannels")],
+    ["app.js 接线自定义模型的打开/新增/保存按钮",
+      raw.includes('$("btnOpenCustomModels").onclick') && raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
     ["app.js 调 POST /api/config/custom_channels", raw.includes('"/api/config/custom_channels"')],
     ["app.js 调 POST /api/config/custom_channel_test", raw.includes('"/api/config/custom_channel_test"')],
-    ["openSettings 从 state.custom_channels 初始化编辑态", /editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
+
     // 内建同名拒绝（R66）：前后端各自守一道——前端给即时反馈，后端 Validate 会拒。
     ["前端有内建渠道名保留集（防与内建同名）", raw.includes("RESERVED_CHANNEL_NAMES") && raw.includes('"workbuddy"') && raw.includes('"cline-free"')],
-    ["后端拒绝内建同名的文案已在 hint 写清", html.includes("不得与内建渠道同名")],
+    ["后端拒绝内建同名的文案已在 hint 写清", html.includes("不得与内建渠道同名") ||
+      raw.includes("不得与内建渠道同名")],
     // 测试按钮必须带 name（否则脱敏回显态的 api_key 无法在后端找回真实密钥，恒 401）
     ["自定义渠道测试请求携带 name（后端子据以找回被脱敏的真实 api_key）",
       /custom_channel_test[\s\S]{0,90}name[:,]/.test(raw)],
@@ -818,13 +840,13 @@ for (const [label, re] of uniq) {
       return ["app.js 的 $() DOM 引用无悬空（防 openSettings 抛 TypeError 打不开弹层）", missing.length === 0];
     })(),
     // ---- 跟进项（PR #121：自定义渠道 UI 打磨，R66 延续）----
-    ["模型添加按钮为 ➕ emoji（紧凑单行）", raw.includes('data-add-model="${i}"') && raw.includes("➕")],
+    ["模型新增走弹窗（R82：列表里不再内嵌添加行）", raw.includes('$("btnMgrAdd").onclick') && raw.includes("function openModelEditor(")],
     ["上下文/输出输入支持 k/M 单位（parseTokens）", raw.includes("function parseTokens(") && raw.includes("function formatTokenCount(")],
-    ["上下文/输出默认值使用 1M / 64k 单位串", raw.includes('value="1M"') && raw.includes('value="64k"')],
-    ["模型行含工具能力勾选（supports_tools）", raw.includes('data-m-tools="${i}"') && raw.includes("supports_tools: hasTools")],
-    ["模型表格有固定列宽 colgroup（对齐）", raw.includes('<colgroup>') && css.includes("table-layout: fixed")],
+    ["模型编辑弹窗默认值使用 1M / 64k 单位串", html.includes('id="meCtx"') && html.includes('value="1M"') && html.includes('value="64k"')],
+    ["模型编辑弹窗含工具能力勾选（supports_tools）", html.includes('id="meTools"') && raw.includes('supports_tools: $("meTools").checked')],
+    ["渠道与模型列表都用一行式 flex 行（R82）", css.includes(".custom-ch-row {") && css.includes(".model-mgr-row {") && css.includes("white-space: nowrap")],
     ["openSettings 不再引用已移除的 inCustomModels", !raw.includes('$("inCustomModels")')],
-    ["模型添加行回车快捷提交", raw.includes("模型添加输入框回车快捷添加")],
+    ["模型编辑弹窗回车快捷提交", /meId"\)\.onkeydown = \(e\) => \{ if \(e\.key === "Enter"\) saveModelEditor\(\)/.test(raw)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
@@ -1044,6 +1066,190 @@ for (const [label, re] of uniq) {
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+      if (!pass) failed++;
+    }
+  }
+
+// ---- 场景 4：折线图不得画「全 0 系列」----
+// 背景（用户实测）：某渠道只在一个小时点有量、其余点全 0，图上却有一条贯穿
+// 到底的贴 0 轴长线，既白占图例又把 Y 轴视觉压扁。修法是按「区间总量 > 0」
+// 过滤系列（与 tooltip 过滤 0 值系列同口径）。
+{
+  const need4 = [];
+  const check4 = (name, pass, extra = "") => need4.push([name, pass, extra]);
+  // 同 fnBody（上面那个是局部作用域内的，这里需要独立定义）
+  const bodyOf = (name) => {
+    const at = raw.indexOf(`function ${name}(`);
+    if (at < 0) return "";
+    const brace = raw.indexOf("{", at);
+    let depth = 0;
+    for (let i = brace; i < raw.length; i++) {
+      if (raw[i] === "{") depth++;
+      else if (raw[i] === "}" && --depth === 0) return raw.slice(brace, i + 1);
+    }
+    return "";
+  };
+
+  // 函数体源码断言（图表依赖 echarts，stub 环境跑不了真实渲染，
+  // 但「是否按总量过滤」是纯源码性质，可静态锁死）。
+  const usageBody = bodyOf("renderUsageChart");
+  check4("renderUsageChart 函数体可定位", usageBody.length > 200, `len=${usageBody.length}`);
+  check4("token 图按总量过滤掉 0 渠道（active 变量）",
+    /const active = chans\.filter\(\(ch\) => \(totalOf\[ch\] \|\| 0\) > 0\)/.test(usageBody),
+    usageBody.slice(0, 200));
+  check4("token 图的 series 用过滤后的 active（不再直接用 chans）",
+    /const series = active\.map/.test(usageBody) && !/const series = chans\.map/.test(usageBody));
+  check4("token 图的 color 也用过滤后的 active",
+    /color: active\.map\(\(ch\) => chColor\(ch\)\)/.test(usageBody));
+  // 核心：0 值必须画成 null（断点），不能画成 0 —— 否则每个"没跑"的时刻都落一个
+  // 0 点、被直线串成一条贴 X 轴的长线（用户实测的"底部总有一条线"）。
+  check4("token 图把 0 画成 null 断点（不再落 0 点）",
+    /return v > 0 \? v : null;/.test(usageBody),
+    usageBody.slice(usageBody.indexOf("data: byDay.map"), usageBody.indexOf("data: byDay.map") + 120));
+  check4("token 图显式关掉 connectNulls（否则 null 会被跨过连成假线）",
+    /connectNulls: false/.test(usageBody));
+  check4("token 图不再用「|| 0」兜底成 0 点",
+    !/d\.by_channel\[ch\] \|\| 0/.test(usageBody));
+
+  const creditBody = bodyOf("renderCreditChart");
+  check4("renderCreditChart 函数体可定位", creditBody.length > 200, `len=${creditBody.length}`);
+  check4("积分图按总量过滤掉 0 账号",
+    /\.filter\(\(uid\) => \(totals\[uid\] \|\| 0\) > 0\)/.test(creditBody),
+    creditBody.slice(0, 200));
+  check4("积分图同样把 0 画成 null 断点",
+    /return v > 0 \? v : null;/.test(creditBody));
+  check4("积分图同样关掉 connectNulls",
+    /connectNulls: false/.test(creditBody));
+  check4("积分图不再用「|| 0」兜底成 0 点",
+    !/byAcct\[uid\]\[d\] \|\| 0/.test(creditBody));
+
+  for (const [label, pass, extra] of need4) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 场景 5：自定义渠道弹层独立 + 模型一键导入（R81）----
+{
+  const need5 = [];
+  const check5 = (name, pass, extra = "") => need5.push([name, pass, extra]);
+
+  check5("主面板渠道按钮回到 17 个（R84：自定义渠道入口收敛到设置）",
+    !/btnCustomChannels/.test(html));
+  check5("弹层保留完整动作（列表 + 新增 Provider + 保存 + 提示）",
+    ['customChList', 'btnCustomAdd', 'btnCustomSave', 'customChErr', 'customChOk']
+      .every((id) => html.includes(`id="${id}"`)));
+  // R85：Provider 一行 + 其下每个模型各一行，任何一行都不换行
+  check5("Provider 行与其模型行都不换行（white-space: nowrap）",
+    /\.cm-provider-row, \.cm-model-row \{[^}]*white-space: nowrap/.test(css) &&
+    /\.cm-info \{[^}]*white-space: nowrap/.test(css));
+  check5("每个 Provider 一个区块、其下每个模型各占一行",
+    /class="cm-provider"/.test(raw) && /class="cm-model-row"/.test(raw));
+  check5("Provider 行功能完整（编辑/导入/加模型/删除；R87 去掉测试）",
+    ['data-edit-custom', 'data-import-custom', 'data-add-model-in', 'data-del-custom']
+      .every((a) => raw.includes(a)) && !raw.includes('data-test-custom'));
+  check5("每行按钮组整体右对齐（信息区 flex:1 + 按钮组 margin-left:auto）",
+    /\.cm-provider-row, \.cm-model-row \{[^}]*display: flex/.test(css) &&
+    /\.cm-info \{[^}]*flex: 1 1 auto/.test(css) &&
+    /\.cm-btn-edit \{ margin-left: auto/.test(css));
+  check5("自定义模型弹层与设置同宽（modal-wide 720px）", (() => {
+    const a = html.indexOf('id="customModelsOverlay"');
+    if (a < 0) return false;
+    const seg = html.slice(a, a + 300);   // 只看开标签附近，避免跨弹层误匹配
+    return /class="modal modal-wide"/.test(seg) && !/modal-xwide/.test(seg);
+  })());
+  check5("模型行功能完整（编辑/删除都在同一行）",
+    /data-edit-model-in=/.test(raw) && /data-del-model-in=/.test(raw));
+  // R82：一行展示 + 增改走弹窗
+  check5("Provider 行 URL 用省略号收窄（不撑破布局）",
+    /\.cm-url \{[^}]*text-overflow: ellipsis/.test(css));
+  // R83：模型与渠道同一行展示，模型 chip 是可点的文字按钮
+  check5("模型行可点编辑（打开模型编辑弹窗）",
+    /data-edit-model-in\]"?\)[\s\S]{0,200}?mgrChIdx = ci/.test(raw));
+  // R83：删除改为文字按钮，不再用 🗑 / × 图标
+  check5("删除渠道是文字按钮（不是 🗑 emoji）",
+    /data-del-custom="\$\{i\}"[^>]*>删除</.test(raw) && !/data-del-custom="\$\{i\}"[^>]*>🗑/.test(raw));
+  check5("删除模型是文字按钮（不是 × 图标）",
+    /data-del-model="\$\{j\}"[^>]*>删除</.test(raw));
+  check5("危险按钮有 danger 样式",
+    /\.btn\.danger \{/.test(css));
+  // R83：停用功能整体移除（前端按钮 + 后端 enabled 字段）
+  check5("自定义渠道不再有停用按钮", !raw.includes('data-toggle-custom'));
+  check5("后端 ChannelConfig 不再有 Enabled 字段",
+    !readFileSync(new URL("../internal/custom/config.go", import.meta.url), "utf8").includes("Enabled *bool"));
+  check5("Provider 行有编辑入口", /data-edit-custom=/.test(raw));
+  check5("三个新弹层都存在（渠道编辑/模型管理/模型编辑）",
+    ['channelEditorOverlay', 'modelManagerOverlay', 'modelEditorOverlay'].every((id) => html.includes(`id="${id}"`)));
+  check5("模型管理弹窗一行式 + 可增删改",
+    /function renderModelManager\(\)/.test(raw) && /data-edit-model=/.test(raw) && /data-del-model=/.test(raw));
+  check5("渠道标识在编辑态不可改（它是模型前缀，改名=换路由）",
+    /\$\("ceName"\)\.disabled = !!ch/.test(raw));
+  check5("新增渠道不再依赖底部输入行（旧输入框已移除）",
+    !html.includes('id="inCustomName"') && !raw.includes('addPendingCustomInputs'));
+  // 下拉框自绘箭头（原生箭头又小又贴边）
+  // 判定方式：截取 `.select, select.input {` 到下一个 `}` 的块，断言块内含 appearance:none
+  // （用跨块正则容易误匹配到别处的 appearance，测不出回退）。
+  check5("select 统一 appearance:none + 自绘箭头", (() => {
+    const at = css.indexOf(".select, select.input {");
+    if (at < 0) return false;
+    const end = css.indexOf("}", at);
+    const block = css.slice(at, end);
+    return /appearance:\s*none/.test(block) && /background-image:\s*linear-gradient\(45deg/.test(block);
+  })());
+  check5("设置里不再有自定义模型配置 UI（R86：只从主工具栏入口进）", (() => {
+    const a = html.indexOf('id="settingsOverlay"');
+    const b = html.indexOf('id="customModelsOverlay"');
+    if (a < 0 || b < 0 || b < a) return false;
+    // 设置弹层这一段里不能出现自定义模型的配置元素
+    const seg = html.slice(a, b);
+    return !seg.includes('id="customChList"') && !seg.includes('id="btnCustomAdd"');
+  })());
+  // 宽度规范：设置保持原样，用户明确要求「宽度也不改」
+  check5("设置弹窗保持原来的 modal-wide（720px，R86 用户要求不动宽度）",
+    /<div class="overlay hidden" id="settingsOverlay">\s*<div class="modal modal-wide">/.test(html));
+  check5("弹窗宽度只有三档（.modal / .modal-wide / .modal-xwide）",
+    (css.match(/^\.modal(?:\.modal-(?:wide|xwide|search))? \{/gm) || []).length <= 5 &&
+    /\.modal\.modal-xwide \{[^}]*width: 1180px/.test(css));
+
+  // 一键导入
+  check5("渠道卡片有「导入模型」按钮", /data-import-custom=/.test(raw));
+  check5("导入弹层存在且带筛选/全选/全不选/确认", 
+    ['modelImportOverlay', 'importFilter', 'btnImportAll', 'btnImportNone', 'btnImportConfirm']
+      .every((id) => html.includes(`id="${id}"`)));
+  check5("导入走既有 custom_channel_test 端点（不新增后端接口）",
+    /openModelImport[\s\S]{0,600}?\/api\/config\/custom_channel_test/.test(raw));
+  check5("已存在的模型不可勾选（避免重复导入）",
+    /exists: have\.has\(id\)/.test(raw) && /\$\{m\.exists \? " disabled" : ""\}/.test(raw));
+  check5("导入只改编辑态、仍需「保存全部配置」落盘（不隐式写盘）",
+    /confirmModelImport[\s\S]{0,900}?保存全部配置/.test(raw));
+  check5("导入的模型默认参数与手填输入框一致（1M/64k/三能力开）",
+    /context_window: 1000000, max_tokens: 64000/.test(raw) &&
+    /supports_images: true, supports_reasoning: true, supports_tools: true/.test(raw));
+  check5("导入列表有滚动容器样式", /\.import-list \{ max-height/.test(css));
+  // 导入弹层叠在自定义渠道弹层之上：.overlay 基类 z-index=100，
+  // 写比它小的值会被压在下面（实测：坐标点模型名落到下层卡片上，勾不上）。
+  check5("导入弹层 z-index 高于 .overlay 基类（100），否则会被下层弹层遮挡",
+    /id="modelImportOverlay" style="z-index:(1[1-9]\d|[2-9]\d\d+)"/.test(html));
+  // 不得用 label 包裹 input：点 label 会「label 转发 + 冒泡」双重切换，
+  // 实测表现为「点模型名反而把刚勾上的取消」。改用 div + 显式 for/id。
+  check5("导入行用 div+显式 for/id 关联（label 包裹会双重切换）",
+    raw.includes('<div class="import-row"><input type="checkbox" id=') &&
+    raw.includes('<label class="import-name" for=') &&
+    !raw.includes('<label class="import-row"><input type="checkbox"'));
+  // 全选/全不选**不得重建列表**：重建会让用户手上/事件队列里的节点变孤儿，
+  // 后续 change 落到废弃节点上，importCtx 收不到更新（实测 bug：全不选后再勾，恒 0）。
+  check5("全选/全不选只同步 checked、不重建列表（避免孤儿节点吞掉 change）",
+    /const syncChecks = \(\) => \{[\s\S]{0,300}?querySelectorAll\("#importList \[data-import-pick\]"\)/.test(raw) &&
+    !/btnImportNone"\)\.onclick = \(\) => \{[\s\S]{0,200}?renderImportList\(\)/.test(raw));
+  // 全选/全不选只作用于「当前筛选可见」的行：否则筛 4 条点全选会悄悄勾上全部。
+  check5("全选/全不选只作用于筛选后的可见行（所见即所选）",
+    /function visibleImportIdx\(\)/.test(raw) &&
+    /for \(const i of visibleImportIdx\(\)\)/.test(raw));
+  check5("导入失败时给出可见错误（不静默）",
+    /拉取失败：/.test(raw) && /\(\"importErr\"\)\.textContent = /.test(raw));
+
+  for (const [label, pass, extra] of need5) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
   }
 }

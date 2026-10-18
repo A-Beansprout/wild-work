@@ -75,18 +75,24 @@ func itemKey(it provider.ResourceItem) string {
 	return it.Name
 }
 
-// expired 判定条目到期日是否已到（≤今天，UTC+8 墙钟）。
-// ExpireAt 为空串（渠道未下发，如 Qoder）恒 false → 下降走 spend 口径。
+// expired 判定条目是否**已失效**（UTC+8 墙钟）。
+//
+// 统一走 provider.ExpireInstant，两种 ExpireAt 写法各按自己的语义：
+//   - "YYYY-MM-DD"：该日全天可用，**次日 00:00** 才失效 ⇒ 当天不算过期；
+//   - RFC3339：精确时刻，到点即失效。
+//
+// 历史坑（2026-10-18 生产实录，两个方向都错）：旧实现用 `!t.After(today)` 且只认
+// 日期格式 —— 一方面把「到期日 = 今天」判成已过期（当日有效池的消耗被记成 expire，
+// loomy 每日积分 / qwenwork 当日钱包都中招）；另一方面对 gemini 的 RFC3339 解析失败后
+// 恒 false（被当成「永不过期」）。两处都在 provider.ExpireInstant 收口。
+//
+// ExpireAt 为空串（渠道未下发，如 Qoder）或不可解析时恒 false → 下降走 spend 口径。
 func expired(expireAt string, now time.Time) bool {
-	if expireAt == "" {
+	t, ok := provider.ExpireInstant(expireAt)
+	if !ok {
 		return false
 	}
-	t, err := time.ParseInLocation("2006-01-02", expireAt, expireLoc)
-	if err != nil {
-		return false
-	}
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, expireLoc)
-	return !t.After(today)
+	return !now.In(expireLoc).Before(t)
 }
 
 // DiffCredits 余额刷新后差分记账：cur 为本次 UserResourceDetail 拿到的条目，

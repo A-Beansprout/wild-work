@@ -82,6 +82,7 @@
           <button class="btn primary alt zcode" id="btnAddZCode" title="ZCode（智谱）：设备授权登录；积分领取依赖网页验证码，本工具不自动领取">＋ ZCode</button>
           <button class="btn primary alt gemini" id="btnAddGemini" title="Gemini（Google Code Assist）：本机回调授权登录，支持多账号">＋ Gemini</button>
           <button class="btn primary alt codearts" id="btnAddCodeArts" title="CodeArts（华为云）：PKCE 授权登录，支持多账号；免费额度按 UTC+8 自然日重置">＋ CodeArts</button>
+          <button class="btn primary alt custom" id="btnOpenCustomModels" title="自定义模型（OpenAI 兼容）：接入任意兼容端点，Provider 与模型都在一个弹窗里增删改">＋ 自定义模型</button>
         </div>
       </div>
     </div>
@@ -352,52 +353,49 @@
     <div class="modal-body settings-body">
 
       <!-- 接口与鉴权 -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secBasic">
         <div class="cfg-heading">接口与鉴权</div>
         <div class="row">
           <label class="lbl wide">监听</label>
-          <select id="selHost" class="select">
+          <select id="selHost" class="select" style="min-width:140px">
             <option value="127.0.0.1">127.0.0.1（本机）</option>
             <option value="0.0.0.0">0.0.0.0（全部）</option>
             <option value="__custom__">自定义…</option>
           </select>
           <span class="muted">:</span>
-          <input id="inPort" class="input port" type="number" min="1" max="65535">
+          <input id="inPort" class="input port" type="number" min="1" max="65535" placeholder="端口">
         </div>
         <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.168.1.100" spellcheck="false"></div>
         <div class="row">
-          <label class="lbl wide">API-Key</label>
+          <label class="lbl wide">API-Key<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">供下游 AI 客户端（如 Claude Code / Cursor / Cline）调用本工具接口时的鉴权密钥；留空表示不鉴权。</span></span></label>
           <input id="keyInput" class="input grow" spellcheck="false" placeholder="留空 = 不鉴权">
         </div>
         <div class="row">
-          <label class="lbl wide" title="面板登录口令（与给 AI 客户端用的 API-Key 是两套）">管理密码<span id="adminPassReq" class="req hidden" title="监听非本机地址时必填">*</span></label>
+          <label class="lbl wide" title="面板登录口令（与给 AI 客户端用的 API-Key 是两套）">管理密码<span id="adminPassReq" class="req hidden" title="监听非本机地址时必填">*</span><span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">面板登录口令（与给 AI 客户端用的 API-Key 是两套）。改密码后所有已登录会话立即失效。</span></span></label>
           <input id="adminPassInput" class="input grow" type="password" spellcheck="false" placeholder="留空 = 面板不鉴权（仅本机监听时允许）" autocomplete="new-password">
         </div>
-        <div class="row" style="align-items:center">
-          <label class="lbl wide"></label>
+        <div class="row row-sub" style="align-items:center">
           <button class="btn small" id="btnAdminLogout">退出登录</button>
           <button class="btn small" id="btnClearAdminPass" title="关闭面板鉴权（仅监听 127.0.0.1 时允许）">清除密码</button>
-          <span class="hint" style="margin-left:8px">改密码后所有已登录会话立即失效</span>
         </div>
         <div id="listenRiskTip" class="risk-tip hidden">⚠️ 监听 0.0.0.0 时必须设置管理密码，否则局域网内任何设备都可访问本 API 与账号管理。</div>
       </div>
 
       <!-- 模型路由（cc/codex 映射） -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secRoute">
         <div class="cfg-heading">模型路由（Claude Code / Codex 映射）</div>
         <div class="row">
           <label class="lbl wide">默认渠道</label>
-          <select id="selCh" class="select"></select>
+          <select id="selCh" class="select" style="min-width:160px"></select>
         </div>
         <div class="row">
-          <label class="lbl wide">封顶 tokens</label>
-          <input id="inMaxTok" class="input port" type="number" min="0" step="1000">
-          <span class="hint" style="margin-left:6px">0=不限制</span>
+          <label class="lbl wide">封顶 tokens<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">限制单次请求上下文+生成的最大 tokens；0 表示不限制。</span></span></label>
+          <input id="inMaxTok" class="input port" type="number" min="0" step="1000" placeholder="0 = 不限">
         </div>
         <div class="row" style="align-items:center">
-          <label class="lbl wide">映射表</label>
+          <label class="lbl wide">映射表<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">配置客户端模型与本工具渠道/模型之间的映射路由，支持通配符与缺省建议。</span></span></label>
           <span class="btn small" id="btnCompatMap">编辑</span>
-          <span class="hint" id="mapSummary" style="margin-left:6px"></span>
+          <span class="hint" id="mapSummary" style="margin-left:6px;margin-top:0"></span>
         </div>
         <div id="mapEditor" class="map-editor hidden">
           <div class="hint" style="margin-bottom:4px">一行一条，格式：<code>客户端模型名 = 渠道/模型名</code>；支持通配 <code>claude-* = workbuddy/glm-5.2</code>；以 # 开头为注释。</div>
@@ -410,50 +408,48 @@
       </div>
 
       <!-- 自动签到与开机自启 -->
-      <div class="cfg-section">
+      <div class="cfg-section" id="secCheckin">
         <div class="cfg-heading">自动签到与开机自启</div>
-        <div class="row">
-          <label class="lbl wide">签到时间</label>
-          <div id="timesBox" class="times"></div>
-          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+        <div class="row times-row" style="align-items:flex-start">
+          <label class="lbl wide" style="margin-top:4px">签到时间</label>
+          <div class="times-wrap">
+            <div id="timesBox" class="times"></div>
+            <button class="time-add-btn" id="btnAddTime" title="增加一个签到时间">＋ 时间</button>
+          </div>
         </div>
-        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
-        <div class="row" style="margin-top:8px">
-          <label class="lbl wide" title="到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废">临期阈值</label>
-          <select id="selExpiring" class="input" style="width:100px">
+        <div class="hint" style="margin-left:98px;margin-top:-2px;margin-bottom:8px">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+        <div class="row row-switch">
+          <label class="lbl wide" title="到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废">临期阈值<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废。</span></span></label>
+          <select id="selExpiring" class="select" style="width:110px">
             <option value="1">1 天</option>
             <option value="2">2 天</option>
             <option value="3">3 天</option>
           </select>
-          <span class="hint" style="margin-left:8px">该范围内到期的积分优先消耗</span>
         </div>
-        <div class="row" style="margin-top:8px">
-          <label class="lbl wide">开机自启</label>
+        <div class="row row-switch">
+          <label class="lbl wide">开机自启<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">程序随系统启动自动在后台运行。</span></span></label>
           <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
-          <span class="hint" style="margin-left:8px">程序随系统启动自动运行</span>
         </div>
-        <div class="row" style="margin-top:8px">
-          <label class="lbl wide" title="流式生成中检测思考链复读/空转（发癫），命中即中断并返回错误，由下游 AI 客户端自行重试恢复">思考链防癫</label>
+        <div class="row row-switch">
+          <label class="lbl wide" title="流式生成中检测思考链复读/空转（发癫），命中即中断并返回错误，由下游 AI 客户端自行重试恢复">思考链防癫<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">流式生成中检测思考链复读/空转（发癫），命中即中断并返回错误，由下游 AI 客户端自行重试恢复。</span></span></label>
           <label class="switch"><input type="checkbox" id="chkLoopGuard"><span class="slider"></span></label>
-          <span class="hint" style="margin-left:8px">检测模型思维链死循环，命中即中断</span>
         </div>
-        <div class="row" style="margin-top:8px">
-          <label class="lbl wide" title="把每次请求的上下文构成摘要（消息条数、系统提示/工具定义体量、Top10 最大内容块及前 200 字）写入 data/ledger/body-trace-*.jsonl，用于排查「上下文为何膨胀、为何变慢」。按会话一个文件（单文件超 8MB 自动滚动分片），分片保留 7 天。含消息内容片段，用完请关闭">请求体摘要</label>
+        <div class="row row-switch">
+          <label class="lbl wide" title="把每次请求的上下文构成摘要（消息条数、系统提示/工具定义体量、Top10 最大内容块及前 200 字）写入 data/ledger/body-trace-*.jsonl，用于排查「上下文为何膨胀、为何变慢」。按会话一个文件（单文件超 8MB 自动滚动分片），分片保留 7 天。含消息内容片段，用完请关闭">请求体摘要<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">把每次请求的上下文构成摘要（消息条数、系统提示/工具定义体量、Top10 最大内容块及前 200 字）写入 <code>data/ledger/body-trace-*.jsonl</code>，用于排查「上下文为何膨胀、为何变慢」。按会话一个文件（单文件超 8MB 自动滚动分片），分片保留 7 天。含消息内容片段，用完请关闭。</span></span></label>
           <label class="switch"><input type="checkbox" id="chkBodyLog"><span class="slider"></span></label>
-          <span class="hint" style="margin-left:8px">诊断用：按会话切片，保留 7 天</span>
         </div>
       </div>
 
       <!-- 备用上游通道（全局单一代理；<b>不参与常规请求</b>，仅渠道命中地区拒绝时自动取用） -->
-      <div class="cfg-section">
-        <div class="cfg-heading">备用上游通道</div>
-        <div class="hint" style="margin:0 0 8px">全局只配<b>一个</b>备用代理（http/https/socks5），留空 = 无备用通道。
-          它<b>不影响本工具的任何常规请求</b>：所有渠道一律直连；只有上游回「地区限制」时，
-          才在同一次请求内自动改走备用通道重发一次（重发也失败则透传原始错误）。
-          目前取用方：<b>Cline</b> 与 <b>OpenCodeZen</b>（两渠道的部分模型直连会被上游按地域拒）。</div>
-        <div class="hint" style="margin:0 0 8px">OC Zen Key 留空 = 匿名凭证；填入 sk-… 自定义 key 可解锁独立配额与付费模型。
-          <b>「测试」按钮与真实对话同源</b>：直连被上游按地区拒绝时也会自动改走备用通道，
-          结果会标明答复来自<b>直连</b>还是<b>备用</b>出口——否则配了代理点测试仍看到 403，无从判断代理到底生效了没有。</div>
+      <div class="cfg-section" id="secProxy">
+        <div class="cfg-heading">
+          <span>备用上游通道<span class="help-mark">?<span class="help-pop">
+            全局只配<b>一个</b>备用代理（http/https/socks5），留空 = 无备用通道。<br><br>
+            它<b>不影响本工具的任何常规请求</b>：所有渠道一律直连；只有上游回「地区限制」时，才在同一次请求内自动改走备用通道重发一次（重发也失败则透传原始错误）。目前取用方：<b>Cline</b> 与 <b>OpenCodeZen</b>（两渠道的部分模型直连会被上游按地域拒）。<br><br>
+            OC Zen Key 留空 = 匿名凭证；填入 sk-… 自定义 key 可解锁独立配额与付费模型。<br><br>
+            <b>「测试」按钮与真实对话同源</b>：直连被上游按地区拒绝时也会自动改走备用通道，结果会标明答复来自<b>直连</b>还是<b>备用</b>出口——否则配了代理点测试仍看到 403，无从判断代理到底生效了没有。
+          </span></span></span>
+        </div>
         <div class="row proxy-row">
           <label class="lbl wide" title="备用上游代理地址（仅命中地区限制时自动取用）">备用代理</label>
           <input id="backupProxyInput" class="input grow proxy-input" spellcheck="false" placeholder="如 socks5://127.0.0.1:1080 或 http://127.0.0.1:7890（留空 = 关闭）">
@@ -468,64 +464,168 @@
       </div>
 
       <!-- 模型降级链 -->
-      <div class="cfg-section">
-        <div class="cfg-heading">模型降级链 <button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button></div>
-        <div class="hint" style="margin:0 0 8px">原模型在该渠道已无账号可承载（请求模型的全部账号限流冷却，或整渠道账号全部不可用 / 已禁用）时，按顺序找第一个可用的备胎模型顶上，响应头 <span style="font-family:ui-monospace,monospace">X-Model-Fallback</span> 标注实际备胎；原模型恢复后自动切回，不粘滞。主力模型ID 与备胎模型ID 均用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），备胎可跨渠道。备胎链内可拖动 chip 调整顺序。</div>
+      <div class="cfg-section" id="secFallback">
+        <div class="cfg-heading"><span>模型降级链</span><button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button><span class="help-mark">?<span class="help-pop">
+            原模型在该渠道已无账号可承载（请求模型的全部账号限流冷却，或整渠道账号全部不可用 / 已禁用）时，按顺序找第一个可用的备胎模型顶上，响应头 <code>X-Model-Fallback</code> 标注实际备胎；原模型恢复后自动切回，不粘滞。<br><br>
+            主力模型ID 与备胎模型ID 均用 <code>channel/model</code> 全路径（如 workbuddyai/deepseek-v4.1-flash），备胎可跨渠道。备胎链内可拖动 chip 调整顺序。
+          </span></span></div>
         <div id="fbList" class="proxy-list"></div>
-        <div class="row fb-foot-row" style="margin-top:8px">
-          <div class="half2 pk-wrap"><input id="fbFromInput" class="input" style="width:100%" spellcheck="false" placeholder="主力模型ID（channel/model，支持模糊搜索下拉）"></div>
-          <div class="half2 pk-wrap"><input id="fbToInput" class="input" style="width:100%" spellcheck="false" placeholder="备胎模型ID（支持多选下拉/逗号分隔，按顺序尝试）"></div>
+        <div class="fb-compose-panel">
+          <div class="row fb-foot-row">
+            <div class="half2 pk-wrap"><input id="fbFromInput" class="input" style="width:100%" spellcheck="false" placeholder="主力模型ID（channel/model，支持模糊搜索下拉）"></div>
+            <div class="half2 pk-wrap"><input id="fbToInput" class="input" style="width:100%" spellcheck="false" placeholder="备胎模型ID（支持多选下拉/逗号分隔，按顺序尝试）"></div>
+          </div>
+          <div class="row fb-foot-actions">
+            <button class="btn small" id="btnFbAdd" title="添加一条降级规则">添加规则</button>
+            <button class="btn small primary" id="btnFbSave">保存降级链</button>
+          </div>
         </div>
-        <div class="row fb-foot-actions" style="margin-top:6px">
-          <button class="btn small" id="btnFbAdd" title="添加一条降级规则">添加规则</button>
-          <button class="btn small primary" id="btnFbSave">保存降级链</button>
-        </div>
-        <div class="hint" id="fbDirty" style="display:none;color:var(--primary)">⚠ 有未保存的调整（增删/改序/改主模型均未落盘）——点「保存降级链」生效</div>
+        <div class="hint" id="fbDirty" style="display:none;color:var(--primary);margin-top:6px">⚠ 有未保存的调整（增删/改序/改主模型均未落盘）——点「保存降级链」生效</div>
         <div class="hint" id="fbErr" style="color:var(--danger)"></div>
       </div>
 
+
       <!-- 思考强度注入 -->
-      <div class="cfg-section">
-        <div class="cfg-heading">思考强度 <button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button></div>
-        <div class="hint" style="margin:0 0 8px">客户端请求<b>未带</b> <span style="font-family:ui-monospace,monospace">reasoning_effort</span> 时，按请求模型 ID 注入配置的思考档位；客户端显式传了的（任意值）一律不覆盖；精确未命中回退全局默认。哑管道不校验档位取值（支持什么档位由渠道模型自己决定）；<b>TraeWork 渠道协议无 reasoning 注入点，注入无害但无效</b>。模型ID 用 <span style="font-family:ui-monospace,monospace">channel/model</span> 全路径（如 workbuddyai/deepseek-v4.1-flash），<span style="font-family:ui-monospace,monospace">*</span> 为全局默认。</div>
+      <div class="cfg-section" id="secEffort">
+        <div class="cfg-heading"><span>思考强度</span><button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button><span class="help-mark">?<span class="help-pop">
+            客户端请求<b>未带</b> <code>reasoning_effort</code> 时，按请求模型 ID 注入配置的思考档位；客户端显式传了的（任意值）一律不覆盖；精确未命中回退全局默认。<br><br>
+            哑管道不校验档位取值（支持什么档位由渠道模型自己决定）；<b>TraeWork 渠道协议无 reasoning 注入点，注入无害但无效</b>。<br><br>
+            模型ID 用 <code>channel/model</code> 全路径（如 workbuddyai/deepseek-v4.1-flash），<code>*</code> 为全局默认。
+          </span></span></div>
         <div class="row" style="margin-top:8px">
           <label class="lbl wide" title="全局默认档位：精确未命中时回退注入">全局默认</label>
-          <div class="grow pk-wrap"><input id="effGlobalInput" class="input" style="width:100%" spellcheck="false" placeholder="留空 = 无全局默认（如 medium）"></div>
+          <div class="grow pk-wrap"><input id="effGlobalInput" class="input" style="width:100%" spellcheck="false" placeholder="留空 = 无全局默认（如 medium / high / max）"></div>
         </div>
         <div id="effList" class="proxy-list"></div>
-        <div class="row fb-foot-row" style="margin-top:8px">
-          <div class="half2 pk-wrap"><input id="effModelInput" class="input" style="width:100%" spellcheck="false" placeholder="模型ID（channel/model，支持模糊搜索下拉）"></div>
-          <div class="half2 pk-wrap"><input id="effEffortInput" class="input" style="width:100%" spellcheck="false" placeholder="思考档位（单选下拉，支持自定义输入）"></div>
+        <div class="fb-compose-panel">
+          <div class="row fb-foot-row">
+            <div class="half2 pk-wrap"><input id="effModelInput" class="input" style="width:100%" spellcheck="false" placeholder="模型ID（channel/model，支持模糊搜索下拉）"></div>
+            <div class="half2 pk-wrap"><input id="effEffortInput" class="input" style="width:100%" spellcheck="false" placeholder="思考档位（单选下拉，支持自定义输入）"></div>
+          </div>
+          <div class="row fb-foot-actions">
+            <button class="btn small" id="btnEffAdd" title="添加一条模型档位映射">添加映射</button>
+            <button class="btn small primary" id="btnEffSave">保存思考强度</button>
+          </div>
         </div>
-        <div class="row fb-foot-actions" style="margin-top:6px">
-          <button class="btn small" id="btnEffAdd" title="添加一条模型档位映射">添加映射</button>
-          <button class="btn small primary" id="btnEffSave">保存思考强度</button>
-        </div>
-        <div class="hint" id="effDirty" style="display:none;color:var(--primary)">⚠ 有未保存的调整（增删映射/改全局默认均未落盘）——点「保存思考强度」生效</div>
+        <div class="hint" id="effDirty" style="display:none;color:var(--primary);margin-top:6px">⚠ 有未保存的调整（增删映射/改全局默认均未落盘）——点「保存思考强度」生效</div>
         <div class="hint" id="effErr" style="color:var(--danger)"></div>
       </div>
 
-      <!-- 自定义渠道（OpenAI 兼容，R66） -->
-      <div class="cfg-section">
-        <div class="cfg-heading">自定义渠道（OpenAI 兼容）</div>
-        <div class="hint" style="margin:0 0 8px">先配置渠道标识、地址与 API 密钥，再在各渠道下配置模型 ID、上下文大小、思考等级与多模态能力。客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
-        <div id="customChList" class="custom-channels-list"></div>
-        <div class="row" style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:var(--bg,#f8fafc);padding:8px 10px;border-radius:6px;border:1px dashed var(--line,#e2e8f0)">
-          <input id="inCustomName" class="input" style="width:130px" placeholder="渠道标识(如stepfun)" spellcheck="false">
-          <input id="inCustomURL" class="input grow" style="min-width:200px" placeholder="Base URL (如 https://api.stepfun.com/step_plan/v1)" spellcheck="false">
-          <input id="inCustomKey" class="input" style="width:150px" type="password" placeholder="API Key (可选)" spellcheck="false">
-          <button class="btn small" id="btnCustomTest">测试连通</button>
-          <button class="btn small" id="btnCustomAdd">＋ 新增渠道</button>
-          <button class="btn small primary" id="btnCustomSave" style="margin-left:auto">保存全部配置</button>
-        </div>
-        <div class="hint" id="customChErr" style="color:var(--danger);margin-top:4px"></div>
-        <div class="hint" id="customChOk" style="color:var(--success);margin-top:4px"></div>
-      </div>
 
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnSettingsCancel">取消</button>
       <button class="btn small primary" id="btnSettingsSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 自定义模型弹层（R85）：每个 Provider 一行，Provider 下每个模型各一行 -->
+<div class="overlay hidden" id="customModelsOverlay" style="z-index:110">
+  <div class="modal modal-wide">
+    <div class="modal-title">
+      自定义模型（OpenAI 兼容）
+      <span class="help-mark">?<span class="help-pop">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。<br>渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</span></span>
+    </div>
+    <div class="modal-body">
+      <div id="customChList" class="cm-list"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn small" id="btnCustomAdd">＋ 新增 Provider</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <div class="cm-status-group" style="margin-right:auto">
+        <span class="hint" id="customChErr" style="color:var(--danger)"></span>
+        <span class="hint" id="customChOk" style="color:var(--ok)"></span>
+      </div>
+      <button class="btn small" id="btnCustomClose">关闭</button>
+      <button class="btn small primary" id="btnCustomSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 渠道编辑弹层（R82：新增/修改渠道都走这里，主列表只做一行展示） -->
+<div class="overlay hidden" id="channelEditorOverlay" style="z-index:110">
+  <div class="modal" style="width:460px">
+    <div class="modal-title" id="channelEditorTitle">新增渠道</div>
+    <div class="modal-body">
+      <div class="cfg-row"><label class="cfg-label">渠道标识</label>
+        <input id="ceName" class="input grow" placeholder="如 stepfun（字母/数字/下划线/短横线）" spellcheck="false"></div>
+      <div class="cfg-row"><label class="cfg-label">Base URL</label>
+        <input id="ceURL" class="input grow" placeholder="如 https://api.stepfun.com/step_plan/v1" spellcheck="false"></div>
+      <div class="cfg-row"><label class="cfg-label">API Key</label>
+        <input id="ceKey" class="input grow" type="password" placeholder="可选；留空表示无鉴权" spellcheck="false"></div>
+      <div class="hint" id="ceErr" style="color:var(--danger);margin-top:6px"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnCeCancel">取消</button>
+      <button class="btn small primary" id="btnCeSave">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模型管理弹层（R82：某渠道的模型列表 + 增删改，一行一个） -->
+<div class="overlay hidden" id="modelManagerOverlay" style="z-index:110">
+  <div class="modal modal-wide">
+    <div class="modal-title" id="modelManagerTitle">模型管理</div>
+    <div class="modal-body">
+      <div id="modelMgrList" class="model-mgr-list"></div>
+      <div class="hint" id="modelMgrEmpty" style="display:none">（该渠道还没有模型，点「＋ 新增模型」或「导入模型」）</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnMgrImport">导入模型</button>
+      <button class="btn small" id="btnMgrAdd">＋ 新增模型</button>
+      <button class="btn small" id="btnMgrClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 单个模型编辑弹层（R82） -->
+<div class="overlay hidden" id="modelEditorOverlay" style="z-index:120">
+  <div class="modal" style="width:440px">
+    <div class="modal-title" id="modelEditorTitle">新增模型</div>
+    <div class="modal-body">
+      <div class="cfg-row"><label class="cfg-label">模型 ID</label>
+        <input id="meId" class="input grow" placeholder="如 glm-5.3" spellcheck="false"></div>
+      <div class="cfg-row"><label class="cfg-label">上下文</label>
+        <input id="meCtx" class="input grow" placeholder="如 1M / 128k / 200000" value="1M" spellcheck="false"></div>
+      <div class="cfg-row"><label class="cfg-label">最大输出</label>
+        <input id="meOut" class="input grow" placeholder="如 64k" value="64k" spellcheck="false"></div>
+      <div class="cfg-row"><label class="cfg-label">思考档位</label>
+        <input id="meEff" class="input grow" placeholder="如 low, high（逗号分隔，留空=无思考）" spellcheck="false"></div>
+      <div class="cfg-row"><label class="cfg-label">能力</label>
+        <div class="row" style="display:flex;gap:12px;flex-wrap:wrap">
+          <label class="hint" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;margin:0"><input type="checkbox" id="meImg">识图</label>
+          <label class="hint" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;margin:0"><input type="checkbox" id="meRsn">思考</label>
+          <label class="hint" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;margin:0"><input type="checkbox" id="meTools">工具</label>
+        </div></div>
+      <div class="hint" id="meErr" style="color:var(--danger);margin-top:6px"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnMeCancel">取消</button>
+      <button class="btn small primary" id="btnMeSave">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模型导入弹层（R81：从自定义渠道的上游 /models 批量勾选导入） -->
+<!-- 叠在自定义渠道弹层之上：.overlay 基类 z-index 是 100，这里必须更高（写 60 会被压在下面） -->
+<div class="overlay hidden" id="modelImportOverlay" style="z-index:110">
+  <div class="modal" style="width:520px">
+    <div class="modal-title">导入模型</div>
+    <div class="modal-body">
+      <div class="hint" id="importHint" style="margin:0 0 8px"></div>
+      <div class="row" style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <input id="importFilter" class="input grow" placeholder="筛选模型名（不区分大小写）" spellcheck="false">
+        <button class="btn small" id="btnImportAll">全选</button>
+        <button class="btn small" id="btnImportNone">全不选</button>
+      </div>
+      <div id="importList" class="import-list"></div>
+      <div class="hint" id="importErr" style="color:var(--danger);margin-top:6px"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnImportCancel">取消</button>
+      <button class="btn small primary" id="btnImportConfirm">导入选中</button>
     </div>
   </div>
 </div>
@@ -601,9 +701,12 @@
   </div>
 </div>
 
-<div class="overlay hidden" id="modelSearchOverlay">
+<div class="overlay hidden" id="modelSearchOverlay" style="z-index:120">
   <div class="modal modal-search">
-    <div class="modal-title">查找模型</div>
+    <div class="modal-title">
+      <span>查找模型</span>
+      <button class="modal-close-btn" id="btnModelSearchClose" title="关闭">✕</button>
+    </div>
     <input id="modelSearchInput" class="input" type="text" spellcheck="false" autocomplete="off"
       placeholder="输入关键字过滤（模型名 / 渠道 / 完整 ID）">
     <div class="ms-list" id="modelSearchList"></div>
