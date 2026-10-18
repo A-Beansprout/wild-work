@@ -525,14 +525,29 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
    两类行都是 white-space:nowrap + 内部横向滚动，**绝不折行**——
    折行是之前最刺眼的问题（同一行的功能被挤到第二行）。 */
 .cm-list { display: flex; flex-direction: column; gap: 10px; }
+/* 按钮右对齐（R87 定稿）：用户要的不是「上下按列对齐」，而是
+   **每一行的按钮组整体贴右**，上一行和下一行按钮的右边缘在同一条竖线上。
+   做法：行是 flex，信息区 flex:1 吃掉剩余宽度，按钮组 margin-left:auto 顶到最右。
+   这样不管一行有几个按钮（Provider 4 个、模型 2 个），右边缘都严格对齐。 */
+.cm-provider-row, .cm-model-row {
+  display: flex; align-items: center; gap: 8px;
+  white-space: nowrap;   /* 每行是一个整体，绝不折行 */
+}
+.cm-info {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  white-space: nowrap; overflow: hidden;
+}
+/* 按钮组：紧贴右边缘 */
+.cm-provider-row > .btn, .cm-model-row > .btn { flex-shrink: 0; }
+.cm-btn-edit { margin-left: auto; }   /* 按钮组的第一个把整组推到最右 */
+
 .cm-provider {
   border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
   background: var(--bg, #f8fafc); overflow: hidden;
 }
 .cm-provider-row {
-  display: flex; align-items: center; gap: 8px;
   padding: 8px 10px;
-  white-space: nowrap; overflow-x: auto;
   background: var(--card, #fff);
   border-bottom: 1px solid var(--line, #e2e8f0);
 }
@@ -546,12 +561,14 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .cm-meta { flex-shrink: 0; font-size: 11px; color: var(--muted, #64748b); }
 .cm-provider-row .btn, .cm-model-row .btn { flex-shrink: 0; }
 /* 模型行：缩进表示从属关系，左侧一条竖线 */
-.cm-models { padding: 4px 0 4px 14px; border-left: 2px solid var(--line, #e2e8f0); margin-left: 10px; }
+/* 右侧不留 margin：模型行按钮要和 Provider 行按钮落在同一条右边缘上
+   （留 10px 会差 10px，实测 1167 vs 1157）。 */
+.cm-models { padding: 4px 0 4px 12px; border-left: 2px solid var(--line, #e2e8f0); margin-left: 10px; }
+/* 右侧不留 margin：模型行的按钮必须和 Provider 行按钮落在同一像素列上，
+   留 8px 会让删除按钮整体左移 8px（实测 1078 vs 1106）。 */
 .cm-model-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; margin: 2px 8px 2px 0;
+  padding: 6px 10px; margin: 2px 0;
   border-radius: 6px;
-  white-space: nowrap; overflow-x: auto;
 }
 .cm-model-row:hover { background: var(--card, #fff); }
 .cm-model-id {

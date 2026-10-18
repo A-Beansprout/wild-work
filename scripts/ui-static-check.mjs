@@ -993,13 +993,23 @@ for (const [label, re] of uniq) {
       .every((id) => html.includes(`id="${id}"`)));
   // R85：Provider 一行 + 其下每个模型各一行，任何一行都不换行
   check5("Provider 行与其模型行都不换行（white-space: nowrap）",
-    /\.cm-provider-row \{[^}]*white-space: nowrap/.test(css) &&
-    /\.cm-model-row \{[^}]*white-space: nowrap/.test(css));
+    /\.cm-provider-row, \.cm-model-row \{[^}]*white-space: nowrap/.test(css) &&
+    /\.cm-info \{[^}]*white-space: nowrap/.test(css));
   check5("每个 Provider 一个区块、其下每个模型各占一行",
     /class="cm-provider"/.test(raw) && /class="cm-model-row"/.test(raw));
-  check5("Provider 行功能完整（编辑/测试/导入/加模型/删除）",
-    ['data-edit-custom', 'data-test-custom', 'data-import-custom', 'data-add-model-in', 'data-del-custom']
-      .every((a) => raw.includes(a)));
+  check5("Provider 行功能完整（编辑/导入/加模型/删除；R87 去掉测试）",
+    ['data-edit-custom', 'data-import-custom', 'data-add-model-in', 'data-del-custom']
+      .every((a) => raw.includes(a)) && !raw.includes('data-test-custom'));
+  check5("每行按钮组整体右对齐（信息区 flex:1 + 按钮组 margin-left:auto）",
+    /\.cm-provider-row, \.cm-model-row \{[^}]*display: flex/.test(css) &&
+    /\.cm-info \{[^}]*flex: 1 1 auto/.test(css) &&
+    /\.cm-btn-edit \{ margin-left: auto/.test(css));
+  check5("自定义模型弹层与设置同宽（modal-wide 720px）", (() => {
+    const a = html.indexOf('id="customModelsOverlay"');
+    if (a < 0) return false;
+    const seg = html.slice(a, a + 300);   // 只看开标签附近，避免跨弹层误匹配
+    return /class="modal modal-wide"/.test(seg) && !/modal-xwide/.test(seg);
+  })());
   check5("模型行功能完整（编辑/删除都在同一行）",
     /data-edit-model-in=/.test(raw) && /data-del-model-in=/.test(raw));
   // R82：一行展示 + 增改走弹窗

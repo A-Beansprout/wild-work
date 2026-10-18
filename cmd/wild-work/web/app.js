@@ -2099,27 +2099,32 @@ function renderCustomChList() {
       if (typeof m === "object" && (m.supports_reasoning || efforts.length)) caps.push("思考");
       if (typeof m !== "object" || m.supports_tools !== false) caps.push("工具");
       return `<div class="cm-model-row">
-        <code class="cm-model-id" title="${esc(mid)}">${esc(mid)}</code>
-        <span class="cm-meta">上下文 ${esc(ctx)}</span>
-        <span class="cm-meta">输出 ${esc(out)}</span>
-        <span class="cm-meta">${efforts.length ? "档位 " + esc(efforts.join("/")) : "无思考"}</span>
-        <span class="cm-meta">${esc(caps.join("·") || "—")}</span>
-        <button class="btn small" data-edit-model-in="${i}:${j}">编辑</button>
-        <button class="btn small danger" data-del-model-in="${i}:${j}">删除</button>
+        <div class="cm-info">
+          <code class="cm-model-id" title="${esc(mid)}">${esc(mid)}</code>
+          <span class="cm-meta">上下文 ${esc(ctx)}</span>
+          <span class="cm-meta">输出 ${esc(out)}</span>
+          <span class="cm-meta">${efforts.length ? "档位 " + esc(efforts.join("/")) : "无思考"}</span>
+          <span class="cm-meta">${esc(caps.join("·") || "—")}</span>
+        </div>
+        <button class="btn small cm-btn-edit" data-edit-model-in="${i}:${j}">编辑</button>
+        <button class="btn small danger cm-btn-del" data-del-model-in="${i}:${j}">删除</button>
       </div>`;
     }).join("");
 
     return `<div class="cm-provider">
       <div class="cm-provider-row">
-        <span class="badge custom">${esc(c.name)}</span>
-        <span class="cm-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
-        <span class="cm-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
-        <span class="cm-meta">${models.length} 个模型</span>
-        <button class="btn small" data-edit-custom="${i}">编辑</button>
-        <button class="btn small" data-test-custom="${i}">测试</button>
-        <button class="btn small" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
-        <button class="btn small" data-add-model-in="${i}">＋ 模型</button>
-        <button class="btn small danger" data-del-custom="${i}">删除</button>
+        <div class="cm-info">
+          <span class="badge custom">${esc(c.name)}</span>
+          <span class="cm-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
+          <span class="cm-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
+          <span class="cm-meta">${models.length} 个模型</span>
+        </div>
+        <div class="cm-actions">
+          <button class="btn small cm-btn-edit" data-edit-custom="${i}">编辑</button>
+          <button class="btn small cm-btn-import" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
+          <button class="btn small cm-btn-add" data-add-model-in="${i}">＋ 模型</button>
+          <button class="btn small danger cm-btn-del" data-del-custom="${i}">删除</button>
+        </div>
       </div>
       <div class="cm-models">
         ${modelRows || '<div class="cm-model-row"><span class="hint" style="margin:0">（该 Provider 还没有模型，点「＋ 模型」或「导入」）</span></div>'}
@@ -3056,34 +3061,6 @@ function bind() {
 
   // 自定义渠道（R66）：测试、停用/启用、删除、添加、保存
   $("customChList").addEventListener("click", async (e) => {
-    const testBtn = e.target.closest("[data-test-custom]");
-    if (testBtn) {
-      const idx = +testBtn.dataset.testCustom;
-      const ch = editCustomChannels[idx];
-      if (!ch) return;
-      testBtn.disabled = true;
-      const oldText = testBtn.textContent;
-      testBtn.textContent = "测试中…";
-      $("customChErr").textContent = "";
-      $("customChOk").textContent = "";
-      try {
-        // name + base_url + api_key（回显态可能是脱敏值）一起发：后端按 name 找回真实密钥，
-        // 否则未改动过的渠道点测试会恒报 401（同 #117 的「探针没走同一条链路」）。
-        const res = await api("/api/config/custom_channel_test", { name: ch.name, base_url: ch.base_url, api_key: ch.api_key });
-        if (res.ok) {
-          toast(`[${ch.name}] 连接成功！拉取到 ${res.models?.length || 0} 个模型`);
-          $("customChOk").textContent = `[${ch.name}] 连接成功，模型: ${(res.models || []).slice(0, 6).join(", ")}${res.models?.length > 6 ? '…' : ''}`;
-        } else {
-          $("customChErr").textContent = `[${ch.name}] 测试失败：${res.error}`;
-        }
-      } catch (err) {
-        $("customChErr").textContent = `[${ch.name}] 测试失败：${err.message}`;
-      } finally {
-        testBtn.disabled = false;
-        testBtn.textContent = oldText;
-      }
-      return;
-    }
     const editChBtn = e.target.closest("[data-edit-custom]");
     if (editChBtn) {
       openChannelEditor(+editChBtn.dataset.editCustom);
