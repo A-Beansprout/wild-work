@@ -3254,15 +3254,19 @@ function renderUsageChart(st) {
   const chans = [...new Set(byDay.flatMap((d) => Object.keys(d.by_channel || {})))];
   for (const d of byDay) for (const [ch, v] of Object.entries(d.by_channel || {})) totalOf[ch] = (totalOf[ch] || 0) + v;
   chans.sort((a, b) => (totalOf[b] || 0) - (totalOf[a] || 0));
-  // 区间内总量为 0 的渠道不画：它们只会在 0 轴上拉出一条贴底长线，
-  // 既白占图例、又把 Y 轴视觉压扁（实测：某渠道只在一个小时点有量，
-  // 其余 9 个点全 0，图上却有一条贯穿到底的线）。
-  // 口径与 tooltip「过滤 0 值系列」一致——图表只呈现真正有量的渠道。
+  // 区间内总量为 0 的渠道不画（连图例都不出现）。
   const active = chans.filter((ch) => (totalOf[ch] || 0) > 0);
+  // 0 值一律画成 null（断点），不画成 0：
+  //   · 画成 0 ⇒ 每个"该渠道没跑"的时刻都落一个 0 点，ECharts 用直线把它们串起来，
+  //     于是图上恒有一条贴 X 轴的长线（用户实测：底部总有一条线）。
+  //   · 画成 null ⇒ 该时刻不产生点，曲线只覆盖真正有量的时段（中间自然断开）。
+  // 语义上也更准确：0 在这里表示"没观测到用量"，不是"观测到用量为 0"。
+  // connectNulls 必须为 false（默认值）：否则 null 会被跨过连成一条假线。
   const series = active.map((ch) => ({
     name: CH_NAMES[ch] || ch, type: "line", smooth: true,
     itemStyle: { color: chColor(ch) }, lineStyle: { color: chColor(ch) },
-    data: byDay.map((d) => d.by_channel[ch] || 0),
+    connectNulls: false,
+    data: byDay.map((d) => { const v = d.by_channel[ch]; return v > 0 ? v : null; }),
   }));
   usageChart.setOption({
     color: active.map((ch) => chColor(ch)),
@@ -3327,7 +3331,9 @@ function renderCreditChart(entries, names) {
   const series = top10.map((uid) => ({
     name: `${chLabel(mainChOf(uid))} ${names[uid] || shortUid(uid)}`, type: "line", smooth: true,
     itemStyle: { color: colorByUid[uid] }, lineStyle: { color: colorByUid[uid] },
-    data: dates.map((d) => byAcct[uid][d] || 0),
+    connectNulls: false,
+    // 同 token 图：0 值画成 null（断点），避免"该账号当天没消耗"被画成贴 0 轴的长线。
+    data: dates.map((d) => { const v = byAcct[uid][d]; return v > 0 ? v : null; }),
   }));
   creditChart.setOption({
     color: top10.map((uid) => colorByUid[uid]),

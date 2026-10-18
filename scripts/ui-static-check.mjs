@@ -931,12 +931,27 @@ for (const [label, re] of uniq) {
     /const series = active\.map/.test(usageBody) && !/const series = chans\.map/.test(usageBody));
   check4("token 图的 color 也用过滤后的 active",
     /color: active\.map\(\(ch\) => chColor\(ch\)\)/.test(usageBody));
+  // 核心：0 值必须画成 null（断点），不能画成 0 —— 否则每个"没跑"的时刻都落一个
+  // 0 点、被直线串成一条贴 X 轴的长线（用户实测的"底部总有一条线"）。
+  check4("token 图把 0 画成 null 断点（不再落 0 点）",
+    /return v > 0 \? v : null;/.test(usageBody),
+    usageBody.slice(usageBody.indexOf("data: byDay.map"), usageBody.indexOf("data: byDay.map") + 120));
+  check4("token 图显式关掉 connectNulls（否则 null 会被跨过连成假线）",
+    /connectNulls: false/.test(usageBody));
+  check4("token 图不再用「|| 0」兜底成 0 点",
+    !/d\.by_channel\[ch\] \|\| 0/.test(usageBody));
 
   const creditBody = bodyOf("renderCreditChart");
   check4("renderCreditChart 函数体可定位", creditBody.length > 200, `len=${creditBody.length}`);
   check4("积分图按总量过滤掉 0 账号",
     /\.filter\(\(uid\) => \(totals\[uid\] \|\| 0\) > 0\)/.test(creditBody),
     creditBody.slice(0, 200));
+  check4("积分图同样把 0 画成 null 断点",
+    /return v > 0 \? v : null;/.test(creditBody));
+  check4("积分图同样关掉 connectNulls",
+    /connectNulls: false/.test(creditBody));
+  check4("积分图不再用「|| 0」兜底成 0 点",
+    !/byAcct\[uid\]\[d\] \|\| 0/.test(creditBody));
 
   for (const [label, pass, extra] of need4) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
