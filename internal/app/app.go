@@ -3258,8 +3258,48 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		a.muLogin.Lock()
 		opened := a.loginBackendOpened
+		kind := a.loginKind
 		a.muLogin.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"auth_url": url, "backend_opened": opened})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"auth_url":       url,
+			"backend_opened": opened,
+			// manual_callback：该渠道的授权回调是**写死回环地址**（当前仅 CodeArts，
+			// 见 internal/login_codearts 的协议说明）。浏览器与网关不同机时（局域网/
+			// 远程访问面板），回调只能靠用户把地址栏 URL 粘回来，前端据此显示输入框。
+			"manual_callback": kind == provider.CodeArts,
+		})
+	})
+	// 手动提交授权回调地址（回环回调渠道的远程/局域网兜底）。
+	//
+	// 背景：CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
+	// 因此只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
+	// 浏览器跳到的是**用户自己机器**的 127.0.0.1（连接被拒），流程只能等到超时。
+	// 这里提供一条人工通道：把跳水后打不开的那条 URL 原样提交，网关解析出 code 后
+	// 走与自动回调**完全相同**的兑换路径（凭据仍由网关侧换，用户不需要交出任何 token）。
+	mux.HandleFunc("POST /api/login/callback", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		a.muLogin.Lock()
+		busy, kind := a.loginBusy, a.loginKind
+		a.muLogin.Unlock()
+		if !busy {
+			apiError(w, http.StatusBadRequest, "没有进行中的登录流程，请先发起登录")
+			return
+		}
+		switch kind {
+		case provider.CodeArts:
+			if err := logincodearts.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		default:
+			apiError(w, http.StatusBadRequest, fmt.Sprintf(
+				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.CancelLogin(); err != nil {
