@@ -12,6 +12,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/idle"
 	"wild-work/internal/provider"
+	"wild-work/internal/upstream"
 )
 
 // 推理预算常量（对齐 officeace2api/src/config.mjs）：
@@ -108,6 +109,14 @@ func rewriteBody(body []byte) []byte {
 		}
 		m["max_tokens"] = n
 	}
+
+	// 5.5 developer → system：ModelArts 对 role 做白名单校验，developer 不在名单内，
+	//     命中即 `400 ModelArts.81001 Failed to format request body, message role is
+	//     'developer', not one of ['system','assistant','function','user','tool']`。
+	//     本渠道请求体不经 upstream.PrepareBody（它只用响应侧的 StreamCapture/Aggregate），
+	//     因此此前是全仓唯一漏做这一步的渠道 ⇒ DSH 一发 developer 角色就必 400。
+	//     现统一走 upstream.NormalizeRoles（单一实现，不再复制第 11 份）。
+	upstream.NormalizeRoles(m)
 
 	// 5. 夹取
 	if v, ok := m["temperature"].(float64); ok {
