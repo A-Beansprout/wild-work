@@ -541,7 +541,8 @@
 </div>
 
 <!-- 模型导入弹层（R81：从自定义渠道的上游 /models 批量勾选导入） -->
-<div class="overlay hidden" id="modelImportOverlay" style="z-index:60">
+<!-- 叠在自定义渠道弹层之上：.overlay 基类 z-index 是 100，这里必须更高（写 60 会被压在下面） -->
+<div class="overlay hidden" id="modelImportOverlay" style="z-index:110">
   <div class="modal" style="width:520px">
     <div class="modal-title">导入模型</div>
     <div class="modal-body">

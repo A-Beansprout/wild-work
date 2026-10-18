@@ -1008,6 +1008,10 @@ for (const [label, re] of uniq) {
     /context_window: 1000000, max_tokens: 64000/.test(raw) &&
     /supports_images: true, supports_reasoning: true, supports_tools: true/.test(raw));
   check5("导入列表有滚动容器样式", /\.import-list \{ max-height/.test(css));
+  // 导入弹层叠在自定义渠道弹层之上：.overlay 基类 z-index=100，
+  // 写比它小的值会被压在下面（实测：坐标点模型名落到下层卡片上，勾不上）。
+  check5("导入弹层 z-index 高于 .overlay 基类（100），否则会被下层弹层遮挡",
+    /id="modelImportOverlay" style="z-index:(1[1-9]\d|[2-9]\d\d+)"/.test(html));
   // 不得用 label 包裹 input：点 label 会「label 转发 + 冒泡」双重切换，
   // 实测表现为「点模型名反而把刚勾上的取消」。改用 div + 显式 for/id。
   check5("导入行用 div+显式 for/id 关联（label 包裹会双重切换）",
