@@ -1008,6 +1008,15 @@ for (const [label, re] of uniq) {
     /context_window: 1000000, max_tokens: 64000/.test(raw) &&
     /supports_images: true, supports_reasoning: true, supports_tools: true/.test(raw));
   check5("导入列表有滚动容器样式", /\.import-list \{ max-height/.test(css));
+  // 全选/全不选**不得重建列表**：重建会让用户手上/事件队列里的节点变孤儿，
+  // 后续 change 落到废弃节点上，importCtx 收不到更新（实测 bug：全不选后再勾，恒 0）。
+  check5("全选/全不选只同步 checked、不重建列表（避免孤儿节点吞掉 change）",
+    /const syncChecks = \(\) => \{[\s\S]{0,300}?querySelectorAll\("#importList \[data-import-pick\]"\)/.test(raw) &&
+    !/btnImportNone"\)\.onclick = \(\) => \{[\s\S]{0,200}?renderImportList\(\)/.test(raw));
+  // 全选/全不选只作用于「当前筛选可见」的行：否则筛 4 条点全选会悄悄勾上全部。
+  check5("全选/全不选只作用于筛选后的可见行（所见即所选）",
+    /function visibleImportIdx\(\)/.test(raw) &&
+    /for \(const i of visibleImportIdx\(\)\)/.test(raw));
   check5("导入失败时给出可见错误（不静默）",
     /拉取失败：/.test(raw) && /\(\"importErr\"\)\.textContent = /.test(raw));
 

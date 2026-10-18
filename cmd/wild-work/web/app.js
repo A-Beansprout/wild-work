@@ -2377,6 +2377,17 @@ function closeCustomChannels() {
 // 仍需点「保存全部配置」才落盘 —— 与既有「添加模型」交互一致，不引入新的隐式写入。
 let importCtx = { chIdx: -1, models: [] };
 
+// visibleImportIdx 当前筛选条件下可见的模型下标（全选/全不选只作用于可见行，
+// 与「所见即所选」一致；否则筛了 4 条点全选会把 100 条全勾上，用户看不出来）。
+function visibleImportIdx() {
+  const kw = $("importFilter").value.trim().toLowerCase();
+  const out = [];
+  importCtx.models.forEach((m, i) => {
+    if (!kw || m.id.toLowerCase().includes(kw)) out.push(i);
+  });
+  return out;
+}
+
 function renderImportList() {
   const kw = $("importFilter").value.trim().toLowerCase();
   const rows = importCtx.models.map((m, i) => {
@@ -3141,8 +3152,24 @@ function bind() {
   $("btnImportConfirm").onclick = () => confirmModelImport();
   $("modelImportOverlay").onclick = (e) => { if (e.target === $("modelImportOverlay")) closeModelImport(); };
   $("importFilter").oninput = () => renderImportList();
-  $("btnImportAll").onclick = () => { importCtx.models.forEach((m) => { if (!m.exists) m.checked = true; }); renderImportList(); };
-  $("btnImportNone").onclick = () => { importCtx.models.forEach((m) => { m.checked = false; }); renderImportList(); };
+  // 全选/全不选：只同步「已渲染的 checkbox」的 checked，**不重建列表**。
+  // 重建会让用户手上/事件队列里的 DOM 节点变成孤儿——change 事件落到已废弃节点上，
+  // importCtx 收不到更新（实测：全不选后再手动勾选，models 里始终是 0）。
+  const syncChecks = () => {
+    document.querySelectorAll("#importList [data-import-pick]").forEach((cb) => {
+      const i = +cb.dataset.importPick;
+      if (importCtx.models[i]) cb.checked = importCtx.models[i].checked;
+    });
+  };
+  $("btnImportAll").onclick = () => {
+    for (const i of visibleImportIdx()) if (!importCtx.models[i].exists) importCtx.models[i].checked = true;
+    syncChecks();
+  };
+  $("btnImportNone").onclick = () => {
+    for (const i of visibleImportIdx()) importCtx.models[i].checked = false;
+    syncChecks();
+  };
+  // 用事件委托绑定在容器上（列表会整块重建，绑在元素上会随重建丢失）
   $("importList").onchange = (e) => {
     const cb = e.target.closest("[data-import-pick]");
     if (!cb) return;
