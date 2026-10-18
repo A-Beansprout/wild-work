@@ -526,6 +526,100 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .login-buttons { display: flex; gap: 8px; margin-top: 14px; }
 
+/* 帮助问号角标与浮动说明气泡（R90 规范） */
+.help-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: help;
+  margin-left: 5px;
+  vertical-align: middle;
+  line-height: 1;
+  user-select: none;
+  position: relative;
+  transition: all .15s ease;
+}
+.help-mark:hover,
+.help-mark:focus-within {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: #eff6ff;
+}
+
+.help-pop {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 250;
+  width: max-content;
+  max-width: min(400px, 80vw);
+  min-width: 200px;
+  box-sizing: border-box;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.05);
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: auto;
+  transition: opacity .15s ease, transform .15s ease, visibility .15s;
+  transform: translateY(4px);
+}
+.help-pop::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.help-mark:hover .help-pop,
+.help-mark:focus-within .help-pop {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.help-mark.pop-right .help-pop {
+  left: auto;
+  right: 0;
+}
+.help-mark.pop-right .help-pop::before {
+  left: auto;
+  right: 0;
+}
+
+.help-pop code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--text);
+}
+.help-pop b {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* 统一设置弹层内部分区 */
 .settings-body {
   word-break: normal;
@@ -1408,7 +1502,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
    不覆盖则文字标签会挣出 30px 的边框盒（overflow 默认 visible ⇒ 压到相邻内容上）。 */
 .cfg-heading .cfg-search-btn {
   width: auto; height: 24px; font-size: 12px; border-radius: 6px;
-  vertical-align: middle; margin-left: 6px; padding: 0 8px; line-height: 1;
+  vertical-align: middle; margin-left: auto; margin-right: 6px; padding: 0 8px; line-height: 1;
   white-space: nowrap; font-family: inherit; font-weight: 400;
 }
 
