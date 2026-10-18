@@ -2392,10 +2392,14 @@ function renderImportList() {
   const kw = $("importFilter").value.trim().toLowerCase();
   const rows = importCtx.models.map((m, i) => {
     if (kw && !m.id.toLowerCase().includes(kw)) return "";
-    return `<label class="import-row"><input type="checkbox" data-import-pick="${i}"${m.checked ? " checked" : ""}${m.exists ? " disabled" : ""}>` +
-      `<code>${esc(m.id)}</code>` +
+    // 用 div + 显式 for/id 关联，而不是 label 包裹 input：
+    // label 包裹 input 时点 label 会「先由 label 转发、再被冒泡处理」双重切换
+    // （实测：点 label 反而把刚勾上的取消掉）。显式 for 只触发一次。
+    const cid = `imp-${i}`;
+    return `<div class="import-row"><input type="checkbox" id="${cid}" data-import-pick="${i}"${m.checked ? " checked" : ""}${m.exists ? " disabled" : ""}>` +
+      `<label class="import-name" for="${cid}"><code>${esc(m.id)}</code></label>` +
       (m.exists ? '<span class="tag neutral" style="margin-left:auto">已存在</span>' : "") +
-      `</label>`;
+      `</div>`;
   }).join("");
   $("importList").innerHTML = rows || '<div class="hint">（没有匹配的模型）</div>';
 }

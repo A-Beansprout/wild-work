@@ -1008,6 +1008,12 @@ for (const [label, re] of uniq) {
     /context_window: 1000000, max_tokens: 64000/.test(raw) &&
     /supports_images: true, supports_reasoning: true, supports_tools: true/.test(raw));
   check5("导入列表有滚动容器样式", /\.import-list \{ max-height/.test(css));
+  // 不得用 label 包裹 input：点 label 会「label 转发 + 冒泡」双重切换，
+  // 实测表现为「点模型名反而把刚勾上的取消」。改用 div + 显式 for/id。
+  check5("导入行用 div+显式 for/id 关联（label 包裹会双重切换）",
+    raw.includes('<div class="import-row"><input type="checkbox" id=') &&
+    raw.includes('<label class="import-name" for=') &&
+    !raw.includes('<label class="import-row"><input type="checkbox"'));
   // 全选/全不选**不得重建列表**：重建会让用户手上/事件队列里的节点变孤儿，
   // 后续 change 落到废弃节点上，importCtx 收不到更新（实测 bug：全不选后再勾，恒 0）。
   check5("全选/全不选只同步 checked、不重建列表（避免孤儿节点吞掉 change）",

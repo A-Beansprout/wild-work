@@ -501,6 +501,7 @@ body {
 .import-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--line, #e2e8f0); border-radius: 6px; padding: 4px 6px; background: var(--card, #fff); }
 .import-row { display: flex; align-items: center; gap: 8px; padding: 4px 4px; font-size: 12px; cursor: pointer; border-radius: 4px; }
 .import-row:hover { background: var(--bg, #f8fafc); }
+.import-name { flex: 1; min-width: 0; cursor: pointer; }
 .import-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .import-row input[type="checkbox"] { flex-shrink: 0; }
 
