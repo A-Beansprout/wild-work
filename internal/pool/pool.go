@@ -450,18 +450,30 @@ func sessionDeadLike(msg string) bool {
 // MarkSessionDead 标记账号登录态失效（401/登录已失效）：挑号阶段跳过、面板显示
 // 「需重新登录」徽标与一键重新登录入口（#134）。与 Disable（用户手动停用）分离，
 // 避免机器状态混入用户控制项后用户看不出该做什么。
+//
+// 已标记时**也要更新原因**（issue #157 附带瑕疵）：失效原因会演进
+// （如从 `refresh: xxx` 变成上游 `12153:refresh token is invalid`），旧实现直接 return
+// 会让面板 tooltip 永远显示首次的旧原因。但 `sessionDeadAt` **不刷新**——它是
+// 「重登后自动清除」的时间锚（clearReloggedLocked 比较 auth 文件 mtime 与它）：
+// 若反复刷新成 now，用户重登后再被陈旧内存凭证标一次，就会变成「文件比标记旧」
+// 而永不清除，重回路 #134 的死锁。
 func (p *Pool) MarkSessionDead(uid, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	e, ok := p.byUID[uid]
-	if !ok || e.sessionDead {
+	if !ok {
 		return
 	}
+	if !e.sessionDead {
+		e.sessionDeadAt = time.Now()
+	}
+	changed := !e.sessionDead || e.sessionDeadReason != reason
 	e.sessionDead = true
 	e.sessionDeadReason = reason
-	e.sessionDeadAt = time.Now()
 	p.saveLocked()
-	log.Printf("session dead marked uid=%s reason=%s", uid, reason)
+	if changed {
+		log.Printf("session dead marked uid=%s reason=%s", uid, reason)
+	}
 }
 
 // ClearSessionDead 清除登录态失效标记（重新登录成功/签到或请求成功后回到可用态）。
