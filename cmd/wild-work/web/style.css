@@ -279,7 +279,7 @@ body {
   -moz-appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--muted, #64748b) 50%),
                     linear-gradient(135deg, var(--muted, #64748b) 50%, transparent 50%);
-  background-position: calc(100% - 15px) calc(50% + 1px), calc(100% - 10px) calc(50% + 1px);
+  background-position: calc(100% - 16px) calc(50% + 2px), calc(100% - 11px) calc(50% + 2px);
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   padding-right: 28px;   /* 给箭头留位，避免长选项文字压到三角 */
@@ -488,6 +488,9 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .modal { background: var(--card); border-radius: 12px; padding: 20px 22px; width: 400px; max-width: 92vw; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
 /* 宽弹层：统一设置 / 帮助（风险声明多，需宽松排版） */
 .modal.modal-wide { width: 720px; max-width: 94vw; max-height: 86vh; display: flex; flex-direction: column; }
+/* 更宽的一档（自定义渠道：一行要塞 badge+URL+密钥+状态+模型数+6 个按钮） */
+.modal.modal-xwide { width: 1040px; max-width: 96vw; max-height: 86vh; display: flex; flex-direction: column; }
+.modal-xwide .modal-body { overflow-y: auto; min-height: 0; }
 .modal-wide .modal-body { overflow-y: auto; min-height: 0; }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
 .modal-body { font-size: 14px; color: var(--text); margin-bottom: 14px; word-break: break-all; }
@@ -519,7 +522,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .custom-ch-row .badge { flex-shrink: 0; }
 /* URL 是最容易撑爆的字段：给弹性宽度 + 省略号，而不是让它把按钮挤出去 */
 .custom-ch-row .cch-url {
-  flex: 1 1 auto; min-width: 60px;
+  flex: 1 1 auto; min-width: 180px;
   font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
   color: var(--text); overflow: hidden; text-overflow: ellipsis;
 }

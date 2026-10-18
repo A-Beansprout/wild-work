@@ -518,10 +518,10 @@
 
 <!-- 自定义渠道弹层（R81：从设置弹层独立出来，主面板可直接进入） -->
 <div class="overlay hidden" id="customChannelOverlay">
-  <div class="modal modal-wide">
+  <div class="modal modal-xwide">
     <div class="modal-title">自定义渠道（OpenAI 兼容）</div>
     <div class="modal-body">
-      <div class="hint" style="margin:0 0 10px">先配置渠道标识、地址与 API 密钥，再在各渠道下配置模型 ID、上下文大小、思考等级与多模态能力。客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
+      <div class="hint" style="margin:0 0 10px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
       <div id="customChList" class="custom-channels-list"></div>
       <!-- R82：新增渠道改走弹窗（底部不再保留输入行），这里只留「新增」与「保存」两个动作 -->
       <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
