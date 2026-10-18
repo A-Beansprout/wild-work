@@ -45,7 +45,7 @@
 
 ---
 
-## 1. 决议项索引（R1–R78）
+## 1. 决议项索引（R1–R77）
 
 **全文（含证据链、反例、已知限制）见 [`docs/决议项.md`](docs/决议项.md)** —— 改动相关代码前必读对应条目。
 
@@ -110,7 +110,6 @@
 | R75 | 429+code 14018（积分耗尽）归 `hard_credit`；候选耗尽时可在**请求内**按降级链重入一次（封顶一次、单账号豁免） |
 | R76 | 登录态失效走可自愈的 `SessionDead` 标记（不 `Disable`）；重登后按 auth 文件 mtime 自动清除标记 |
 | R77 | 上游声明可重试的 429（14003 瞬时拥塞，retry_policy.retry / actions 含 RETRY）必须请求内重试一次（独立预算，20s 退避）；6004 用量配额无信号，维持冷却到重置点 |
-| R78 | **网关 HTML 401 也是「登录态失效」**（APISIX/openresty 拦截页 → `ErrSessionDead`，不是 `ErrClient`）；对话路径先 refresh 再决定是否落失效标记；目录/费率接口必须返回类型化错误 |
 
 > ⚠️ **R71 附带的实测纪律**（也是 §0.1 的来源）：上游校验的是**头族齐全**而非单点
 > （只补 `X-Conversation-ID` 仍被拒）；且 `X-Conversation-ID` 的**取值形态不被校验**
@@ -164,12 +163,7 @@
 19. **401 必须自愈，不能只信本地 `expiresAt`**：上游刷新会作废旧 access token（refresh token 同步轮换）。若新 token 未落盘、
     或同一账号在别处被刷新，本地文件里的 token `expiresAt` 仍在未来，但上游已拒绝 → `NeedsRefresh` 恒为假、永不刷新、
     积分恒 0、明细恒空。因此积分/明细/费率路径遇 `ErrSessionDead` 必须「refresh + 落盘 + 重试一次」
-    （`app.refreshIfSessionDead`，scheduler 的 checkin 路径同理；**对话路径**见 R78）。
-    - **401 的形态不止业务码**：网关（APISIX/openresty）会在认证前拦下请求并回 HTML 页，
-      这种形态必须同样归 `ErrSessionDead`（`upstream.IsGatewayAuthPage`，见 R78）；
-      归成 `ErrClient` 时上述自愈链全部静默失效。
-    - **`FetchModels`/`FetchModelPricing` 必须返回类型化 `*provider.Error`**，不得用裸 `fmt.Errorf`——
-      否则 `errors.As` 取不到分类，模型面与费率面的 401 自愈永远不触发（2026-10-17 现场缺口）。
+    （`app.refreshIfSessionDead`，scheduler 的 checkin 路径同理）。
 20. **凡是调 `Upstream.RefreshToken` 的地方必须紧跟 `SaveAtomic`**：refresh token 会轮换，不落盘 = 下次启动用旧 refresh token，
     重回上一条的死锁（`RefreshPricing` 曾漏，已补）。
 21. **匿名渠道的虚拟账号不得进入任何「能把它弄没」的路径**：`reloadAccounts` 不纳入（`SyncToDir` 会剔除），
@@ -364,7 +358,7 @@ bash scripts/probe-dump.sh summarize                # 汇总各渠道 usage 字�
 | [README.md](README.md) | 用户文档 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发者文档（面向 AI Agent） |
 | [AGENTS.md](AGENTS.md) | **本文件**：纪律 + 决议索引 + 关键不变量 + 构建发版 |
-| [docs/决议项.md](docs/决议项.md) | **R1–R78 决议全文**（证据链、反例、已知限制） |
+| [docs/决议项.md](docs/决议项.md) | **R1–R77 决议全文**（证据链、反例、已知限制） |
 | [docs/渠道接入备忘.md](docs/渠道接入备忘.md) | 各渠道协议要点、凭据模型、已知限制与踩坑 |
 | [docs/接口参考.md](docs/接口参考.md) | 面板区块规划 + 管理 API 全量清单 |
 | [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) | 三接口（Chat/Responses/Anthropic）兼容层架构决策与验证清单 |
