@@ -509,20 +509,6 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 
 /* 统一设置弹层内部分区 */
 .settings-body { word-break: normal; }
-/* 设置弹层的快捷跳转条（R84）：吸顶，滚动时始终可点 */
-.cfg-jump {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  padding: 8px 0 10px; margin-bottom: 4px;
-  border-bottom: 1px solid var(--line, #e2e8f0);
-  position: sticky; top: 0; z-index: 2;
-  background: var(--card, #fff);
-}
-.cfg-jump a {
-  font-size: 12px; padding: 3px 9px; border-radius: 999px;
-  border: 1px solid var(--line, #e2e8f0); color: var(--muted, #64748b);
-  cursor: pointer; white-space: nowrap;
-}
-.cfg-jump a:hover { border-color: var(--primary, #2563eb); color: var(--primary, #2563eb); }
 .cfg-section { padding: 12px 0 4px; border-top: 1px solid var(--border); }
 .cfg-section:first-child { border-top: none; padding-top: 2px; }
 .cfg-heading { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
@@ -1419,7 +1405,3 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 @media (max-width: 640px) {
   .fb-foot-row .half2 { flex: 1 1 100%; }
 }
-
-/* 快捷跳转后的高亮（1.2s 淡出，帮助定位） */
-.cfg-section.cfg-flash { animation: cfgFlash 1.2s ease-out; }
-@keyframes cfgFlash { from { background: color-mix(in srgb, var(--primary, #2563eb) 12%, transparent); } to { background: transparent; } }

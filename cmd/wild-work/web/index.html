@@ -82,6 +82,7 @@
           <button class="btn primary alt zcode" id="btnAddZCode" title="ZCode（智谱）：设备授权登录；积分领取依赖网页验证码，本工具不自动领取">＋ ZCode</button>
           <button class="btn primary alt gemini" id="btnAddGemini" title="Gemini（Google Code Assist）：本机回调授权登录，支持多账号">＋ Gemini</button>
           <button class="btn primary alt codearts" id="btnAddCodeArts" title="CodeArts（华为云）：PKCE 授权登录，支持多账号；免费额度按 UTC+8 自然日重置">＋ CodeArts</button>
+          <button class="btn primary alt custom" id="btnOpenCustomModels" title="自定义模型（OpenAI 兼容）：接入任意兼容端点，Provider 与模型都在一个弹窗里增删改">＋ 自定义模型</button>
         </div>
       </div>
     </div>
@@ -347,18 +348,8 @@
 
 <!-- 设置弹层（统一配置入口：监听/API-Key/模型路由/备用上游通道） -->
 <div class="overlay hidden" id="settingsOverlay">
-  <div class="modal modal-xwide">
+  <div class="modal modal-wide">
     <div class="modal-title">设置</div>
-    <!-- 快捷跳转（R84）：设置里有 10+ 个小节，自定义渠道在最底部；
-         没有跳转就只能靠滚，等于"藏起来了"。 -->
-    <div class="cfg-jump">
-      <a data-jump="secBasic">接口</a>
-      <a data-jump="secRoute">模型路由</a>
-      <a data-jump="secCheckin">签到自启</a>
-      <a data-jump="secProxy">备用通道</a>
-      <a data-jump="secFallback">降级链</a>
-      <a data-jump="secEffort">思考强度</a>
-    </div>
     <div class="modal-body settings-body">
 
       <!-- 接口与鉴权 -->
@@ -494,12 +485,6 @@
         <div class="hint" id="fbErr" style="color:var(--danger)"></div>
       </div>
 
-      <!-- 自定义模型（R85：从设置里独立出去，改成一个按钮 + 独立弹窗） -->
-      <div class="cfg-section" id="secCustom">
-        <div class="cfg-heading">自定义模型（OpenAI 兼容）</div>
-        <div class="hint" style="margin:0 0 8px">接入任意 OpenAI 兼容端点（反代、官方 API、本地服务），客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
-        <button class="btn small" id="btnOpenCustomModels">配置自定义模型</button>
-      </div>
 
       <!-- 思考强度注入 -->
       <div class="cfg-section" id="secEffort">
@@ -536,6 +521,7 @@
   <div class="modal modal-xwide">
     <div class="modal-title">自定义模型（OpenAI 兼容）</div>
     <div class="modal-body">
+      <div class="hint" style="margin:0 0 10px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
       <div id="customChList" class="cm-list"></div>
       <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
         <button class="btn small" id="btnCustomAdd">＋ 新增 Provider</button>

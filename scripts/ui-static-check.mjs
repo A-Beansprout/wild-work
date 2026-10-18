@@ -685,7 +685,9 @@ for (const [label, re] of uniq) {
     ["自定义模型是独立弹层（R85：设置里只留一个入口按钮）",
       html.includes('id="customModelsOverlay"') && html.includes('id="customChList"') &&
       html.includes('id="btnOpenCustomModels"')],
-    ["主面板不再有「自定义渠道」按钮（R84：入口统一收敛到设置）", !html.includes('id="btnCustomChannels"')],
+    ["主面板的自定义模型入口在「＋ CodeArts」右侧（R86）",
+      html.includes('id="btnAddCodeArts"') && html.includes('id="btnOpenCustomModels"') &&
+      html.indexOf('id="btnAddCodeArts"') < html.indexOf('id="btnOpenCustomModels"')],
     ["app.js 不再引用 btnCustomChannels", !raw.includes('btnCustomChannels')],
     ["openSettings 不再初始化自定义渠道（职责归 openCustomModels）", (() => {
       const at = raw.indexOf("function openSettings()");
@@ -708,7 +710,8 @@ for (const [label, re] of uniq) {
 
     // 内建同名拒绝（R66）：前后端各自守一道——前端给即时反馈，后端 Validate 会拒。
     ["前端有内建渠道名保留集（防与内建同名）", raw.includes("RESERVED_CHANNEL_NAMES") && raw.includes('"workbuddy"') && raw.includes('"cline-free"')],
-    ["后端拒绝内建同名的文案已在 hint 写清", html.includes("不得与内建渠道同名")],
+    ["后端拒绝内建同名的文案已在 hint 写清", html.includes("不得与内建渠道同名") ||
+      raw.includes("不得与内建渠道同名")],
     // 测试按钮必须带 name（否则脱敏回显态的 api_key 无法在后端找回真实密钥，恒 401）
     ["自定义渠道测试请求携带 name（后端子据以找回被脱敏的真实 api_key）",
       /custom_channel_test[\s\S]{0,90}name[:,]/.test(raw)],
@@ -1035,11 +1038,17 @@ for (const [label, re] of uniq) {
     const block = css.slice(at, end);
     return /appearance:\s*none/.test(block) && /background-image:\s*linear-gradient\(45deg/.test(block);
   })());
-  check5("设置里只留「自定义模型」入口按钮（不含实际配置 UI）",
-    /id="btnOpenCustomModels"/.test(html) && !/id="customChList"[^]*?id="btnSettingsCancel"/.test(html));
-  // 宽度规范：设置与自定义渠道同档（用户明确要求）
-  check5("设置弹窗用 xwide 档（1180px，与自定义渠道同宽）",
-    /<div class="overlay hidden" id="settingsOverlay">\s*<div class="modal modal-xwide">/.test(html));
+  check5("设置里不再有自定义模型配置 UI（R86：只从主工具栏入口进）", (() => {
+    const a = html.indexOf('id="settingsOverlay"');
+    const b = html.indexOf('id="customModelsOverlay"');
+    if (a < 0 || b < 0 || b < a) return false;
+    // 设置弹层这一段里不能出现自定义模型的配置元素
+    const seg = html.slice(a, b);
+    return !seg.includes('id="customChList"') && !seg.includes('id="btnCustomAdd"');
+  })());
+  // 宽度规范：设置保持原样，用户明确要求「宽度也不改」
+  check5("设置弹窗保持原来的 modal-wide（720px，R86 用户要求不动宽度）",
+    /<div class="overlay hidden" id="settingsOverlay">\s*<div class="modal modal-wide">/.test(html));
   check5("弹窗宽度只有三档（.modal / .modal-wide / .modal-xwide）",
     (css.match(/^\.modal(?:\.modal-(?:wide|xwide|search))? \{/gm) || []).length <= 5 &&
     /\.modal\.modal-xwide \{[^}]*width: 1180px/.test(css));

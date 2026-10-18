@@ -3137,16 +3137,6 @@ function bind() {
   $("btnCustomSave").onclick = saveCustomChannels;
   $("customModelsOverlay").onclick = (e) => { if (e.target === $("customModelsOverlay")) closeCustomModels(); };
 
-  // 设置弹层的快捷跳转（R84）：滚到对应 section 并高亮一下
-  document.querySelectorAll(".cfg-jump a").forEach((a) => {
-    a.onclick = () => {
-      const el = document.getElementById(a.dataset.jump);
-      if (!el) return;
-      el.scrollIntoView({ block: "start", behavior: "smooth" });
-      el.classList.add("cfg-flash");
-      setTimeout(() => el.classList.remove("cfg-flash"), 1200);
-    };
-  });
 
   // ---- 渠道编辑弹窗（R82） ----
   $("btnCeCancel").onclick = () => closeChannelEditor();
