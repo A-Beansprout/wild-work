@@ -394,7 +394,12 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("models api status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		// 必须返回**类型化**错误（而非裸 fmt.Errorf）：上层靠 errors.As 取分类
+		// 才能走「refresh + 重试」自愈（不变量 19）。裸错误会让模型列表的
+		// 401 自愈永远不生效——本地 expiresAt 仍在未来而上游已拒绝时，
+		// 费率/模型面板只能一直陈旧（见 R79）。
+		return nil, &Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode,
+			Msg: fmt.Sprintf("models api: %s", truncate(string(raw), 200))}
 	}
 	var env struct {
 		Code int `json:"code"`
@@ -693,7 +698,9 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("pricing api status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		// 同上：类型化错误，否则 RefreshPricing 里的 refreshIfSessionDead 拿不到分类。
+		return nil, &Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode,
+			Msg: fmt.Sprintf("pricing api: %s", truncate(string(raw), 200))}
 	}
 	var env struct {
 		Code int `json:"code"`

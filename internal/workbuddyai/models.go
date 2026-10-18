@@ -126,7 +126,10 @@ func (c *Client) fetchCatalog(a *auth.Auth) ([]catalogModel, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("models api status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		// 类型化错误：上层靠 errors.As 取分类才能 refresh + 重试（不变量 19），
+		// 裸 fmt.Errorf 会让模型/费率面的 401 自愈永远不生效（R79）。
+		return nil, &provider.Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode,
+			Msg: fmt.Sprintf("models api: %s", truncate(string(raw), 200))}
 	}
 	var env catalogResp
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -227,7 +230,9 @@ func (c *Client) fetchV3Catalog(a *auth.Auth) ([]catalogModel, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("v3 config status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		// 同上：类型化错误（R79）。
+		return nil, &provider.Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode,
+			Msg: fmt.Sprintf("v3 config: %s", truncate(string(raw), 200))}
 	}
 	var env catalogResp
 	if err := json.Unmarshal(raw, &env); err != nil {
