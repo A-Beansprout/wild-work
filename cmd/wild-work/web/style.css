@@ -261,6 +261,10 @@ body {
 .input { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 14px; outline: none; }
 .input:focus { border-color: var(--primary); }
 .input.port { width: 80px; }
+/* 通用弹性自适应容器与包装层 */
+.grow { flex: 1 1 auto; min-width: 0; }
+.row > .pk-wrap.grow { flex: 1 1 auto; min-width: 0; }
+
 .input.grow { flex: 1; min-width: 120px; }
 /* 弹层里独立成行的输入框（不套在 .row 弹性容器里）：.grow 的 flex:1 不生效，
    浏览器会按默认 size 属性渲染成一个窄框（就是 Cline 的 API-Key 输入框过短的原因）。
@@ -1520,13 +1524,31 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
    文字，故宽度自适应；点击复用同一 #modelSearchOverlay 弹层（见 app.js 的 openModelSearch）。
    width: auto 必须显式写：本按钮同时带 .icon-btn 类，而该类是 width: 30px 的纯图标尺寸，
    不覆盖则文字标签会挣出 30px 的边框盒（overflow 默认 visible ⇒ 压到相邻内容上）。 */
+.cfg-heading {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 10px; display: flex; align-items: center;
+}
+.cfg-heading > span:first-child { order: 1; }
+.cfg-heading > .help-mark { order: 2; margin-left: 6px; }
+.cfg-heading > .cfg-search-btn { order: 3; margin-left: auto; }
+
 .cfg-heading .cfg-search-btn {
-  width: auto; height: 24px; font-size: 12px; border-radius: 6px;
-  vertical-align: middle; margin-left: auto; margin-right: 6px; padding: 0 8px; line-height: 1;
-  white-space: nowrap; font-family: inherit; font-weight: 400;
+  width: auto; height: 25px; font-size: 12px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  padding: 0 9px; line-height: 1;
+  white-space: nowrap; font-family: inherit; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 4px;
+  cursor: pointer; transition: all .15s ease;
+}
+.cfg-heading .cfg-search-btn:hover {
+  border-color: var(--primary); color: var(--primary); background: #eff6ff;
 }
 
-/* ---------- 配置区交互优化：combobox 模糊搜索下拉 + 规则卡片 + 备胎 chip 拖拽 ----------
+#backupProxyState {
+  font-size: 12px; font-weight: 500; white-space: nowrap; margin-left: 8px;
+}
+
+/* 规则/映射卡片区块（custom-ch-card 同款） */
    覆盖「模型降级链」「思考强度」两区：
    - .pk-wrap：输入框定位容器（下拉锚点，input 直接子元素）；.half2 底部行对半分。
    - .pk-menu：下拉面板（渠道徽标 + 完整 ID + 价格两行富信息，字段与「查找模型」弹层同源）。
@@ -1607,8 +1629,41 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   font-size: 12px; font-weight: 600; color: var(--primary);
 }
 
+/* 空态占位卡片 */
+.fb-empty {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+/* 添加新规则/新映射面板 */
+.fb-compose-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+.fb-compose-panel .fb-foot-row {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+.fb-compose-panel .fb-foot-actions {
+  margin-top: 0;
+  margin-bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* 底部添加行：主力/备选对半分，按钮组独立一行右对齐 */
-.fb-foot-row .half2 { flex: 1 1 calc(50% - 5px); min-width: 260px; }
+.fb-foot-row .half2 { flex: 1 1 calc(50% - 5px); min-width: 240px; }
 .fb-foot-actions { justify-content: flex-end; flex-wrap: wrap; }
 .fb-foot-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 

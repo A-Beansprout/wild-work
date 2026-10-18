@@ -1980,7 +1980,7 @@ function renderFbList() {
       </div>
     </div>`;
   }).join("");
-  $("fbList").innerHTML = rows || `<div class="hint">（暂无规则——原模型无可用账号时将直接返回 503 提示）</div>`;
+  $("fbList").innerHTML = rows || `<div class="fb-empty">暂无规则——原模型无可用账号时将直接返回 503 提示</div>`;
   $("fbErr").textContent = "";
   attachFbPickers();
   updateFbDirty();
@@ -2153,7 +2153,7 @@ function renderEffList() {
       </div>
     </div>`
   ).join("");
-  $("effList").innerHTML = rows || `<div class="hint">（暂无模型档位——未配置的请求不注入）</div>`;
+  $("effList").innerHTML = rows || `<div class="fb-empty">暂无模型档位——未配置的请求不注入</div>`;
   $("effErr").textContent = "";
   updateEffDirty();
 }
@@ -2185,8 +2185,8 @@ function renderBackupProxy() {
   // 两者不等 = 配置写了但进程内未生效（地址不合法/启动失败），必须让用户看见。
   const s = $("backupProxyState");
   s.textContent = !state.backup_proxy ? ""
-    : (state.backup_proxy_active ? "已生效" : "未生效（地址无效或启动失败）");
-  s.style.color = state.backup_proxy && !state.backup_proxy_active ? "var(--danger)" : "var(--muted)";
+    : (state.backup_proxy_active ? "● 已生效" : "未生效（地址无效或启动失败）");
+  s.style.color = state.backup_proxy && !state.backup_proxy_active ? "var(--danger)" : (state.backup_proxy_active ? "var(--ok)" : "var(--muted)");
   $("proxyErr").textContent = "";
 }
 
