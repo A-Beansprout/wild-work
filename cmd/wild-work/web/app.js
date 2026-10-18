@@ -2079,37 +2079,60 @@ function formatTokenCount(num) {
 }
 
 function renderCustomChList() {
-  // 一行一个渠道，**模型也挤在同一行**（R83）：渠道信息 + 模型文字按钮 + 操作按钮。
-  // 为什么不再折叠模型：用户要在列表上一眼看到"这个 provider 有哪些模型"，
-  // 点进弹窗才能看到等于没有。模型 chip 是文字按钮（点开模型编辑弹窗），不是纯标签。
-  const rows = editCustomChannels.map((c, i) => {
+  // R85：每个 Provider 一个区块，Provider 自己一行（信息 + 操作），
+  // 它下面的每个模型也各占一行（模型信息 + 操作）。**任何一行都不换行**，
+  // 靠横向滚动兜底而不是折行——之前把模型 chip 挤进 Provider 那一行，
+  // 渠道一多就换行，看着很乱。
+  const blocks = editCustomChannels.map((c, i) => {
     const keyMask = c.api_key ? (c.api_key.length > 8 ? c.api_key.slice(0, 3) + "…" + c.api_key.slice(-4) : "••••••") : "无密钥";
     const models = c.models || [];
-    const modelChips = models.length
-      ? models.map((m, j) => {
-          const mid = typeof m === "string" ? m : m.id;
-          const efforts = typeof m === "object" && m.reasoning_efforts ? m.reasoning_efforts : [];
-          const tip = efforts.length ? `点击编辑 ${mid}（思考档位：${efforts.join("/")}）` : `点击编辑 ${mid}`;
-          return `<button class="model-chip" data-edit-model-in="${i}:${j}" title="${esc(tip)}">${esc(mid)}</button>`;
-        }).join("")
-      : '<span class="hint" style="margin:0">（无模型）</span>';
-    return `<div class="custom-ch-row">
-      <span class="badge custom">${esc(c.name)}</span>
-      <span class="cch-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
-      <span class="cch-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
-      <span class="cch-models" title="${esc(models.map((m) => (typeof m === "string" ? m : m.id)).join(", "))}">${modelChips}</span>
-      <button class="btn small" data-models-custom="${i}" title="管理该渠道的模型（新增/批量导入）">模型管理</button>
-      <button class="btn small" data-edit-custom="${i}" title="编辑渠道（地址/密钥）">编辑</button>
-      <button class="btn small" data-test-custom="${i}">测试</button>
-      <button class="btn small" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
-      <button class="btn small danger" data-del-custom="${i}" title="删除该渠道及其全部模型">删除</button>
+
+    const modelRows = models.map((m, j) => {
+      const mid = typeof m === "string" ? m : m.id;
+      const ctxNum = typeof m === "object" ? parseTokens(m.context_window, 0) : 0;
+      const outNum = typeof m === "object" ? parseTokens(m.max_tokens, 0) : 0;
+      const ctx = ctxNum ? formatTokenCount(ctxNum) : "—";
+      const out = outNum ? formatTokenCount(outNum) : "—";
+      const efforts = typeof m === "object" && m.reasoning_efforts ? m.reasoning_efforts : [];
+      const caps = [];
+      if (typeof m === "object" && m.supports_images) caps.push("识图");
+      if (typeof m === "object" && (m.supports_reasoning || efforts.length)) caps.push("思考");
+      if (typeof m !== "object" || m.supports_tools !== false) caps.push("工具");
+      return `<div class="cm-model-row">
+        <code class="cm-model-id" title="${esc(mid)}">${esc(mid)}</code>
+        <span class="cm-meta">上下文 ${esc(ctx)}</span>
+        <span class="cm-meta">输出 ${esc(out)}</span>
+        <span class="cm-meta">${efforts.length ? "档位 " + esc(efforts.join("/")) : "无思考"}</span>
+        <span class="cm-meta">${esc(caps.join("·") || "—")}</span>
+        <button class="btn small" data-edit-model-in="${i}:${j}">编辑</button>
+        <button class="btn small danger" data-del-model-in="${i}:${j}">删除</button>
+      </div>`;
+    }).join("");
+
+    return `<div class="cm-provider">
+      <div class="cm-provider-row">
+        <span class="badge custom">${esc(c.name)}</span>
+        <span class="cm-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
+        <span class="cm-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
+        <span class="cm-meta">${models.length} 个模型</span>
+        <button class="btn small" data-edit-custom="${i}">编辑</button>
+        <button class="btn small" data-test-custom="${i}">测试</button>
+        <button class="btn small" data-import-custom="${i}" title="拉取该渠道 /models 返回的模型清单，勾选后批量加入（已有的自动跳过）">导入</button>
+        <button class="btn small" data-add-model-in="${i}">＋ 模型</button>
+        <button class="btn small danger" data-del-custom="${i}">删除</button>
+      </div>
+      <div class="cm-models">
+        ${modelRows || '<div class="cm-model-row"><span class="hint" style="margin:0">（该 Provider 还没有模型，点「＋ 模型」或「导入」）</span></div>'}
+      </div>
     </div>`;
   }).join("");
 
-  $("customChList").innerHTML = rows || `<div class="hint">（暂无自定义渠道，点下方「＋ 新增渠道」开始配置）</div>`;
+  $("customChList").innerHTML = blocks || `<div class="hint">（暂无自定义 Provider，点下方「＋ 新增 Provider」开始配置）</div>`;
   $("customChErr").textContent = "";
   $("customChOk").textContent = "";
 }
+
+
 
 // ---------- 思考强度注入（设置弹层：客户端未传 reasoning_effort 时按模型注入档位） ----------
 // effRules 编辑态副本（openSettings 时从 state.reasoning_efforts 拷贝，`*` 全局默认
@@ -2245,9 +2268,6 @@ function openSettings() {
   $("selExpiring").value = String(state.expiring_days || 1);
   $("chkLoopGuard").checked = state.loop_guard !== false; // 缺省（旧后端）按开启显示
   $("chkBodyLog").checked = !!state.body_log;
-  // 自定义渠道（R84：搬回设置内，与其它 section 同批初始化）
-  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
-  renderCustomChList();
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
   $("settingsOverlay").classList.remove("hidden");
 }
@@ -2401,6 +2421,32 @@ function saveModelEditor() {
   renderCustomChList();
   $("customChOk").textContent = "已更新，点击「保存全部配置」生效";
   $("customChErr").textContent = "";
+}
+
+// ---------- 自定义模型弹窗（R85） ----------
+// 设置里只留一个「配置自定义模型」按钮，实际增删改全在这个弹窗里。
+// 弹窗独立的好处：不用挤在设置的一长串 section 里滚来滚去，且宽度可单独给足。
+function openCustomModels() {
+  editCustomChannels = JSON.parse(JSON.stringify(state.custom_channels || []));
+  renderCustomChList();
+  $("customModelsOverlay").classList.remove("hidden");
+}
+
+function closeCustomModels() {
+  $("customModelsOverlay").classList.add("hidden");
+}
+
+async function saveCustomChannels() {
+  try {
+    await api("/api/config/custom_channels", { channels: editCustomChannels });
+    toast("自定义模型已保存（热生效）");
+    $("customChErr").textContent = "";
+    $("customChOk").textContent = "已保存并立即生效";
+    loadState();
+  } catch (e) {
+    $("customChErr").textContent = e.message;
+    $("customChOk").textContent = "";
+  }
 }
 
 // ---------- 模型一键导入（R81） ----------
@@ -2602,15 +2648,6 @@ async function saveSettings() {
     try {
       await api("/api/config/loop_guard", { on: loopGuardOn });
     } catch (e) { toast(e.message); return; }
-  }
-
-  // 4.7) 自定义渠道（R84：搬回设置内，随「保存」一起落盘）
-  // 与独立弹层时期一致：只在内容真变了才提交，避免每次保存设置都重装一次渠道运行时。
-  const customJSON = JSON.stringify(editCustomChannels);
-  if (customJSON !== JSON.stringify(state.custom_channels || [])) {
-    try {
-      await api("/api/config/custom_channels", { channels: editCustomChannels });
-    } catch (e) { toast("自定义渠道保存失败：" + e.message); return; }
   }
 
   // 5) API-Key（最后保存：改 Key 可能影响当前会话的后续请求）
@@ -3052,17 +3089,30 @@ function bind() {
       openChannelEditor(+editChBtn.dataset.editCustom);
       return;
     }
-    // 列表里点模型 chip：直接打开该模型的编辑弹窗（不必先进模型管理）
-    const chipBtn = e.target.closest("[data-edit-model-in]");
-    if (chipBtn) {
-      const [ci, mi] = chipBtn.dataset.editModelIn.split(":").map(Number);
+    // 模型行：编辑 / 删除（R85 起模型各占一行，不再有 chip）
+    const editModelBtn = e.target.closest("[data-edit-model-in]");
+    if (editModelBtn) {
+      const [ci, mi] = editModelBtn.dataset.editModelIn.split(":").map(Number);
       mgrChIdx = ci;                      // 模型编辑弹窗依赖 mgrChIdx 定位渠道
       openModelEditor(mi);
       return;
     }
-    const modelsBtn = e.target.closest("[data-models-custom]");
-    if (modelsBtn) {
-      openModelManager(+modelsBtn.dataset.modelsCustom);
+    const delModelBtn = e.target.closest("[data-del-model-in]");
+    if (delModelBtn) {
+      const [ci, mi] = delModelBtn.dataset.delModelIn.split(":").map(Number);
+      const ch = editCustomChannels[ci];
+      if (ch && ch.models && ch.models[mi] !== undefined) {
+        ch.models.splice(mi, 1);
+        renderCustomChList();
+        $("customChOk").textContent = "已移除模型，点「保存」生效";
+      }
+      return;
+    }
+    // Provider 行：新增模型
+    const addModelBtn = e.target.closest("[data-add-model-in]");
+    if (addModelBtn) {
+      mgrChIdx = +addModelBtn.dataset.addModelIn;
+      openModelEditor(-1);
       return;
     }
     const importBtn = e.target.closest("[data-import-custom]");
@@ -3081,6 +3131,11 @@ function bind() {
 
   // R82：新增渠道走独立弹窗（不再依赖底部输入行）
   $("btnCustomAdd").onclick = () => openChannelEditor(-1);
+  // ---- 自定义模型弹窗（R85）----
+  $("btnOpenCustomModels").onclick = () => openCustomModels();
+  $("btnCustomClose").onclick = () => closeCustomModels();
+  $("btnCustomSave").onclick = saveCustomChannels;
+  $("customModelsOverlay").onclick = (e) => { if (e.target === $("customModelsOverlay")) closeCustomModels(); };
 
   // 设置弹层的快捷跳转（R84）：滚到对应 section 并高亮一下
   document.querySelectorAll(".cfg-jump a").forEach((a) => {

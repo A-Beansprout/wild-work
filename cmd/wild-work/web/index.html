@@ -358,7 +358,6 @@
       <a data-jump="secProxy">备用通道</a>
       <a data-jump="secFallback">降级链</a>
       <a data-jump="secEffort">思考强度</a>
-      <a data-jump="secCustom">自定义渠道</a>
     </div>
     <div class="modal-body settings-body">
 
@@ -495,6 +494,13 @@
         <div class="hint" id="fbErr" style="color:var(--danger)"></div>
       </div>
 
+      <!-- 自定义模型（R85：从设置里独立出去，改成一个按钮 + 独立弹窗） -->
+      <div class="cfg-section" id="secCustom">
+        <div class="cfg-heading">自定义模型（OpenAI 兼容）</div>
+        <div class="hint" style="margin:0 0 8px">接入任意 OpenAI 兼容端点（反代、官方 API、本地服务），客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
+        <button class="btn small" id="btnOpenCustomModels">配置自定义模型</button>
+      </div>
+
       <!-- 思考强度注入 -->
       <div class="cfg-section" id="secEffort">
         <div class="cfg-heading">思考强度 <button class="icon-btn cfg-search-btn" data-model-search title="查找模型（按关键字快速定位全渠道模型，点击结果复制完整 ID）">🔍 查询模型</button></div>
@@ -516,26 +522,30 @@
         <div class="hint" id="effErr" style="color:var(--danger)"></div>
       </div>
 
-      <!-- 自定义渠道（R66 起，R84 从独立弹层搬回设置内）：
-           放回设置是因为弹窗宽度已统一到 1180px，设置里放得下；
-           独立弹层的真正动因是「设置太窄」，宽度修好后没必要多一层。 -->
-      <div class="cfg-section" id="secCustom">
-        <div class="cfg-heading">自定义渠道（OpenAI 兼容）</div>
-        <div class="hint" style="margin:0 0 10px">客户端用 <code>渠道标识/模型名</code> 访问，用量与统计全线统一。渠道标识不得与内建渠道同名（如 workbuddy / cline / oczen / raccoon 等）。</div>
-      <div id="customChList" class="custom-channels-list"></div>
-      <!-- R84：搬回设置后，保存由设置弹窗底部的「保存」统一承担，
-           这里只留「新增渠道」；不再放重复的「保存全部配置」（两个保存按钮只会让人犹豫）。 -->
-      <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
-        <button class="btn small" id="btnCustomAdd">＋ 新增渠道</button>
-      </div>
-      <div class="hint" id="customChErr" style="color:var(--danger);margin-top:4px"></div>
-      <div class="hint" id="customChOk" style="color:var(--success);margin-top:4px"></div>
-      </div>
 
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnSettingsCancel">取消</button>
       <button class="btn small primary" id="btnSettingsSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 自定义模型弹层（R85）：每个 Provider 一行，Provider 下每个模型各一行 -->
+<div class="overlay hidden" id="customModelsOverlay" style="z-index:110">
+  <div class="modal modal-xwide">
+    <div class="modal-title">自定义模型（OpenAI 兼容）</div>
+    <div class="modal-body">
+      <div id="customChList" class="cm-list"></div>
+      <div class="row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
+        <button class="btn small" id="btnCustomAdd">＋ 新增 Provider</button>
+        <button class="btn small primary" id="btnCustomSave" style="margin-left:auto">保存</button>
+      </div>
+      <div class="hint" id="customChErr" style="color:var(--danger);margin-top:4px"></div>
+      <div class="hint" id="customChOk" style="color:var(--success);margin-top:4px"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnCustomClose">关闭</button>
     </div>
   </div>
 </div>

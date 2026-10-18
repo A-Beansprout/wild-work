@@ -533,6 +533,47 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .proxy-row { margin-bottom: 0; }
 .proxy-row .input { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
+/* ===== 自定义模型弹层（R85）=====
+   结构：每个 Provider 一个 .cm-provider 区块；
+   .cm-provider-row = Provider 自己一行；.cm-model-row = 它下面每个模型各一行。
+   两类行都是 white-space:nowrap + 内部横向滚动，**绝不折行**——
+   折行是之前最刺眼的问题（同一行的功能被挤到第二行）。 */
+.cm-list { display: flex; flex-direction: column; gap: 10px; }
+.cm-provider {
+  border: 1px solid var(--line, #e2e8f0); border-radius: 8px;
+  background: var(--bg, #f8fafc); overflow: hidden;
+}
+.cm-provider-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  white-space: nowrap; overflow-x: auto;
+  background: var(--card, #fff);
+  border-bottom: 1px solid var(--line, #e2e8f0);
+}
+.cm-provider-row .badge { flex-shrink: 0; }
+.cm-url {
+  flex: 1 1 auto; min-width: 160px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.cm-key { flex-shrink: 0; margin: 0; }
+.cm-meta { flex-shrink: 0; font-size: 11px; color: var(--muted, #64748b); }
+.cm-provider-row .btn, .cm-model-row .btn { flex-shrink: 0; }
+/* 模型行：缩进表示从属关系，左侧一条竖线 */
+.cm-models { padding: 4px 0 4px 14px; border-left: 2px solid var(--line, #e2e8f0); margin-left: 10px; }
+.cm-model-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin: 2px 8px 2px 0;
+  border-radius: 6px;
+  white-space: nowrap; overflow-x: auto;
+}
+.cm-model-row:hover { background: var(--card, #fff); }
+.cm-model-id {
+  flex: 1 1 auto; min-width: 120px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
 /* 自定义渠道一行式列表（R82：原来每个渠道展开一张模型表，10 个渠道要滚好几屏） */
 .custom-channels-list { display: flex; flex-direction: column; gap: 6px; }
 .custom-ch-row {

@@ -682,23 +682,27 @@ for (const [label, re] of uniq) {
   const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
   const need = [
-    ["自定义渠道在设置弹层内（R84：搬回设置，与其它 section 并列）",
-      html.includes('id="customChList"') && !html.includes('id="customChannelOverlay"')],
+    ["自定义模型是独立弹层（R85：设置里只留一个入口按钮）",
+      html.includes('id="customModelsOverlay"') && html.includes('id="customChList"') &&
+      html.includes('id="btnOpenCustomModels"')],
     ["主面板不再有「自定义渠道」按钮（R84：入口统一收敛到设置）", !html.includes('id="btnCustomChannels"')],
     ["app.js 不再引用 btnCustomChannels", !raw.includes('btnCustomChannels')],
-    ["openSettings 重新初始化自定义渠道编辑态（R84）", (() => {
+    ["openSettings 不再初始化自定义渠道（职责归 openCustomModels）", (() => {
       const at = raw.indexOf("function openSettings()");
       if (at < 0) return false;
       const brace = raw.indexOf("{", at);
       let depth = 0;
       for (let i = brace; i < raw.length; i++) {
         if (raw[i] === "{") depth++;
-        else if (raw[i] === "}" && --depth === 0) return raw.slice(brace, i).includes("editCustomChannels");
+        else if (raw[i] === "}" && --depth === 0) return !raw.slice(brace, i).includes("editCustomChannels");
       }
       return false;
     })()],
+    ["openCustomModels 从 state.custom_channels 初始化编辑态",
+      /function openCustomModels\(\)[\s\S]{0,400}?editCustomChannels = JSON\.parse\(JSON\.stringify\(state\.custom_channels \|\| \[\]\)\)/.test(raw)],
     ["openCustomChannels 已移除（不再有独立弹层）", !raw.includes("function openCustomChannels")],
-    ["app.js 接线自定义渠道新增按钮（保存并入设置弹窗的「保存」）", raw.includes('$("btnCustomAdd").onclick') && !raw.includes('btnCustomSave')],
+    ["app.js 接线自定义模型的打开/新增/保存按钮",
+      raw.includes('$("btnOpenCustomModels").onclick') && raw.includes('$("btnCustomAdd").onclick') && raw.includes('$("btnCustomSave").onclick')],
     ["app.js 调 POST /api/config/custom_channels", raw.includes('"/api/config/custom_channels"')],
     ["app.js 调 POST /api/config/custom_channel_test", raw.includes('"/api/config/custom_channel_test"')],
 
@@ -981,19 +985,25 @@ for (const [label, re] of uniq) {
 
   check5("主面板渠道按钮回到 17 个（R84：自定义渠道入口收敛到设置）",
     !/btnCustomChannels/.test(html));
-  check5("设置内保留了渠道列表与新增动作（保存并入设置底部「保存」）",
-    ['customChList', 'btnCustomAdd', 'customChErr', 'customChOk']
-      .every((id) => html.includes(`id="${id}"`)) && !html.includes('btnCustomSave'));
+  check5("弹层保留完整动作（列表 + 新增 Provider + 保存 + 提示）",
+    ['customChList', 'btnCustomAdd', 'btnCustomSave', 'customChErr', 'customChOk']
+      .every((id) => html.includes(`id="${id}"`)));
+  // R85：Provider 一行 + 其下每个模型各一行，任何一行都不换行
+  check5("Provider 行与其模型行都不换行（white-space: nowrap）",
+    /\.cm-provider-row \{[^}]*white-space: nowrap/.test(css) &&
+    /\.cm-model-row \{[^}]*white-space: nowrap/.test(css));
+  check5("每个 Provider 一个区块、其下每个模型各占一行",
+    /class="cm-provider"/.test(raw) && /class="cm-model-row"/.test(raw));
+  check5("Provider 行功能完整（编辑/测试/导入/加模型/删除）",
+    ['data-edit-custom', 'data-test-custom', 'data-import-custom', 'data-add-model-in', 'data-del-custom']
+      .every((a) => raw.includes(a)));
+  check5("模型行功能完整（编辑/删除都在同一行）",
+    /data-edit-model-in=/.test(raw) && /data-del-model-in=/.test(raw));
   // R82：一行展示 + 增改走弹窗
-  check5("渠道列表一行式（不换行，URL 省略号收窄）",
-    /\.custom-ch-row \{[^}]*white-space: nowrap/.test(css) && /\.cch-url \{[^}]*text-overflow: ellipsis/.test(css));
+  check5("Provider 行 URL 用省略号收窄（不撑破布局）",
+    /\.cm-url \{[^}]*text-overflow: ellipsis/.test(css));
   // R83：模型与渠道同一行展示，模型 chip 是可点的文字按钮
-  check5("渠道行内含模型 chip 容器（模型与 provider 同一行）",
-    /\.cch-models \{[^}]*display: flex/.test(css) && raw.includes('class="cch-models"'));
-  check5("模型 chip 是文字按钮（可点开编辑，不是纯标签）",
-    /<button class="model-chip" data-edit-model-in=/.test(raw) &&
-    /\.model-chip \{[^}]*cursor: pointer/.test(css));
-  check5("点模型 chip 直接开模型编辑弹窗",
+  check5("模型行可点编辑（打开模型编辑弹窗）",
     /data-edit-model-in\]"?\)[\s\S]{0,200}?mgrChIdx = ci/.test(raw));
   // R83：删除改为文字按钮，不再用 🗑 / × 图标
   check5("删除渠道是文字按钮（不是 🗑 emoji）",
@@ -1003,12 +1013,10 @@ for (const [label, re] of uniq) {
   check5("危险按钮有 danger 样式",
     /\.btn\.danger \{/.test(css));
   // R83：停用功能整体移除（前端按钮 + 后端 enabled 字段）
-  check5("自定义渠道不再有停用按钮",
-    !raw.includes('data-toggle-custom') && !raw.includes('cch-count'));
+  check5("自定义渠道不再有停用按钮", !raw.includes('data-toggle-custom'));
   check5("后端 ChannelConfig 不再有 Enabled 字段",
     !readFileSync(new URL("../internal/custom/config.go", import.meta.url), "utf8").includes("Enabled *bool"));
-  check5("渠道行有编辑/模型两个弹窗入口",
-    /data-edit-custom=/.test(raw) && /data-models-custom=/.test(raw));
+  check5("Provider 行有编辑入口", /data-edit-custom=/.test(raw));
   check5("三个新弹层都存在（渠道编辑/模型管理/模型编辑）",
     ['channelEditorOverlay', 'modelManagerOverlay', 'modelEditorOverlay'].every((id) => html.includes(`id="${id}"`)));
   check5("模型管理弹窗一行式 + 可增删改",
@@ -1027,8 +1035,8 @@ for (const [label, re] of uniq) {
     const block = css.slice(at, end);
     return /appearance:\s*none/.test(block) && /background-image:\s*linear-gradient\(45deg/.test(block);
   })());
-  check5("设置弹层里有自定义渠道小节（R84 搬回）",
-    /cfg-heading">自定义渠道/.test(html));
+  check5("设置里只留「自定义模型」入口按钮（不含实际配置 UI）",
+    /id="btnOpenCustomModels"/.test(html) && !/id="customChList"[^]*?id="btnSettingsCancel"/.test(html));
   // 宽度规范：设置与自定义渠道同档（用户明确要求）
   check5("设置弹窗用 xwide 档（1180px，与自定义渠道同宽）",
     /<div class="overlay hidden" id="settingsOverlay">\s*<div class="modal modal-xwide">/.test(html));
