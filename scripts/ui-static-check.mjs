@@ -43,6 +43,24 @@ const FAKE_STATE = {
       last_checkin_at: "2026-10-02 09:00",
       last_checkin_ok: true,
     },
+    // 「不适用」账号（场景 1.7）：无积分概念的渠道（oczen/kilo/cline/自定义）。
+    // 两张卡只靠后端下发的 credits_na 区分 —— 这是「默认收起」的唯一判据，
+    // 前端不再另维护渠道名单（否则新增自定义渠道时会被漏收起）。
+    {
+      uid: "oczen-anon",
+      group: "oczen",
+      nickname: "匿名",
+      credits: 0,
+      expiring_credits: 0,
+      unusable_credits: 0,
+      credits_na: true,
+      cooling: false,
+      until: "",
+      reason: "",
+      disabled: false,
+      last_checkin_at: "",
+      last_checkin_ok: false,
+    },
     // OfficeAce 假数据（场景 1.5）：两张卡片只差「凭据是否缺 refresh_token」这一个字段，
     // 用来验证徽标**由该字段驱动**（而不是恒亮），否则徽标本身就是噪声。
     {
@@ -114,6 +132,13 @@ function mkNode(id) {
       add: (c) => cls.add(c),
       remove: (c) => cls.delete(c),
       contains: (c) => cls.has(c),
+      // toggle 供 applyAcctFilter / 「不适用」收起提示使用；缺了它会在 stub 里
+      // 抛 TypeError，让整份检查在第一个 toggle 处就中断（不是断言失败，是崩）。
+      toggle: (c, force) => {
+        const on = force === undefined ? !cls.has(c) : Boolean(force);
+        if (on) cls.add(c); else cls.delete(c);
+        return on;
+      },
       _set: cls,
     },
     // 运行日志容器（renderAppLog 吸底判定需要；stub 下 pinned 恒 true，只验证 HTML 生成）
@@ -169,6 +194,8 @@ const patched =
   // ⚠️ cache 必须按 uid 建键：真实代码是 detailCache[detailState.uid]，
   //    直接塞「响应对象」会让 detailCache[uid] 为 undefined（静默走空明细分支）。
   + ", renderCreditDetail, showCreditDetail, __setCreditDetailState: (st, resp) => { detailState = st; detailCache = { [st.uid]: resp }; }"
+  // 「不适用」默认收起（R103）：showNoCredit / acctFilter 都是 `let`，toggle 也要直接调
+  + ", applyAcctFilter, toggleNoCredit, __setShowNoCredit: (v) => { showNoCredit = v; }, __setAcctFilter: (v) => { acctFilter = v; }"
   + " };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
@@ -258,6 +285,82 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
   check("「需重新登录」全文只出现一次（不误标他人）",
     (cards.match(/需重新登录/g) || []).length === 1,
     `实际 ${(cards.match(/需重新登录/g) || []).length} 个`);
+}
+
+// ---- 场景 1.7：「不适用」账号默认收起 + 一键展开（R103，2026-10-19 用户要求）----
+// 需求原话：「把不适用的默认隐藏掉，但是有时候又得看一下」。
+// 难点不在隐藏，而在「默认值 + 可逆 + 状态不丢」三件事同时成立：
+//   ① 首帧就必须是收起态（不能先闪一排「不适用」再消失）；
+//   ② 展开入口不能藏在设置里（否则「有时候得看一下」变成要翻两层）；
+//   ③ 收起后不能把用户卡住（若正筛选着某不适用渠道，得自动清筛选，否则网格空白且
+//      连「全部」chip 都随汇总条消失）。
+{
+  const naCardOf = () => cards.split('<div class="acct-card').find((seg) => seg.includes("匿名")) || "";
+  const healthyCardOf = () => cards.split('<div class="acct-card').find((seg) => seg.includes("健康号")) || "";
+  // 注意：按 '<div class="acct-card' 切分后，段内已不含 `class="acct-card`，
+  // 故断言从 `hidden" data-group=` 这一段开始匹配（直接拿 class= 开头会永远不命中）。
+  check("默认收起：「不适用」账号卡片带 hidden 且 data-na=1",
+    /^ hidden" data-group="oczen" data-na="1"/.test(naCardOf()),
+    naCardOf().slice(0, 120));
+  check("默认收起：有余额的卡片不带 hidden（防「一刀切全收起」）",
+    !/^[^"]*hidden/.test(healthyCardOf()), healthyCardOf().slice(0, 120));
+  check("data-na 由后端 credits_na 驱动（非前端渠道名单）",
+    /data-na="\$\{isNoCreditAcct\(a\) \? 1 : 0\}"/.test(raw));
+
+  // 汇总条：收起态下不渲染 oczen 的「不适用」chip，只留一枚可点的开关。
+  T.__setShowNoCredit(false);
+  T.renderSummary();
+  const sumOff = document.getElementById("creditSummary").innerHTML;
+  check("收起时汇总条不出现 oczen 的渠道 chip", !/data-wg="oczen"/.test(sumOff), sumOff.slice(0, 200));
+  check("收起时汇总条保留「不适用」开关 chip（入口在原地）",
+    /data-na-toggle="1"/.test(sumOff) && sumOff.includes("不适用"));
+  check("开关 chip 标出被收起的账号数（1号）", /<span class="cs-num">1号<\/span>/.test(sumOff));
+  check("收起态开关不亮 on 高亮", !/cs-chip clickable cs-na on"/.test(sumOff));
+
+  // 展开态：chip 回来、开关变 on、账号卡片不再 hidden。
+  T.__setShowNoCredit(true);
+  T.renderSummary();
+  const sumOn = document.getElementById("creditSummary").innerHTML;
+  check("展开时 oczen 渠道 chip 回来", /data-wg="oczen"/.test(sumOn), sumOn.slice(0, 200));
+  check("展开态开关带 on 高亮", /cs-chip clickable cs-na on"/.test(sumOn));
+  check("展开时开关文案变「收起」", sumOn.includes("收起"));
+
+  // toggleNoCredit 的副作用：持久化 + 重渲染（不能只改内存变量）。
+  T.__setShowNoCredit(false);
+  T.toggleNoCredit();
+  check("toggleNoCredit 一次即展开（内存状态翻转）", /data-wg="oczen"/.test(document.getElementById("creditSummary").innerHTML));
+  check("toggleNoCredit 会重渲染账号卡片（不是只改汇总条）",
+    !/^ hidden" data-group="oczen"/.test(
+      document.getElementById("acctList").innerHTML
+        .split('<div class="acct-card').find((seg) => seg.includes("匿名")) || "hidden"));
+  T.toggleNoCredit();
+  check("再点一次收起（可逆）", !/data-wg="oczen"/.test(document.getElementById("creditSummary").innerHTML));
+
+  // 卡住场景：筛选着一个「不适用」渠道时收起，必须自动清筛选（否则网格空白）。
+  T.__setShowNoCredit(true);
+  T.__setAcctFilter("oczen");
+  T.toggleNoCredit(); // → 收起，应顺手把 acctFilter 清掉
+  T.renderSummary();
+  const sumAfter = document.getElementById("creditSummary").innerHTML;
+  check("收起时自动清掉指向「不适用」渠道的筛选（不留白网格）",
+    !/cs-all/.test(sumAfter), "「全部」chip 仍在 = 筛选未清");
+
+  // 静态接线：开关必须绑在汇总条事件委派里，且默认值是 false（默认收起）。
+  check("汇总条点击委派里有 data-na-toggle 分支",
+    /if \(target\.closest\("\[data-na-toggle\]"\)\) \{ toggleNoCredit\(\); return; \}/.test(raw));
+  check("默认收起：showNoCredit 初始为 false（仅 localStorage=1 才展开）",
+    /let showNoCredit = false;/.test(raw) && raw.includes('localStorage.getItem(SHOW_NA_KEY) === "1"'));
+  check("展开选择持久化到 localStorage", raw.includes("localStorage.setItem(SHOW_NA_KEY"));
+  check("全部被收起时给出可执行提示（不留空白页）",
+    /id="acctHiddenTip"/.test(
+      readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8"))
+    && raw.includes('$("acctHiddenTip")'));
+
+  // 复原，避免影响后续场景的汇总条断言。
+  T.__setShowNoCredit(false);
+  T.__setAcctFilter(null);
+  T.renderAccounts();
+  T.renderSummary();
 }
 
 // ---- 场景 2：渠道汇总条 ----

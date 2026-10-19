@@ -196,6 +196,12 @@ body {
 .cs-chip.clickable.on { border-color: var(--primary); background: #eff6ff; }
 .cs-chip.cs-all { padding: 3px 10px; }
 .cs-chip.cs-all .cs-n { color: var(--primary); }
+/* 「不适用」开关 chip：默认收起态用虚线边框与弱色，表明它是开关而不是一个渠道；
+   展开后（.on）转实线 + 主题色，与渠道筛选选中态同源。 */
+.cs-chip.cs-na { border-style: dashed; }
+.cs-chip.cs-na .cs-n { color: var(--muted); }
+.cs-chip.cs-na.on { border-style: solid; }
+.cs-chip.cs-na.on .cs-n { color: var(--primary); }
 /* 账号筛选后隐藏的卡片（applyAcctFilter 控制） */
 .acct-grid .acct-card.hidden { display: none; }
 
