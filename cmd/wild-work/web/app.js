@@ -3812,12 +3812,6 @@ async function loadAppLog() {
 }
 
 // 汇总横条条目（标签 + 等宽数值 + 可选小字注解）
-function stSumItem(label, val, cls, sub) {
-  return `<span class="st-sum-item"><span class="st-sum-label">${label}</span>` +
-    `<span class="st-sum-val ${cls || ""}">${val}</span>` +
-    (sub ? `<span class="st-sum-sub">${sub}</span>` : "") + `</span>`;
-}
-// Token 多天行条目
 function stTkItem(label, val) {
   return `<span class="st-tk-item">${label} <span class="st-tk-val">${val}</span></span>`;
 }
@@ -3851,18 +3845,8 @@ function buildPerfLookup(models) {
 
 function renderStats(s) {
   const tu = s.token_usage || {};
-  // 汇总横条：作废/今日到期仅 >0 时出现（避免每天多条 0 值噪音）
-  $("stSum").innerHTML =
-    // 总积分不进汇总条：平台表合计行已有同源数字（紫色资产色），避免双处维护同一资产值
-    stSumItem("收入积分", fmtCredits(s.credit_in), "ok", "签到事件口径") +
-    stSumItem("今日消耗", fmtCredits(s.credit_used), "warn", "精确 " + fmtCreditS(s.credit_out_exact)) +
-    (Number(s.credit_expired) > 0
-      ? stSumItem("今日作废", fmtCredits(s.credit_expired), "risk", "积分包到期 · 非消耗")
-      : "") +
-    stSumItem("消耗 Token", fmtTokensFull(s.tokens), "warn") +
-    (Number(s.expire_today) > 0
-      ? stSumItem("今日到期", fmtCredits(s.expire_today) + "分", "risk", "今晚作废尽快消耗")
-      : "");
+  // 汇总横条已删（与合计行重复）：全池汇总数字全部由平台表合计行呈现，
+  // 仅 >0 才出现的「今日作废/今日到期」也走合计行（列常年存在，零值置灰）。
   $("stMilestone").textContent = s.milestone_count > 0 ? `里程碑 ${s.milestone_count}×100分` : "";
   renderPlatformTable(s);
   // Token 多天行（今日情况标题右侧）
@@ -3911,14 +3895,16 @@ function renderPlatformTable(s) {
       stPlatNum("st-plat-exp", r.expire_7d, "分") +
       `</div>`;
   });
-  // 合计行：与顶部汇总横条同源
+  // 合计行：与旧汇总横条同信息量——消耗列带「精确」小注（逐请求 usage 帧口径），
+  // title 悬浮说明净消耗 = 差值花费 - 作废，不另设汇总条。
+  const sumExact = Number(s.credit_out_exact) > 0 ? ` title="净消耗 ${fmtCredits(s.credit_used)}：差值扣除作废 ${fmtCredits(s.credit_expired)}；逐请求精确 ${fmtCreditS(s.credit_out_exact)}"` : "";
   html += `<div class="st-plat-row st-plat-sum-row">` +
     `<span class="st-plat-no"></span>` +
     `<span class="st-plat-slot">合计</span>` +
     `<span class="st-plat-accts">${fmtCredits(s.total_accounts)}</span>` +
     stPlatNum("st-plat-credits", s.total_credits, "分") +
     stPlatNum("st-plat-in", s.credit_in) +
-    stPlatNum("st-plat-out", s.credit_used) +
+    `<span class="st-plat-out"${sumExact}>${fmtCredits(s.credit_used)}${Number(s.credit_out_exact) > 0 ? ` <span class="st-plat-sub">(精 ${fmtCreditS(s.credit_out_exact)})</span>` : ""}</span>` +
     stPlatTok(s.tokens) +
     stPlatNum("st-plat-exp", s.expire_today, "分") +
     stPlatNum("st-plat-exp", s.expire_tomorrow, "分") +

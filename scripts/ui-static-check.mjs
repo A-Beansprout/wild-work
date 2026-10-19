@@ -354,11 +354,11 @@ const FAKE_STATS = {
 };
 
 T.renderStats(FAKE_STATS);
-const stSum = document.getElementById("stSum").innerHTML;
-check("汇总条不再渲染总积分（平台表合计行已有同源紫字）", !stSum.includes("总积分"));
-check("汇总条首项为收入积分", stSum.includes("收入积分") && stSum.indexOf("收入积分") < stSum.indexOf("今日消耗"));
-check("今日作废仅 >0 时出现", stSum.includes("今日作废"));
-check("今日到期仅 >0 时出现", stSum.includes("今日到期"));
+const htmlEarly = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+check("汇总横条已删（容器与渲染函数都不存在，信息由合计行承接）",
+  !raw.includes("function stSumItem") && !raw.includes('$("stSum")') && !/id="stSum"/.test(htmlEarly));
+check("合计行消耗列带精确小注（承接旧汇总条唯一独有信息）",
+  /st-plat-sub">\(精 /.test(raw) && raw.includes("credit_out_exact"));
 check("里程碑计数正确", document.getElementById("stMilestone").textContent === "里程碑 1×100分");
 const stToken = document.getElementById("stToken").innerHTML;
 check("Token 多天行含今日/7日/已记录", stToken.includes("Token 今日") && stToken.includes("7日") && stToken.includes("已记录") && stToken.includes("12 天"));
@@ -429,7 +429,7 @@ check("里程碑 toast 同 id 去重（只写一次已读标记）", toastWrites
 const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
 check('第三个 tab 按钮存在（data-mtab="stats"）', /data-mtab="stats"/.test(html));
 check("#mtabStats body 存在且默认隐藏", /class="mtab-body hidden" id="mtabStats"/.test(html));
-check("运行统计区块骨架存在（stSum/stPlat/stApplog）", /id="stSum"/.test(html) && /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
+check("运行统计区块骨架存在（stPlat/stApplog）", /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
 check("更新角标存在（id=stUpdated，拉取失败可感知）", /id="stUpdated"/.test(html));
 // ---- 第四个 tab：模型列表和费率（原独立 section 移入主 tab 组）----
 check('第四个 tab 按钮存在（data-mtab="fees"）', /data-mtab="fees"/.test(html));
@@ -437,13 +437,13 @@ check("#mtabFees body 存在且默认隐藏", /class="mtab-body hidden" id="mtab
 check("模型费率区块骨架存在（feesBox/btnRefreshFees）", /id="feesBox"/.test(html) && /id="btnRefreshFees"/.test(html));
 check("模型费率区块在 section 内（不再是独立 section）", /<div class="mtab-body hidden" id="mtabFees">[\s\S]*?<\/section>/.test(html) && !/<!-- 模型列表和费率 -->\s*<section class="panel">/.test(html));
 const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
-check("style.css 含运行统计样式段（#mtabStats .st-sum 等）", /#mtabStats \.st-sum/.test(css) && /#mtabStats \.st-plat-row/.test(css));
-// ---- 统计页两条单行条：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
-check("汇总条 st-sum 单行不折行（nowrap + 注解可省略 + 数字不剪）",
-  /#mtabStats \.st-sum \{[^}]*flex-wrap: nowrap/.test(css) &&
-  /#mtabStats \.st-sum-sub \{[^}]*text-overflow: ellipsis/.test(css) &&
-  /#mtabStats \.st-sum-val \{[^}]*flex-shrink: 0/.test(css));
-// 合计行配色与汇总条对齐：资产紫/琥珀，锁住防漂移
+check("style.css 含运行统计样式段（#mtabStats .st-plat-row 等）", /#mtabStats \.st-token/.test(css) && /#mtabStats \.st-plat-row/.test(css));
+// ---- Token 多天行单行：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
+check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
+  /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
+  /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
+  !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
+// 合计行配色：资产紫/琥珀，锁住防漂移
 check("合计行当前积分=资产紫、Token=琥珀（与汇总条同色系）",
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-credits \{ color: #7c3aed/.test(css) &&
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-tokens \{ color: var\(--warn\)/.test(css));

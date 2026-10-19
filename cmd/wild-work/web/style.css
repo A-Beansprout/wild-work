@@ -1097,7 +1097,6 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-tokens,
 #mtabStats .st-plat-exp,
 #mtabStats .st-plat-no,
-#mtabStats .st-sum-val,
 #mtabStats .st-token .st-tk-val,
 #mtabStats .st-idx,
 #mtabStats .st-mono,
@@ -1105,35 +1104,13 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-ex-date,
 #mtabStats .st-logbox { font-variant-numeric: tabular-nums; }
 
-/* 全局汇总横条：标签 + 等宽数值 + 小字注解横向排布，点号分隔，窄屏换行 */
-#mtabStats .st-sum {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: nowrap; /* 单行条：wrap 会在内容长度临界时抖动换行（今日作废项出现/消失、数字位数增长） */
-  gap: 2px 0;
-  margin-top: 7px;
-  padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #f7f8fa;
-  font-size: 11.5px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-/* 条目改 inline-flex：窄到放不下时只在条目内部压缩——注解（st-sum-sub）收 …，
-   标签与数字 flex-shrink:0 永不剪；无注解的条目保持刚性，剩余空间由有注解的吸收 */
-#mtabStats .st-sum > .st-sum-item { display: inline-flex; align-items: baseline; white-space: nowrap; min-width: 0; }
-#mtabStats .st-sum > .st-sum-item::after { content: "·"; color: #d4d8e0; margin: 0 9px; }
-#mtabStats .st-sum > .st-sum-item:last-child::after { content: ""; margin: 0; }
-#mtabStats .st-sum-label { flex-shrink: 0; }
-#mtabStats .st-sum-val { margin-left: 5px; font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
-#mtabStats .st-sum-val.ok { color: var(--ok); }    /* 收入积分 */
-#mtabStats .st-sum-val.warn { color: var(--warn); }  /* 消耗积分 / Token */
-#mtabStats .st-sum-val.pur { color: #7c3aed; }     /* 总额度（资产） */
-#mtabStats .st-sum-val.risk { color: var(--danger); } /* 今日到期（今晚作废） */
-#mtabStats .st-sum-sub { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: #a1a1aa; }
-#mtabStats .st-sum-sub::before { content: "（"; }
-#mtabStats .st-sum-sub::after { content: "）"; }
+/* （旧汇总横条 st-sum 已删：与合计行重复。合计行承接全部信息量：
+/* （旧汇总横条 st-sum 已删：与合计行重复。合计行承接全部信息量：
+   当前积分 = 资产紫，消耗 Token = 琥珀，消耗列内嵌「精确」小注。） */
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-credits { color: #7c3aed; font-size: 12.5px; }
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-tokens { color: var(--warn); }
+#mtabStats .st-plat-sub { font-size: 10px; color: #a1a1aa; font-weight: 400; }
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-slot { color: #52525b; }
 
 /* 平台表：grid 固定列宽 + 满高右边框做竖线。
    中列按内容量收窄（固定 px）、末列弹性吸收剩余并左对齐——避免「数字浮在空白里」。
@@ -1192,17 +1169,16 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   border-top: 1px solid rgba(23, 23, 23, 0.08);
   font-weight: 600;
 }
-/* 合计行：与顶部汇总条同色系——当前积分 = 资产紫（st-sum-val.pur），消耗 Token = 琥珀（warn）。
-   子行颜色保持各列语义色（绿收入/琥珀消耗），零值置灰不变 */
-#mtabStats .st-plat-row.st-plat-sum-row .st-plat-credits { color: #7c3aed; font-size: 12.5px; }
-#mtabStats .st-plat-row.st-plat-sum-row .st-plat-tokens { color: var(--warn); }
+/* （旧汇总横条 st-sum 已删：与合计行重复。合计行承接全部信息量：
+   当前积分 = 资产紫，消耗 Token = 琥珀，消耗列内嵌「精确」小注。） */
+#mtabStats .st-plat-sub { font-size: 10px; color: #a1a1aa; font-weight: 400; }
 #mtabStats .st-plat-row.st-plat-sum-row .st-plat-slot { color: #52525b; }
 
 /* Token 多天行（标题右侧，虚线分隔，数值蓝色等宽） */
 #mtabStats .st-token {
   display: flex;
   align-items: baseline;
-  flex-wrap: nowrap; /* 同 st-sum：单行条。极窄时整条截尾（overflow:hidden），
+  flex-wrap: nowrap; /* 单行条。极窄时整条截尾（overflow:hidden），
      不让条目各自等比压缩出满屏 …；相邻的里程碑/上次更新自带 ellipsis 会先收缩 */
   gap: 2px 0;
   margin-left: 14px;
