@@ -1391,6 +1391,34 @@ for (const [label, re] of uniq) {
     (html.match(/class="btn primary alt"/g) || []).length === 0,
     (html.match(/<button class="btn primary alt"[^>]*id="([^"]+)"/g) || []).join(", "));
 
+  // 全仓扫描：渠道类名出现在任何 CSS 规则里时，颜色属性必须走 var(--ch-*)。
+  // 历史坑：.badge.oczen 被重复定义两次（后一条写死 #475569 覆盖变量版）、
+  // .fees .ch-header.x 七处仍是调整前的旧 hex，改色板时会静默不生效。
+  {
+    const chSel = new RegExp(`\\.(?:badge|ch-header|btn\\.primary\\.alt|btn\\.alt)\\.(${CH.join("|")})\\b[^{]*\\{([^}]*)\\}`, "g");
+    const bad = [];
+    for (const m of css.matchAll(chSel)) {
+      const body = m[2];
+      // 允许 #fff/#ffffff（白字）；其余 hex 一律视为硬编码渠道色
+      for (const hex of body.match(/#[0-9a-fA-F]{3,8}/g) || []) {
+        if (!/^#(?:fff|ffffff)$/i.test(hex)) bad.push(`.${m[1]}=${hex}`);
+      }
+    }
+    checkPal("渠道相关 CSS 规则里没有硬编码颜色（白字除外）", bad.length === 0, bad.join(", "));
+
+    const dupSel = [];
+    for (const c of CH) {
+      for (const kind of ["badge", "ch-header"]) {
+        const re = kind === "badge"
+          ? new RegExp(`^\\.badge\\.${c}\\s*\\{`, "gm")
+          : new RegExp(`\\.fees \\.ch-header\\.${c} `, "g");
+        const n = (css.match(re) || []).length;
+        if (n > 1) dupSel.push(`${kind}.${c}×${n}`);
+      }
+    }
+    checkPal("渠道 CSS 规则无重复定义（重复会互相覆盖）", dupSel.length === 0, dupSel.join(", "));
+  }
+
   for (const [label, pass, extra] of needPal) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
