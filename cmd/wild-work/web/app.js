@@ -3709,6 +3709,7 @@ function bindMainTabs() {
       }
       if (b.dataset.mtab === "stats") {
         loadStats(); // 切到运行统计 tab 时拉最新（后台 30s 轮询兜底）
+        fitPlatCols(); // 之前隐藏时跳过测量，切回时按当前字号重算列宽
       }
     };
   });
@@ -3911,6 +3912,27 @@ function renderPlatformTable(s) {
     stPlatNum("st-plat-exp", s.expiring_7d, "分") +
     `</div>`;
   $("stPlat").innerHTML = html;
+  fitPlatCols();
+}
+
+// fitPlatCols 平台表动态列宽：每行是独立 grid，固定 px 遇到大额数字会截断
+// （合计行「(精 xxx.xx)」/积分上千/万）；也不能改 auto 列——各行独立解析会跨行错位。
+// 渲染后实测每列所有行（含表头/合计）最宽 cell 的 scrollWidth，经容器 CSS 变量
+// --plat-cols 统一应用。不可见时（tab 隐藏）scrollWidth 全为 0，跳过等切回时重测。
+function fitPlatCols() {
+  const el = $("stPlat");
+  const rows = [...el.querySelectorAll(".st-plat-row")];
+  if (!rows.length || !rows[0].offsetParent) return;
+  const max = [];
+  for (const r of rows) {
+    [...r.children].forEach((c, i) => {
+      max[i] = Math.max(max[i] || 0, c.scrollWidth);
+    });
+  }
+  // 首列(#)序号窄、末列(7日内到期)弹性吸收剩余；其余取实测值+1px 余量
+  const cols = max.map((w, i) =>
+    i === 0 ? "28px" : i === max.length - 1 ? "1fr" : (w + 1) + "px");
+  el.style.setProperty("--plat-cols", cols.join(" "));
 }
 
 // 平台表数值单元格：0 值置灰「—」（避免满屏 0 淹没真正有数的列），颜色由列类自带
