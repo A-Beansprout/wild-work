@@ -1192,6 +1192,10 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   border-top: 1px solid rgba(23, 23, 23, 0.08);
   font-weight: 600;
 }
+/* 合计行：与顶部汇总条同色系——当前积分 = 资产紫（st-sum-val.pur），消耗 Token = 琥珀（warn）。
+   子行颜色保持各列语义色（绿收入/琥珀消耗），零值置灰不变 */
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-credits { color: #7c3aed; font-size: 12.5px; }
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-tokens { color: var(--warn); }
 #mtabStats .st-plat-row.st-plat-sum-row .st-plat-slot { color: #52525b; }
 
 /* Token 多天行（标题右侧，虚线分隔，数值蓝色等宽） */

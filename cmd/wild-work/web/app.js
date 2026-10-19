@@ -3853,7 +3853,7 @@ function renderStats(s) {
   const tu = s.token_usage || {};
   // 汇总横条：作废/今日到期仅 >0 时出现（避免每天多条 0 值噪音）
   $("stSum").innerHTML =
-    stSumItem("总积分", fmtCredits(s.total_credits) + "分", "pur", fmtCredits(s.total_accounts) + " 个账号") +
+    // 总积分不进汇总条：平台表合计行已有同源数字（紫色资产色），避免双处维护同一资产值
     stSumItem("收入积分", fmtCredits(s.credit_in), "ok", "签到事件口径") +
     stSumItem("今日消耗", fmtCredits(s.credit_used), "warn", "精确 " + fmtCreditS(s.credit_out_exact)) +
     (Number(s.credit_expired) > 0

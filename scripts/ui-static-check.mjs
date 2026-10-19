@@ -355,8 +355,8 @@ const FAKE_STATS = {
 
 T.renderStats(FAKE_STATS);
 const stSum = document.getElementById("stSum").innerHTML;
-check("统计汇总条渲染总积分（4,736）", stSum.includes("4,736"));
-check("汇总条含账号数注解", stSum.includes("2 个账号"));
+check("汇总条不再渲染总积分（平台表合计行已有同源紫字）", !stSum.includes("总积分"));
+check("汇总条首项为收入积分", stSum.includes("收入积分") && stSum.indexOf("收入积分") < stSum.indexOf("今日消耗"));
 check("今日作废仅 >0 时出现", stSum.includes("今日作废"));
 check("今日到期仅 >0 时出现", stSum.includes("今日到期"));
 check("里程碑计数正确", document.getElementById("stMilestone").textContent === "里程碑 1×100分");
@@ -443,6 +443,10 @@ check("汇总条 st-sum 单行不折行（nowrap + 注解可省略 + 数字不�
   /#mtabStats \.st-sum \{[^}]*flex-wrap: nowrap/.test(css) &&
   /#mtabStats \.st-sum-sub \{[^}]*text-overflow: ellipsis/.test(css) &&
   /#mtabStats \.st-sum-val \{[^}]*flex-shrink: 0/.test(css));
+// 合计行配色与汇总条对齐：资产紫/琥珀，锁住防漂移
+check("合计行当前积分=资产紫、Token=琥珀（与汇总条同色系）",
+  /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-credits \{ color: #7c3aed/.test(css) &&
+  /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-tokens \{ color: var\(--warn\)/.test(css));
 check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
   /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
   /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
