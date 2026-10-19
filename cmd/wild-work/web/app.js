@@ -3505,6 +3505,8 @@ function renderUsageChart(st) {
   if (!usageChart) return;
   const byDay = (st.token.by_day || []);
   const dates = byDay.map((d) => d.date);
+  // 横轴就是后端下发的完整刻度序列（days=1 ⇒ 00:00~23:00，days=7 ⇒ 窗口内每天），
+  // 不在前端再算一遍：刻度口径只能有一个来源，否则「桶补到哪」又会两处打架（R98）。
   // 渠道系列：取所有出现过的渠道并集，按区间总量降序（主力渠道排在图例最前）
   const totalOf = {};
   const chans = [...new Set(byDay.flatMap((d) => Object.keys(d.by_channel || {})))];
@@ -3558,12 +3560,14 @@ function renderCreditChart(entries, names) {
   box.style.display = "";
   creditChart = makeChart(box, creditChart);
   if (!creditChart) return;
-  // 按日 × 账号聚合
-  const dates = [...new Set(spends.map((e) => fmtDay(e.ts)))].sort();
+  // 按日（今日视图按小时）× 账号聚合
+  const dates = usageAxisKeys(usageDays); // 固定整窗刻度，不是「只有消耗的时段」
+  const keyOf = (ts) => (usageDays === 1 ? fmtHour(ts) : fmtDay(ts));
   const byAcct = {}; // uid -> {date: spend}
   const totals = {}; // uid -> 总消耗
   for (const e of spends) {
-    const d = fmtDay(e.ts);
+    const d = keyOf(e.ts);
+    if (!dates.includes(d)) continue; // 窗口外条目（不应出现）不建桶，也不进 top10 统计
     (byAcct[e.uid] ||= {})[d] = (byAcct[e.uid][d] || 0) + -e.amount;
     totals[e.uid] = (totals[e.uid] || 0) + -e.amount;
   }
@@ -3618,6 +3622,30 @@ function renderCreditChart(entries, names) {
 function fmtDay(ts) {
   const d = new Date(ts * 1000);
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// fmtHour 时间戳 → "09:00"（今日视图的小时桶键，与后端 by_day 的 date 同形）
+function fmtHour(ts) {
+  const d = new Date(ts * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:00`;
+}
+
+// usageAxisKeys 固定横轴刻度（R98）：
+//   days=1 ⇒ 当天 00:00~23:00 共 24 个小时桶；days>1 ⇒ 窗口内每天（含今天）。
+// **刻度只跟区间有关，与「当前几点」无关**——后端 ledger.Query 已按同一口径补齐空桶，
+// 这里算一份是为了让积分图（自己按流水聚合，不走 by_day）跟 token 图刻度完全对齐。
+function usageAxisKeys(days) {
+  const now = new Date();
+  const out = [];
+  if (days === 1) {
+    for (let h = 0; h < 24; h++) out.push(`${String(h).padStart(2, "0")}:00`);
+    return out;
+  }
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    out.push(`${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+  }
+  return out;
 }
 
 // 主面板 tab 切换（账号管理 / 用量与流水 / 运行统计 / 模型列表和费率）

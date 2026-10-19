@@ -1093,6 +1093,50 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 场景 4.5：横轴固定整窗刻度（R98）----
+// 背景（用户实测）：今日视图只画到当前小时（截图里 11 点就只剩 00:00~11:00），
+// 横轴长度随时刻变化、刻度本身也在变，无法横向比较。修法是后端按窗口全枚举
+// 补空桶，前端只消费不再自算（口径单一来源），积分图也用同一份刻度。
+{
+  const need45 = [];
+  const check45 = (name, pass, extra = "") => need45.push([name, pass, extra]);
+  const bodyOf = (name) => {
+    const at = raw.indexOf(`function ${name}(`);
+    if (at < 0) return "";
+    const brace = raw.indexOf("{", at);
+    let depth = 0;
+    for (let i = brace; i < raw.length; i++) {
+      if (raw[i] === "{") depth++;
+      else if (raw[i] === "}" && --depth === 0) return raw.slice(brace, i + 1);
+    }
+    return "";
+  };
+
+  const axisBody = bodyOf("usageAxisKeys");
+  check45("usageAxisKeys 函数体可定位", axisBody.length > 100, `len=${axisBody.length}`);
+  check45("今日视图固定 24 个小时桶（与「当前几点」无关）",
+    /for \(let h = 0; h < 24; h\+\+\)/.test(axisBody), axisBody.slice(0, 160));
+  check45("多日视图按窗口天数逐日枚举（缺数据的日子也有刻度）",
+    /for \(let i = days - 1; i >= 0; i--\)/.test(axisBody), axisBody.slice(0, 160));
+
+  const usageBody = bodyOf("renderUsageChart");
+  check45("token 图横轴直接用后端下发的 by_day（不在前端另算）",
+    /const dates = byDay\.map\(\(d\) => d\.date\)/.test(usageBody));
+
+  const creditBody = bodyOf("renderCreditChart");
+  check45("积分图横轴用 usageAxisKeys（与 token 图同刻度）",
+    /const dates = usageAxisKeys\(usageDays\)/.test(creditBody), creditBody.slice(0, 300));
+  check45("积分图不再用「只含有消耗的时段」建横轴",
+    !/new Set\(spends\.map\(\(e\) => fmtDay\(e\.ts\)\)\)/.test(creditBody));
+  check45("积分图今日视图按小时归桶（fmtHour）",
+    /usageDays === 1 \? fmtHour\(ts\) : fmtDay\(ts\)/.test(creditBody));
+
+  for (const [label, pass, extra] of need45) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
 // ---- 场景 5：自定义渠道弹层独立 + 模型一键导入（R81）----
 {
   const need5 = [];
