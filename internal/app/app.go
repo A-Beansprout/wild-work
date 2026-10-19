@@ -2117,7 +2117,9 @@ func (a *App) creditSnapshot(rt *Runtime, au *auth.Auth) (remain int64, items []
 		return 0, nil, 0, 0, err
 	}
 	_, unusable = provider.Summarize(items)
-	expiring = provider.ExpiringWithin(items, a.cfg.ExpiringThresholdDur)
+	// 临期额度：自然日口径（days 个自然日内到期，次日 00:00 失效算今日）。
+	// 与面板三个到期列、调度器优先消耗同一判据（2026-10-19 统一口径）。
+	expiring = provider.ExpiringWithinDays(items, a.cfg.ExpiringThresholdDays(), time.Now())
 	// 差分记账：与上次快照对比产出 earn/spend/expire 流水（锦上添花，失败不干扰）
 	// 积分流水只记「积分口径」的余额变化：token 计量渠道（credits_unit="token"）的 remain
 	// 是 token 数，记进积分流水会污染统计（2026-10-17 用户实测报告）。
@@ -2497,10 +2499,11 @@ func (a *App) SetCheckinTimes(times []string) error {
 	return nil
 }
 
-// SetExpiringDays 更新临期阈值（天）：保存配置并即时生效。
-// 仅支持 1/2/3 天（UI 下拉框限定；日期粒度到期判定低于一天无意义，故下限 1）。
-// 生效机制：ExpiringThresholdDur 修改后，下一次余额刷新（手动/签到/自动循环）
-// 即按新阈值重算 pool 的 expiring 字段，无需额外刷新动作。
+// SetExpiringDays 更新临期阈值（自然日数）：保存配置并即时生效。
+// 仅支持 1/2/3 天（UI 下拉框限定；自然日粒度下低于一天无意义，故下限 1）。
+// 判据为 provider.ExpireWithinDays（次日 00:00 失效算今日），
+// 与面板「今日/明日/7 日内到期」三列同一口径（2026-10-19 统一）。
+// 生效机制：下一次余额刷新（手动/签到/自动循环）即按新阈值重算 expiring 字段。
 func (a *App) SetExpiringDays(days int) error {
 	if days != 1 && days != 2 && days != 3 {
 		return errors.New("临期阈值仅支持 1/2/3 天")

@@ -502,18 +502,29 @@ func creditItems(raw json.RawMessage) []provider.ResourceItem {
 	return out
 }
 
-// dateOfISO 把上游 ISO8601 的到期时间归一到 UTC+8 墙钟的日期粒度（不变式 18）。
+// dateOfISO 把上游 ISO8601 的到期时间归一到 UTC+8 墙钟的 **RFC3339 精确时刻**。
 // 解析不出（缺失 / 非 ISO）→ 空串：**不得**用零值时间冒充「永不过期」。
+//
+// 历史：旧实现截到日期粒度（不变式 18 时代的写法），丢了时分秒。面板按
+// 「N 小时内到期」分桶需要精确时刻（2026-10-19 实测）。
+//
+// 注：lobsterai 的 ledger 伪键用条目名（Key 留空 ⇒ itemKey 退回 Name），
+// 不含日期，故本改动零抖动。
 func dateOfISO(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
-	for _, layout := range []string{
-		time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02",
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.In(expireLoc).Format("2006-01-02")
+	// 带时区偏移的形态：按偏移解析后归一到 UTC+8 输出
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.In(expireLoc).Format(time.RFC3339)
+	}
+	// 无时区后缀的形态：按 **UTC+8 墙钟**解析（上游是国内服务，下发的是本地墙钟）。
+	// 旧实现用 time.Parse 会按 UTC 解析，"2026-10-31 12:00:00" 变成 20:00+08:00，
+	// 整整偏 8 小时——精确到时刻后这个偏差会直接算错「剩几小时」（2026-10-19 修）。
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, expireLoc); err == nil {
+			return t.Format(time.RFC3339)
 		}
 	}
 	return ""

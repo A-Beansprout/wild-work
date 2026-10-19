@@ -438,13 +438,23 @@ const FAKE_STATS = {
   token_usage: { today: 9000, days7: 50000, days30: 120000, all: 200000, req_today: 8, req_all: 90, days: 12 },
   // expire_today(77) 故意与 credit_expired(100) 取不同值：断言才能分辨「今日作废」
   // 是否被误接成「今日到期」（两者语义相反，混列会把作废说成还没发生）。
+  // 三个到期列 77/200/300 互不相同：任一列接错（如 7 日内接成今日+明日）
+  // 都会让断言变红——同值时测不出来（R102 的假绿教训）。
   expiring_7d: 300, expiring_7d_accts: 1, expire_today: 77, expire_tomorrow: 200,
   platforms: [{
     group: "traework", accounts: 2, credits: 4736, credit_in: 200, credit_out: 150,
-    credit_expired: 100, credit_used: 50, tokens: 12345, expire_7d: 300, expire_today: 77, expire_tomorrow: 0,
+    credit_expired: 100, credit_used: 50, tokens: 12345, expire_7d: 300, expire_today: 77, expire_tomorrow: 200,
+  }, {
+    // 全零渠道：守「零值列置灰」断言。R103 把上面那行的 expire_tomorrow 从 0 改成 200
+    // 后，原本靠它提供的零值没了，故显式补一行零值渠道（也顺便覆盖「小渠道整行剔除」之外
+    // 的渲染路径）。
+    group: "lobsterai", accounts: 0, credits: 0, credit_in: 0, credit_out: 0,
+    credit_expired: 0, credit_used: 0, tokens: 0, expire_7d: 0, expire_today: 0, expire_tomorrow: 0,
   }],
   models: [{ model: "traework/DeepSeek-V4", reqs: 3, tokens: 5000, credit: 12.5, avg_ttfb_ms: 800, avg_tok_per_sec: 45.2, perf_samples: 3 }],
-  expiry: [{ uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-08", days_left: 2, amount: 100, today_out: 30, burn_forecast: 45, risk: true }],
+  // hours_left 与 days_left 故意不同步（5.7h ⇒ days_left=0）：断言「剩余」列优先用
+  // 精确小时数。若接成 days_left，会渲染成「今日到期」而看不出还剩 5.7 小时。
+  expiry: [{ uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, burn_forecast: 45, risk: true }],
   rotation: [{
     group: "traework",
     current: { uid: "1606848467182378", nickname: "中招号", group: "traework", credits: 2050, expiring: 0, sticky: "12/50" },
@@ -480,6 +490,16 @@ check("平台表有今日作废列（表头 + 逐渠道取值）",
 check("合计行今日作废取 credit_expired（非 expire_today；两者不同源）",
   /st-plat-sum-row[\s\S]*?st-plat-expd">100</.test(stPlat) &&
   !/st-plat-expd">77</.test(stPlat));
+// 到期三列（R103）：按精确时刻 + 自然日分桶。三列取值 77/200/300 互不相同，
+// 任一列接错（7 日内接成 今日+明日、或三列串位）都会变红。
+check("平台表三列到期取值各自独立（77/200/300，未串位）",
+  /st-plat-exp">77分</.test(stPlat) &&
+  /st-plat-exp">200分</.test(stPlat) &&
+  /st-plat-exp">300分</.test(stPlat));
+// 「7 日内」是含今日+明日的合计口径，后端已算好总量（300），前端不得自己再相加。
+// 若误写成 today+tomorrow+7d 会得到 577。
+check("7 日内到期直接取后端合计（300，不是今日+明日+7日 的 577）",
+  !stPlat.includes(">577分<") && stPlat.includes(">300分<"));
 
 const stRotation = document.getElementById("stRotation").innerHTML;
 check("接棒顺序渲染使用中账号", stRotation.includes("使用中 <b>中招号</b>"));
@@ -487,7 +507,10 @@ check("接棒顺序含 ① 候补", stRotation.includes("① 健康号"));
 
 const stExpiry = document.getElementById("stExpiry").innerHTML;
 check("临期风险行高亮（st-risk）", stExpiry.includes("st-ex-row st-risk"));
-check("临期剩余天数文案", stExpiry.includes("2 天后到期"));
+// R103：剩余列优先用精确小时（hours_left=5.7）而非自然日差（days_left=0）。
+// 若接成 days_left 会渲染「今日到期」，就看不出「只剩 5.7 小时」。
+check("临期剩余时长用精确小时（5.7 小时后，非 days_left 文案）",
+  stExpiry.includes("5.7 小时后") && !stExpiry.includes("今日到期"));
 check("预计作废量 = 额度−外推消耗（55分）", stExpiry.includes("预计作废 55分"));
 
 const stModels = document.getElementById("stModels").innerHTML;

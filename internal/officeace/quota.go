@@ -89,7 +89,7 @@ func (c *Client) subscriptionRemain(ac *Account) (int64, []provider.ResourceItem
 			exp := ""
 			if q.ExpiredTime != "" {
 				if t, ok := parseISO(q.ExpiredTime); ok {
-					exp = time.UnixMilli(t).In(expireLoc).Format("2006-01-02")
+					exp = time.UnixMilli(t).In(expireLoc).Format(time.RFC3339)
 				}
 			}
 			items = append(items, provider.ResourceItem{
@@ -113,7 +113,7 @@ func (c *Client) subscriptionRemain(ac *Account) (int64, []provider.ResourceItem
 		used += cv
 		exp := ""
 		if t, ok := parseISO(b.ExpiredTime); ok {
-			exp = time.UnixMilli(t).In(expireLoc).Format("2006-01-02")
+			exp = time.UnixMilli(t).In(expireLoc).Format(time.RFC3339)
 		}
 		items = append(items, provider.ResourceItem{
 			Name:     firstNonEmpty(b.ActivityName, "奖励"),

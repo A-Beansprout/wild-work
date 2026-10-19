@@ -551,24 +551,36 @@ func (c *Client) userResource(a *auth.Auth) (int64, []provider.ResourceItem, err
 			Used:     used,
 			Remain:   remain,
 			ExpireAt: expireDate(acct.CycleEndTime),
-			// 套餐名+到期日组合伪键（同国内版口径）
-			Key:    fmt.Sprintf("%s|%s", acct.PackageName, expireDate(acct.CycleEndTime)),
+			// 套餐名+到期日组合伪键（同国内版口径）：键只取日期前缀，值带精确时刻。
+			Key:    fmt.Sprintf("%s|%s", acct.PackageName, expireDay(acct.CycleEndTime)),
 			Usable: true, // 国际版无端点分区，所有套餐均可被本工具消耗
 		})
 	}
 	return total, items, nil
 }
 
-// expireDate 把上游墙钟时间串（UTC+8）转为 YYYY-MM-DD；缺失/不可解析时返回空串。
+// expireDate 把上游墙钟时间串（UTC+8）转为 **RFC3339 精确时刻**；缺失/不可解析时返回空串。
+//
+// 历史：旧实现返回 "YYYY-MM-DD"，丢了时分秒。面板按「N 小时内到期」分桶需要精确时刻
+// （2026-10-19 实测：按日期桶会把今晚失效的包报成「明日到期」）。
+//
+// ⚠ 伪键不要用本函数（会带时刻）：Key 必须用 expireDay() 取日期前缀，否则升级瞬间
+// 每个包一对 expire+earn 假流水。
 func expireDate(ts string) string {
 	ts = strings.TrimSpace(ts)
 	if ts == "" {
 		return ""
 	}
 	if t, err := time.ParseInLocation("2006-01-02 15:04:05", ts, softRateResetLoc); err == nil {
-		return t.Format("2006-01-02")
+		return t.Format(time.RFC3339)
 	}
 	return ""
+}
+
+// expireDay 取到期日的**日期前缀**（"YYYY-MM-DD"），专供 ledger 伪键使用。
+// 与 expireDate() 分开的原因见其注释：键要稳定（不含时刻），值要精确（含时刻）。
+func expireDay(ts string) string {
+	return provider.ExpireDate(expireDate(ts))
 }
 
 // DailyCheckin 国际版的「每日活跃」任务：用免费模型对话一次保持账号活跃，

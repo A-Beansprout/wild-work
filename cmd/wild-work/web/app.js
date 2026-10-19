@@ -548,27 +548,45 @@ function renderCreditDetail() {
   }
 
   const items = d.items.slice();
-  // 临期判定与后端 ExpiringWithin 同口径：北京时间墙钟 now + 阈值天数，到期日当天零点前即临期。
+  // 临期判定与后端 provider.ExpireWithinDays 同口径：**自然日**（阈值天数内到期）。
+  // 判据 = 失效时刻 - 零点宽限 所属自然日 ≤ 今天+days（次日 00:00 失效算今日）。
   const expDays = state.expiring_days || 1;
-  const expDeadline = Date.now() + expDays * 24 * 3600 * 1000;
-  // expireAnchorUtc 到期锚点的真实 UTC 毫秒，与后端 provider.expireAnchor 同口径：
-  //   日期粒度（YYYY-MM-DD）= UTC+8 该日零点（后端「到期日 ≤ 明天」的宽松判据）；
-  //   RFC3339 = 精确时刻（如 gemini 的 5 小时/周配额窗口重置时间）。
+  // expireInstantUtc 失效时刻的真实 UTC 毫秒，与后端 provider.ExpireInstant 同口径：
+  //   日期粒度（YYYY-MM-DD）= 该日全天可用 ⇒ **次日 00:00（UTC+8）**才失效；
+  //   RFC3339 = 精确时刻（如 gemini 的配额窗口重置、workbuddy 的 CycleEndTime）。
   // 解析不出返回 null（该条目无到期信息）。旧实现用 split("-") + Number()，遇到
   // RFC3339 会得到 NaN 静默退化，故统一收口到这里。
-  const expireAnchorUtc = (s) => {
+  const EXPIRE_MIDNIGHT_GRACE_MS = 5 * 60 * 1000; // 与后端 expireMidnightGrace 同值
+  const expireInstantUtc = (s) => {
     if (!s) return null;
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-    if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]) - 8 * 3600 * 1000;
+    // 纯日期：该日全天可用 ⇒ 次日零点失效（后端 ExpireInstant 的 t.AddDate(0,0,1)）
+    if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3] + 1) - 8 * 3600 * 1000;
     const t = Date.parse(s);
     return Number.isNaN(t) ? null : t;
   };
+  // 失效时刻所属「自然日」的 UTC 毫秒（已扣零点宽限）：次日 00:00:03 归前一天。
+  const expireDayUtc = (s) => {
+    const ms = expireInstantUtc(s);
+    if (ms === null) return null;
+    const d = new Date(ms - EXPIRE_MIDNIGHT_GRACE_MS + 8 * 3600 * 1000);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - 8 * 3600 * 1000;
+  };
+  const nowCst = new Date(Date.now() + 8 * 3600 * 1000);
+  const todayUtc = Date.UTC(nowCst.getUTCFullYear(), nowCst.getUTCMonth(), nowCst.getUTCDate()) - 8 * 3600 * 1000;
+  // 临期：失效自然日 ≤ 今天 + expDays 天（含），且尚未失效
+  const isExpiring = (s) => {
+    const day = expireDayUtc(s), inst = expireInstantUtc(s);
+    if (day === null || inst === null) return false;
+    if (inst <= Date.now()) return false;
+    return day <= todayUtc + expDays * 24 * 3600 * 1000;
+  };
   // 排序：临期（可消耗、有剩余、窗口内到期）→ 可用 → 已用完/不可用/仅展示垫底；组内按到期日升序。
   const expUtcOf = (it) => {
-    const ms = expireAnchorUtc(it.expire_at);
+    const ms = expireInstantUtc(it.expire_at);
     return ms === null ? Infinity : ms;
   };
-  const groupOf = (it) => (it.usable && it.remain > 0) ? (expUtcOf(it) < expDeadline ? 0 : 1) : 2;
+  const groupOf = (it) => (it.usable && it.remain > 0) ? (isExpiring(it.expire_at) ? 0 : 1) : 2;
   items.sort((a, b) => groupOf(a) - groupOf(b) || expUtcOf(a) - expUtcOf(b));
   const pages = Math.max(1, Math.ceil(items.length / DETAIL_PAGE_SIZE));
   const page = Math.min(Math.max(0, detailState.page), pages - 1);
@@ -620,9 +638,9 @@ function renderCreditDetail() {
     // 整行淡红底 + 到期日红字 + 临期红章；已用完（remain=0）不标临期，避免与汇总口径打架。
     let expCell = "-", expCellCls = "";
     if (it.usable && it.remain > 0 && it.expire_at) {
-      const expUtc = expireAnchorUtc(it.expire_at);
+      const expUtc = expireInstantUtc(it.expire_at);
       if (expUtc !== null) {
-        if (expUtc < expDeadline) {
+        if (isExpiring(it.expire_at)) {
           expCell = `${esc(it.expire_at)}<span class="detail-exp-tag" title="${expDays} 天内到期，优先消耗">临期</span>`;
           expCellCls = ' class="detail-exp"';
           cls = ' class="detail-exp-row"';
@@ -3941,6 +3959,12 @@ function renderStats(s) {
 // 今日消耗Token/今日到期/明日到期/7日内到期，末行合计。「今日消耗」= 差值花费 − 积分包到期作废
 // （净值才是真消耗）；「今日作废」= ledger 当日 expire 流水（往回看：已经没了多少），
 // 与「今日到期」（往前看：今晚余额里还有多少会没）是相反方向的两个口径，不能混为一列。
+//
+// 到期三列口径（2026-10-19 用户定义，后端 provider.ExpireBucketOf 同一实现）：
+// 按**精确时刻**判定，桶的边界是**自然日**，且**次日 00:00:00 失效算今日**——
+// 上游每日类额度（qwenwork valid_to、traework 签到 expire_time）就是次日零点失效，
+// 归「明日」会让人以为还有一整天。列头 title 全部收敛到「今日情况」旁那一个 ? 角标，
+// 避免同一套说明在四个地方各写一遍、改口径时漏改。
 function renderPlatformTable(s) {
   const rows = s.platforms || [];
   if (!rows.length) { $("stPlat").innerHTML = ""; return; }
@@ -4080,18 +4104,23 @@ function renderRotation(rot) {
 // 最近临期：到期日升序；risk=按今日速度花不完 → 给预计作废量（额度−外推消耗）
 function renderExpiry(ex) {
   if (!ex.length) { $("stExpiry").innerHTML = ""; $("stExpiry").className = "st-expiry"; return; }
-  let html = `<div class="st-block-title">最近临期<span class="st-hint">按到期日升序 · ${ex.length} 个账号</span></div>` +
+  let html = `<div class="st-block-title">最近临期<span class="st-hint">按剩余时长升序 · ${ex.length} 个账号</span></div>` +
     `<div class="st-scroll st-ex-scroll">` +
     `<div class="st-ex-row st-ex-head">` +
     `<span class="st-ex-tag">#</span>` +
     `<span class="st-ex-plat-slot">平台</span>` +
     `<span class="st-ex-name">账号</span>` +
-    `<span class="st-ex-date">到期日</span>` +
+    `<span class="st-ex-date">到期时刻</span>` +
     `<span class="st-ex-days">剩余</span>` +
     `<span class="st-ex-amt">额度 · 今日已耗</span>` +
     `</div>`;
   ex.forEach((r, i) => {
-    const dayTxt = r.days_left <= 0 ? "今日到期" : (r.days_left === 1 ? "明日到期" : `${r.days_left} 天后到期`);
+    // 剩余时长优先用后端下发的精确小时数（hours_left），退回自然日文案兜底。
+    // 精确到 0.1h 才能表达「今晚 5.7 小时后就没」，这是本轮改动的核心诉求。
+    const h = Number(r.hours_left);
+    const dayTxt = Number.isFinite(h) && h > 0
+      ? (h < 1 ? `${Math.round(h * 60)} 分钟后` : `${h.toFixed(1)} 小时后`)
+      : (r.days_left <= 0 ? "今日到期" : (r.days_left === 1 ? "明日到期" : `${r.days_left} 天后到期`));
     const burn = r.risk ? ` · 预计作废 ${fmtCredits(r.amount - r.burn_forecast)}分` : "";
     html += `<div class="st-ex-row${r.risk ? " st-risk" : ""}">` +
       `<span class="st-ex-tag">${i + 1}</span>` +
