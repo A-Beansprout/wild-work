@@ -197,7 +197,7 @@ function renderModelSearch(q) {
         ? `<span title="上下文窗口：${esc(fmtTokensCompact(m.context_window))} tokens（${m.hand_measured ? "本工具实测，仅供参考" : "上游接口返回"}）">(${esc(fmtTokensCompact(m.context_window))}${m.hand_measured ? "*" : ""})</span>` : "";
       const rate = m.free ? "Free" : (m.priced ? `x${m.rate.toFixed(2)}` : "unknown");
       return `<div class="ms-row" data-mid="${esc(full)}" role="button" tabindex="0" title="点击复制完整模型 ID：${esc(full)}">`
-        + `<span class="badge ${chClass(ch)}">${esc(chLabel(ch))}</span>`
+        + chBadge(ch)
         + `<span class="ms-name">${esc(short)}</span>`
         + `<span class="ms-tags">${ctx}${caps}${eff}</span>`
         + `<span class="ms-rate">${esc(rate)}</span>`
@@ -247,7 +247,7 @@ function pkItemHTML(x, kw) {
     ? esc(m.reasoning_efforts.join("·")) + (m.default_reasoning_effort ? `（默认 ${esc(m.default_reasoning_effort)}）` : "") : "";
   const rate = m.free ? "Free" : (m.priced ? `x${(+m.rate).toFixed(2)}` : "unknown");
   return `<div class="pk-item pk-rich" data-id="${esc(x.full)}" title="点击选用 ${esc(x.full)}">`
-    + `<div class="pk-line1"><span class="badge ${chClass(x.ch)}">${esc(chLabel(x.ch))}</span><span class="id">${pkHl(x.full, kw)}</span><span class="rate">${esc(rate)}</span></div>`
+    + `<div class="pk-line1">${chBadge(x.ch)}<span class="id">${pkHl(x.full, kw)}</span><span class="rate">${esc(rate)}</span></div>`
     + `<div class="pk-line2">${ctx}${caps}${eff ? `<span class="pk-eff">${eff}</span>` : ""}</div></div>`;
 }
 function attachModelPicker(input, opts) {
@@ -716,7 +716,9 @@ const chClass = (k) => CH_CLASS[k] || "custom";
 // ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
 // 自定义渠道无品牌色，多个自定义渠道若共用 --ch-custom 会完全撞色；
 // 按渠道名稳定哈希从高区分度色板取色（刷新/重启不变，图表间一致）。
-const CUSTOM_PALETTE = ["#e07a1f", "#0ea5e9", "#d946ef", "#84cc16", "#f43f5e", "#14b8a6", "#a855f7", "#eab308", "#64748b", "#ec4899"];
+// 自定义渠道专用色板（5 色）：不绑定品牌，只要求与全部内建渠道色、
+// 以及彼此之间 ΔE2000 ≥15，保证图上一眼能分开。白字对比度全部 ≥4.5。
+const CUSTOM_PALETTE = ["#687817", "#721d3f", "#781717", "#79277c", "#896606"];
 function stableHash(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -730,6 +732,17 @@ function chColor(k) {
   let v = "";
   try { v = getComputedStyle(document.documentElement).getPropertyValue(`--ch-${cls}`).trim(); } catch (e) { /* ignore */ }
   return (_chColorCache[cls] = v || "#6366f1");
+}
+
+// chBadge 渠道徽章的唯一渲染入口（R99）：
+//   底色一律取 chColor()，与折线图 series 同源——两处不可能漂移。
+//   内建渠道的 chColor() 读 --ch-<类名>（CSS 里仍有 .badge.x 做无 JS 兜底），
+//   自定义渠道读 CUSTOM_PALETTE 哈希色，故必须内联 background（否则它们全共用
+//   .badge.custom 的单一革蓝，与图上颜色对不上）。
+// extra：追加额外 class（如 "cs-chip-badge"）。
+function chBadge(k, extra) {
+  const cls = ["badge", chClass(k), extra || ""].filter(Boolean).join(" ");
+  return `<span class="${cls}" style="background:${chColor(k)}">${esc(chLabel(k))}</span>`;
 }
 // varyColor 同渠道第 i（0 起）个系列做颜色变体，避免同渠道多条线同色：
 // 明度阶梯 +14/-14/+28/-28... 封顶在 [22,78]；封顶后转色相偏移（每档 ±18°）继续拉开。
@@ -910,7 +923,7 @@ function renderSummary() {
     }
     const on = acctFilter === k ? " on" : "";
     html += `<span class="cs-chip clickable${on}" data-wg="${esc(k)}" role="button" tabindex="0"`
-      + ` title="点击筛选该渠道账号，再次点击取消"><span class="badge ${chClass(k)}">${esc(chLabel(k))}</span>`
+      + ` title="点击筛选该渠道账号，再次点击取消">${chBadge(k)}`
       + `<span class="cs-n">${c.n}号</span>${body}</span>`;
   }
   // 「全部」重置项：仅在有筛选时出现，点击清除筛选。整条不参与合计，故放在合计 chip 之前。
@@ -3450,7 +3463,7 @@ function renderModelTable(rows, days) {
   tb.innerHTML = top.map((r) => {
     const avg = days > 1 ? Math.round((r.pt + r.ct) / days) : (r.pt + r.ct);
     return `<tr>
-      <td>${esc(r.model)}</td><td><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span></td>
+      <td>${esc(r.model)}</td><td>${chBadge(r.channel)}</td>
       <td class="num">${fmtCredits(r.requests)}</td><td class="num">${fmtTokensFull(r.pt + r.ct)}</td>
       <td class="num">${fmtTokensFull(avg)}</td>
       <td class="num">${cacheCell(r)}</td><td class="num">${perfCellFor(r.channel, r.model)}</td></tr>`;
@@ -3481,7 +3494,7 @@ function renderRecentPage(names) {
         <span class="rtime">${fmtDateTime24(r.ts)}</span>
         <span class="rkind">${kinds[r.kind] || r.kind}</span>
         <span class="ramount">${fmtCredits(r.amount)}</span>
-        <span class="racct"><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span> ${esc((names || {})[r.uid] || shortUid(r.uid))}</span>
+        <span class="racct">${chBadge(r.channel)} ${esc((names || {})[r.uid] || shortUid(r.uid))}</span>
         <span class="rname">${esc(r.note || "")}</span>
         <span class="rbal">余额 ${fmtCredits(r.balance)}</span></div>`).join("")
     : `<div class="muted" style="padding:8px">暂无流水</div>`;
@@ -3857,7 +3870,7 @@ function renderPlatformTable(s) {
   rows.forEach((r, i) => {
     html += `<div class="st-plat-row">` +
       `<span class="st-plat-no">${i + 1}</span>` +
-      `<span class="st-plat-slot"><span class="badge ${chClass(r.group)}">${esc(chLabel(r.group))}</span></span>` +
+      `<span class="st-plat-slot">${chBadge(r.group)}</span>` +
       `<span class="st-plat-accts">${fmtCredits(r.accounts)}</span>` +
       stPlatNum("st-plat-credits", r.credits, "分") +
       stPlatNum("st-plat-in", r.credit_in) +
@@ -3922,7 +3935,7 @@ function renderRotation(rot) {
       nextHtml += `<span class="st-rot-next">${ST_ROT_MARKS[j]} ${esc(n.nickname)}` +
         `（${bal(n.credits)}${n.expiring > 0 ? "·临期" + bal(n.expiring) : ""}）</span>`;
     });
-    html += `<div class="st-rot-row"><span class="badge ${chClass(rv.group)}">${esc(chLabel(rv.group))}</span>` +
+    html += `<div class="st-rot-row">${chBadge(rv.group)}` +
       `<span class="st-rot-cur">${cur}</span>` +
       (nextHtml ? `<span class="st-rot-nexts">${nextHtml}</span>` : "") + `</div>`;
   }
@@ -3948,7 +3961,7 @@ function renderExpiry(ex) {
     const burn = r.risk ? ` · 预计作废 ${fmtCredits(r.amount - r.burn_forecast)}分` : "";
     html += `<div class="st-ex-row${r.risk ? " st-risk" : ""}">` +
       `<span class="st-ex-tag">${i + 1}</span>` +
-      `<span class="st-ex-plat-slot"><span class="badge ${chClass(r.group)}">${esc(chLabel(r.group))}</span></span>` +
+      `<span class="st-ex-plat-slot">${chBadge(r.group)}</span>` +
       `<span class="st-ex-name" title="${esc(r.uid)}">${esc(r.nickname || r.uid)}</span>` +
       `<span class="st-ex-date">${esc(r.expire_at)}</span>` +
       `<span class="st-ex-days">${esc(dayTxt)}</span>` +
@@ -4095,7 +4108,7 @@ function renderAbnormal(rows) {
     html += `<div class="st-ab-row ${meta.cls}">` +
       `<span class="st-ab-idx">${i + 1}</span>` +
       `<span class="st-ab-tag-slot"><span class="st-ab-tag" title="${esc(meta.tip)}">${meta.tag}</span></span>` +
-      `<span class="st-ab-plat-slot"><span class="badge ${chClass(r.group)}">${esc(chLabel(r.group))}</span></span>` +
+      `<span class="st-ab-plat-slot">${chBadge(r.group)}</span>` +
       `<span class="st-ab-name" title="${esc(r.uid)}">${esc(r.nickname || r.uid)}</span>` +
       `<span class="st-ab-reason" title="${esc(reason)}">${esc(reason)}</span>` +
       `<span class="st-ab-until">${r.until ? esc(r.until) : "—"}</span>` +
