@@ -3923,15 +3923,29 @@ function fitPlatCols() {
   const el = $("stPlat");
   const rows = [...el.querySelectorAll(".st-plat-row")];
   if (!rows.length || !rows[0].offsetParent) return;
+  // cell 有 overflow:hidden，直接读 scrollWidth 会被当前列宽钳住（量出列宽自身，
+  // 越宽越量不出需求，死循环自洽）。测量前临时放开钳制再读，读完恢复。
+  const wasHidden = [];
+  for (const r of rows) {
+    for (const c of r.children) {
+      wasHidden.push([c, c.style.overflow]);
+      c.style.overflow = "visible";
+    }
+  }
   const max = [];
   for (const r of rows) {
     [...r.children].forEach((c, i) => {
-      max[i] = Math.max(max[i] || 0, c.scrollWidth);
+      // flex cell 里嵌 span 的（合计行精确小注），子项也会随宽度收缩，
+      // 量子项需求之和 + padding 更准；无子项重排后直接读 scrollWidth。
+      let w = c.scrollWidth;
+      for (const k of c.children) w = Math.max(w, k.scrollWidth + c.scrollWidth);
+      max[i] = Math.max(max[i] || 0, w);
     });
   }
-  // 首列(#)序号窄、末列(7日内到期)弹性吸收剩余；其余取实测值+1px 余量
+  for (const [c, o] of wasHidden) c.style.overflow = o;
+  // 首列(#)序号窄、末列(7日内到期)弹性吸收剩余；其余取实测值+2px 余量
   const cols = max.map((w, i) =>
-    i === 0 ? "28px" : i === max.length - 1 ? "1fr" : (w + 1) + "px");
+    i === 0 ? "28px" : i === max.length - 1 ? "1fr" : (w + 2) + "px");
   el.style.setProperty("--plat-cols", cols.join(" "));
 }
 

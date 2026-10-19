@@ -41,14 +41,18 @@ type itemSnap struct {
 	// Δremain = ΔTotal - ΔUsed。旧快照无此字段 → 零值，配合 UsedEver 门槛
 	// 保证老数据一律退回旧口径（不变量 5 向后兼容）。
 	Total int64 `json:"t,omitempty"`
-	// UsedEver 该 key **历史上是否出现过 used>0**（粘性，一旦为真永不清除）。
-	// 用于识别「渠道到底分不区分 total / used」：qwenwork/raccoon/minimax/monkeycode/
-	// loomy/glm 把 Total 填成 Remain、Used 恒 0，用它们的 total 判「池子缩水」会把
-	// 每一次真实消耗都误记成过期；而真记账的渠道（qodercn 等）只要花过一次就会留下
-	// used>0 的痕迹。不能用「本次 used>0」当门槛：整包到期那次 used 常同时归零
-	// （QoderCN 实录 used 1→0），一次性判据会让该 key 从此失去检测能力。
-	UsedEver bool `json:"us,omitempty"`
 }
+
+// snapChannels 快照文件里保存「渠道能力」的保留键。真实账号键恒为
+// "ch/uid"（含斜杠），故 "@ch" 不会与之冲突。
+//
+// 为什么能力记在渠道级而不是账号/key 级（R101 第二轮修正，2026-10-19）：
+// 「这个渠道的 total 是真面额还是 remain 的拷贝」是**渠道属性**。按单 key 判会把
+// 「从不花钱、只签到」的账号（QoderCN 实录：019fe484 的 total=2300 正好等于累计
+// 发放，used 恒 0）误当成「不区分 total/used」的渠道，它的整包到期就仍会记成消耗。
+// 反过来把整个渠道一次性标记成是 or 否：只要该渠道**任一账号任一 key** 花过一次
+// （used>0），就能证明它会给 total 与 used 分别赋值，全渠道永久受益。
+const snapChannels = "@ch"
 
 // snapshots credit-snapshot.json 结构：key "ch/uid" → 条目列表。
 type snapshots map[string][]itemSnap
@@ -119,24 +123,33 @@ func expired(expireAt string, now time.Time) bool {
 //
 //  1. 该条目**未上报到期日**：有到期日的渠道走 expired() 既有判据（那一路本来就对），
 //     本条只接管「上游不给包级到期时间，账本无从判过期」的盲区，对既有渠道零影响；
-//  2. 该 key **历史上或本次出现过 used>0**（UsedEver 粘性标记）：qwenwork/raccoon/
-//     minimax/monkeycode/loomy/glm 六个渠道把 Total 填成 Remain、Used 恒 0（见各自
-//     UserResourceDetail），那种形态下每次真实消耗都会让 Total 一起下降——无此门槛
-//     就会把它们的消耗全记成过期；而真记账的渠道只要花过一次就留下痕迹。粘性而非
-//     一次性判据的原因：整包到期那次 used 常同时归零（实录 used 1→0），一次性判据
-//     会让该 key 从此失去检测能力；
+//  2. 该**渠道**被证实会给 total / used 分别赋值（channelBooksUsage）：qwenwork/
+//     raccoon/minimax/monkeycode/loomy/glm 六个渠道把 Total 填成 Remain、Used 恒 0
+//     （见各自 UserResourceDetail），那种形态下每次真实消耗都会让 Total 一起下降——
+//     无此门槛就会把它们的消耗全记成过期。判定按**渠道**而不是按 key：只签到不花钱的
+//     账号（QoderCN 实录 019fe484，used 恒 0，total 2300 = 累计发放）也会整包到期，
+//     按 key 判会把它误归成「不记账渠道」而漏修；反过来只要该渠道任一账号任一 key
+//     花过一次，就证明上游确实分别赋值，全渠道永久受益；
 //  3. **total 确实下降了**：且上次快照必须有 total（老快照无 t 字段 = 0，自动退回旧口径，
 //     保证不变量 5「只增不减」的向后兼容——升级后首轮不改写历史归因）。
 //
 // 只在 remain 已经确认下降时调用，故这里不再复核 delta。
-func poolShrankExpiry(prev itemSnap, curTotal, curUsed int64) bool {
+func poolShrankExpiry(prev itemSnap, curTotal int64, booksUsage bool) bool {
 	if prev.Expire != "" { // 门槛 1
 		return false
 	}
-	if !prev.UsedEver && prev.Used <= 0 && curUsed <= 0 { // 门槛 2（粘性：历史上花过一次即永久信任 used）
+	if !booksUsage { // 门槛 2
 		return false
 	}
 	return prev.Total > 0 && curTotal < prev.Total // 门槛 3
+}
+
+// channelBooksUsage 报告该渠道是否**分别上报** total 与 used（即 total 是真面额，
+// 而非 remain 的拷贝）。一个渠道只要有任意账号任意 key 出现过 used>0，就证明了这一点
+// ——这是渠道级事实，一旦为真永久有效（持久化在快照的 "@ch" 保留键里）。
+// 详见 poolShrankExpiry 门槛 2。
+func channelBooksUsage(snapAll snapshots, ch string) bool {
+	return len(snapAll[snapChannels+"/"+ch]) > 0
 }
 
 // DiffCredits 余额刷新后差分记账：cur 为本次 UserResourceDetail 拿到的条目，
@@ -151,8 +164,15 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 	snapAll := l.loadSnapshots()
 	prev := snapAll[sk]
 	prevMap := make(map[string]itemSnap, len(prev))
+	// R101 门槛 2：渠道是否分别上报 total / used。
+	// 两个来源取并：① 快照里的 "@ch" 保留键（历年累积的信道级事实）；
+	// ② 本账号旧快照里留下的 used>0（无 "@ch" 标记时代的铁证，向后兼容）。
+	booksUsage := channelBooksUsage(snapAll, ch)
 	for _, p := range prev {
 		prevMap[p.Key] = p
+		if p.Used > 0 {
+			booksUsage = true
+		}
 	}
 
 	var events []CreditEntry
@@ -180,6 +200,9 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 		a.remain += it.Remain // 同 key 多条余额求和，视作一个整体
 		a.used += it.Used
 		a.total += it.Total
+		if it.Used > 0 {
+			booksUsage = true // 本次就发现「分别赋值」的铁证，立即信道内生效
+		}
 		if a.expire == "" {
 			a.expire = it.ExpireAt // 到期日取首个非空（同 key 通常相同）
 		}
@@ -189,10 +212,7 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 	for _, k := range order {
 		a := agg[k]
 		p, ok := prevMap[k]
-		// UsedEver 粘性（R101）：历史或本次出现过 used>0 即为真，命中过就不再回头。
-		// 旧快照没有 us 字段，靠 prev.Used>0 兼容识别（见 poolShrankExpiry 门槛 2）。
-		curMap[k] = itemSnap{Key: k, Remain: a.remain, Expire: a.expire, Used: a.used,
-			Total: a.total, UsedEver: (ok && (p.UsedEver || p.Used > 0)) || a.used > 0}
+		curMap[k] = itemSnap{Key: k, Remain: a.remain, Expire: a.expire, Used: a.used, Total: a.total}
 		if !ok {
 			if firstTime {
 				// 首次见此账号：存量条目由末尾的「存量额度」baseline 统一汇总，
@@ -221,7 +241,7 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 			// 否则归因消耗
 			// 除非池子本身缩小了（R101）——见 poolShrankExpiry。
 			kind := "spend"
-			if expired(p.Expire, now) || poolShrankExpiry(p, a.total, a.used) {
+			if expired(p.Expire, now) || poolShrankExpiry(p, a.total, booksUsage) {
 				kind = "expire"
 			}
 			events = append(events, CreditEntry{Ch: ch, UID: uid, Kind: kind,
@@ -264,6 +284,11 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 			list = append(list, v)
 		}
 		snapAll[sk] = list
+	}
+	// 渠道级「分别上报 total/used」标记（R101 门槛 2）：一旦证实就永久保留，
+	// 供同渠道其他账号（如只签到不花钱、used 恒 0 的号）共享。
+	if booksUsage {
+		snapAll[snapChannels+"/"+ch] = []itemSnap{{Key: ch}}
 	}
 	l.saveSnapshots(snapAll)
 	l.mu.Unlock()

@@ -177,3 +177,56 @@ func TestDiffCreditsOldSnapshotNoTotal(t *testing.T) {
 		t.Fatalf("补齐 total 后的池子缩水应记 expire，got %s", last.Kind)
 	}
 }
+
+// TestDiffCreditsChannelFlagSharedAcrossAccounts 门槛 2 必须是**渠道级**判定。
+//
+// 真实漏洞（2026-10-19 修复过程中自查发现）：QoderCN 三个号里 019fe484 只签到不花钱，
+// used 恒 0、total 2300 正好等于累计发放。若按「该 key 出现过 used>0」判，这个号会被
+// 误归成「不区分 total/used 的渠道」，它的整包到期就仍会被记成消耗 —— 修了一半。
+// 正确语义：「渠道会给 total 与 used 分别赋值」是**渠道属性**，任一账号任一 key 花过
+// 一次就足以证明，全渠道共享。
+func TestDiffCreditsChannelFlagSharedAcrossAccounts(t *testing.T) {
+	dir := t.TempDir()
+	l, _ := New(dir)
+	defer l.Close()
+
+	// 账号 A：花过钱（used>0）⇒ 证实该渠道分别上报
+	l.DiffCredits("qodercn", "spender", 2499, shrinkItem(2500, 1, 2499))
+	// 账号 B：只签到，used 恒 0，两个包里都能平衡
+	l.DiffCredits("qodercn", "idler", 2300, shrinkItem(2300, 0, 2300))
+	// 账号 B 整包到期
+	l.DiffCredits("qodercn", "idler", 2200, shrinkItem(2200, 0, 2200))
+
+	last := lastEntry(t, l, dir)
+	if last.Kind != "expire" {
+		t.Fatalf("同渠道已有账号证实 used 记账，只签到号的整包到期也必须记 expire，got %s", last.Kind)
+	}
+	if last.Amount != -100 {
+		t.Fatalf("amount=%d want -100", last.Amount)
+	}
+}
+
+// TestDiffCreditsNoUsedChannelFlagNotPolluted 反向守门：真正不区分 total/used 的渠道
+// 永远学不到「分别上报」的事实（used 恒 0），故它的消耗永远走 spend。
+func TestDiffCreditsNoUsedChannelFlagNotPolluted(t *testing.T) {
+	dir := t.TempDir()
+	l, _ := New(dir)
+	defer l.Close()
+
+	wallets := func(remain int64) []provider.ResourceItem {
+		return []provider.ResourceItem{
+			{Name: "长期积分", Total: remain, Used: 0, Remain: remain, Key: "longterm", Usable: true},
+		}
+	}
+	// 连刷三轮真实消耗（每轮 total 都跟着 remain 一起下降）
+	for _, r := range []int64{2000, 1800, 1500} {
+		l.DiffCredits("qwenwork", "w1", r, wallets(r))
+	}
+	l.Flush()
+	if snap := l.loadSnapshots(); channelBooksUsage(snap, "qwenwork") {
+		t.Fatal("used 恒 0 的渠道绝不能被标记成「分别上报」，否则真实消耗会被误记成过期")
+	}
+	if last := lastEntry(t, l, dir); last.Kind != "spend" {
+		t.Fatalf("want spend got %s", last.Kind)
+	}
+}
