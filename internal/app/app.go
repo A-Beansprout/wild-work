@@ -980,9 +980,14 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.openAuthURLIncognito(authURL)
 	}
 	// CDP 浏览器化捕获（五回环回调渠道，见 docs/全渠道登录授权方式梳理.md §4）：
-	// 在网关机拉起独立 profile 浏览器完成授权并捕获回环回调。与默认浏览器路径并存
-	// （谁先到谁生效），浏览器不可用时只记日志，不阻断既有监听器/粘贴路径。
-	a.maybeStartBrowserAssist(k, authURL)
+	// 在网关机拉起独立 profile 浏览器完成授权并捕获回环回调。接管成功时置
+	// loginBackendOpened（前端不再 window.open，避免双开——用户在日常浏览器的标签里
+	// 登录会撞 #98）；接管失败（无浏览器）退回默认浏览器+监听器路径，行为与改造前一致。
+	if !flow.openIncognito && a.maybeStartBrowserAssist(k, authURL) {
+		a.muLogin.Lock()
+		a.loginBackendOpened = true
+		a.muLogin.Unlock()
+	}
 	go a.pollLogin(ctx)
 	log.Printf("%s 登录流程已发起", k)
 	return authURL, nil

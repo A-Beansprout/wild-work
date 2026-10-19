@@ -196,11 +196,21 @@ func setCurrentApp(a *App) {
 }
 
 // maybeStartBrowserAssist 发起登录后按需拉起 CDP 捕获（StartLoginFor 调用）。
-// spec 未登记的渠道零动作；浏览器启动失败只记日志，不阻断既有路径。
-func (a *App) maybeStartBrowserAssist(k provider.Kind, authURL string) {
+//
+// 返回 true = CDP 已接管（或正在接管）授权页：StartLoginFor 据此置 loginBackendOpened，
+// 前端不再 window.open（否则在日常浏览器再开一个标签页，与 CDP 窗口双开，
+// 用户在错误窗口里登录后回环回调打到他自己机器，反而复现 #98）。
+// 启动失败时返回 false：前端照旧 window.open，退回默认浏览器 + 监听器路径，行为与改造前一致。
+// 注意这里**同步探测、异步启动**：浏览器探测失败必须当场让上层知道（决定是否双开），
+// 而 Launch 的冷启动（数秒）不能阻塞 HTTP 响应，故 StartURL 打开动作在 goroutine 里完成。
+func (a *App) maybeStartBrowserAssist(k provider.Kind, authURL string) bool {
 	spec, ok := browserCaptureSpecs[k]
 	if !ok {
-		return
+		return false
+	}
+	if _, err := cdp.FindBrowser(); err != nil {
+		log.Printf("%s CDP 登录不可用（未找到可用的 Edge/Chrome），退回默认浏览器+监听器路径: %v", k, err)
+		return false
 	}
 	kind := k
 	startBrowserAssist(kind, authURL, cdp.LoopbackCallbackMatcher(spec.pathPrefix),
@@ -209,4 +219,5 @@ func (a *App) maybeStartBrowserAssist(k provider.Kind, authURL string) {
 				log.Printf("%s CDP 捕获喂入失败: %v", kind, err)
 			}
 		}, spec.ttl)
+	return true
 }
