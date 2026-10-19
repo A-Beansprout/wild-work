@@ -25,6 +25,7 @@ func TestManualCallbackKindWhitelist(t *testing.T) {
 	want := map[provider.Kind]bool{
 		provider.CodeArts:  true,  // portal 只接受 port 参数，跳转目标写死回环
 		provider.LobsterAI: true,  // redirect_uri 回环 + 回调口绝不监听非环回
+		provider.TraeWork:  true,  // 回调写死 127.0.0.1 随机端口 + 5 分钟监听寿命（issue #98）
 		provider.Gemini:    false, // 本机 loopback OAuth，但不提供粘贴消费入口
 		provider.GLM:       false, // 网关侧 CDP 捕获
 		provider.Raccoon:   false, // 网关侧 CDP 捕获

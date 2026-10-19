@@ -909,13 +909,15 @@ func (a *App) needsPollFor(kind string) bool {
 // 判据（不是所有渠道都需要）：portal 侧只能把浏览器跳回 `http://127.0.0.1:<port>/…`
 // 的，才是「浏览器必须与网关同机」——
 //   - CodeArts：授权页只接受 `port` 参数，跳转目标由 portal 写死（见 internal/login_codearts）；
-//   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）。
+//   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）；
+//   - TraeWork：回调写死 `http://127.0.0.1:<随机端口>/authorize`，且监听只有 5 分钟寿命，
+//     局域网/超时场景下凭证都到不了网关（见 internal/login_trae，issue #98）。
 //
 // 其余渠道的回调**不是**这种形状：有的由网关侧轮询/捕获（glm、小浣熊、OfficeAce），
 // 有的是本机引导页（Loomy），不接受也不知道怎么消费用户粘回来的 URL，故一律为 false。
 func manualCallbackKind(kind provider.Kind) bool {
 	switch kind {
-	case provider.CodeArts, provider.LobsterAI:
+	case provider.CodeArts, provider.LobsterAI, provider.TraeWork:
 		return true
 	}
 	return false
@@ -3373,7 +3375,8 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	//
 	// 背景：CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
 	// LobsterAI 的 portal 按 `redirect_uri` 原样跳回 `http://127.0.0.1:<port>/auth/callback`，
-	// 两者都只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
+	// TraeWork 的回调写死 `http://127.0.0.1:<随机端口>/authorize`（且监听只有 5 分钟寿命），
+	// 三者都只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
 	// 浏览器跳到的是**用户自己机器**的 127.0.0.1（连接被拒），流程只能等到超时。
 	// 这里提供一条人工通道：把跳水后打不开的那条 URL 原样提交，网关解析出 code 后
 	// 走与自动回调**完全相同**的兑换路径（凭据仍由网关侧换，用户不需要交出任何 token）。
@@ -3404,6 +3407,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			}
 		case provider.LobsterAI:
 			if err := loginlobsterai.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		case provider.TraeWork:
+			// 状态在文件（login-state.json）而非内存会话，故把路径传进去；
+			// 凭证解析/写入与自动回调同一条 state 通道，Poll 零分叉。
+			if err := logintrae.SubmitCallbackURL(a.loginStateFP, req.URL); err != nil {
 				apiError(w, http.StatusBadRequest, err.Error())
 				return
 			}
