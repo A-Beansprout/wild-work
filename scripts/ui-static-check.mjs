@@ -445,8 +445,11 @@ check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）
   !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
 // 合计行配色：资产紫/琥珀，锁住防漂移
 // 平台表动态列宽：JS 实测经 --plat-cols 应用（固定 px 遇大额数字会截断）
+check("表格剩余宽度由平台列吸收（minmax(实测,1fr)），末列既不吸收也不压缩",
+  /if \(i === 1\) return `minmax\(\$\{w \+ 2\}px, 1fr\)`/.test(raw) &&
+  !/max\.length - 1 \? "max-content"/.test(raw));
 check("平台表列宽动态化（--plat-cols 变量 + fitPlatCols 实测），静态兑底含 96px 精确小注位",
-  /#mtabStats \.st-plat-row \{\n  display: grid;[\s\S]*?grid-template-columns: var\(--plat-cols, 28px 150px 52px 100px 80px 96px 112px 84px 84px 1fr\)/.test(css) &&
+  /#mtabStats \.st-plat-row \{\n  display: grid;[\s\S]*?grid-template-columns: var\(--plat-cols, 28px minmax\(150px, 1fr\) 52px 100px 80px 96px 112px 84px 84px 84px\)/.test(css) &&
   raw.includes("function fitPlatCols") && raw.includes('style.setProperty("--plat-cols"') &&
   raw.includes("offsetParent") /* 隐藏时跳过 */ &&
   /b\.dataset\.mtab === "stats"[\s\S]{0,200}fitPlatCols\(\)/.test(raw) /* 切回时重测 */ &&

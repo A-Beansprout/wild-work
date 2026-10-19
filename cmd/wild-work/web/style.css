@@ -1121,7 +1121,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   /* 列宽：JS fitPlatCols 渲染后实测每列最宽内容，经容器变量 --plat-cols 覆盖
      （数字涨到千/万位列宽自动加宽）；括号内为静态兑底（首渲染/隐藏时），
      今日消耗 96px 容纳合计行「(精 xxx.xx)」小注 */
-  grid-template-columns: var(--plat-cols, 28px 150px 52px 100px 80px 96px 112px 84px 84px 1fr);
+  grid-template-columns: var(--plat-cols, 28px minmax(150px, 1fr) 52px 100px 80px 96px 112px 84px 84px 84px);
   font-size: 12px;
   white-space: nowrap;
   border-bottom: 1px solid rgba(23, 23, 23, 0.08);

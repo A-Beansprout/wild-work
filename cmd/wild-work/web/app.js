@@ -3942,11 +3942,15 @@ function fitPlatCols() {
     });
   });
   for (const [c, p, w] of cells) { c.style.position = p; c.style.width = w; }
-  // 首列(#)序号固定；末列(7日内到期)用 max-content：容器有富余时随 1fr 行为拉伸
-  // 不了就自然收在内容宽（1fr 在总宽超出时会被压到内容之下，末列内容被剪）；
-  // 其余取实测值+2px 余量。
-  const cols = max.map((w, i) =>
-    i === 0 ? "28px" : i === max.length - 1 ? "max-content" : (w + 2) + "px");
+  // 首列(#)固定 28px；平台列 minmax(实测, 1fr)——吸收表格剩余空白（徽章左对齐，
+  // 空白自然落在徽章右侧）；其余列固定为实测宽 +2px 余量。
+  // 末列不用 1fr：总宽超出时 1fr 会被压到内容之下把数字剪掉；
+  // 也不用 max-content：它不吸收空白，右侧会裸露一块「无主宽度」。
+  const cols = max.map((w, i) => {
+    if (i === 0) return "28px";
+    if (i === 1) return `minmax(${w + 2}px, 1fr)`;
+    return (w + 2) + "px";
+  });
   el.style.setProperty("--plat-cols", cols.join(" "));
 }
 
