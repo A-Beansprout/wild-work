@@ -1118,7 +1118,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat { margin-top: 8px; }
 #mtabStats .st-plat-row {
   display: grid;
-  grid-template-columns: 28px 150px 52px 100px 80px 80px 112px 84px 84px 1fr;
+  grid-template-columns: 28px 150px 52px 100px 80px 96px 112px 84px 84px 1fr; /* 今日消耗 96px：合计行带「(精 xxx.xx)」小注，80px 会截断 */
   font-size: 12px;
   white-space: nowrap;
   border-bottom: 1px solid rgba(23, 23, 23, 0.08);
@@ -1369,7 +1369,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-ab-sum.st-ab-err { color: #a16207; background: #fef9c3; border-color: #fde68a; }
 
 @media (max-width: 640px) {
-  #mtabStats .st-plat-row { grid-template-columns: 24px 96px 40px 76px 60px 60px 84px 64px 64px 1fr; font-size: 11px; }
+  #mtabStats .st-plat-row { grid-template-columns: 24px 96px 40px 76px 60px 76px 84px 64px 64px 1fr; font-size: 11px; } /* 同上：今日消耗 76px 容纳精确小注 */
   #mtabStats .st-ex-row { grid-template-columns: 24px 88px 120px 96px 88px 1fr; font-size: 11px; }
   #mtabStats .st-ab-row { grid-template-columns: 24px 64px 88px 110px 1fr 76px 64px; font-size: 11px; }
 }

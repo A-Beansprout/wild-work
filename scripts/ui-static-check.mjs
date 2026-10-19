@@ -444,6 +444,8 @@ check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）
   /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
   !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
 // 合计行配色：资产紫/琥珀，锁住防漂移
+check("平台表「今日消耗」列宽容纳合计行精确小注（96px，80px 会截成 78(精 64…）",
+  /#mtabStats \.st-plat-row \{\n  display: grid;\n  grid-template-columns: 28px 150px 52px 100px 80px 96px/.test(css));
 check("合计行当前积分=资产紫、Token=琥珀（与汇总条同色系）",
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-credits \{ color: #7c3aed/.test(css) &&
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-tokens \{ color: var\(--warn\)/.test(css));
