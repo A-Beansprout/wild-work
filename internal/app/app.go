@@ -909,13 +909,18 @@ func (a *App) needsPollFor(kind string) bool {
 // 判据（不是所有渠道都需要）：portal 侧只能把浏览器跳回 `http://127.0.0.1:<port>/…`
 // 的，才是「浏览器必须与网关同机」——
 //   - CodeArts：授权页只接受 `port` 参数，跳转目标由 portal 写死（见 internal/login_codearts）；
-//   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）。
+//   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）；
+//   - TraeWork：回调写死 `http://127.0.0.1:<随机端口>/authorize`，且监听只有 5 分钟寿命，
+//     局域网/超时场景下凭证都到不了网关（见 internal/login_trae，issue #98）；
+//   - QwenWork：PKCE(Hydra) 回环回调（`/callback`），redirect_uri 白名单制不可改（R104 前置）；
+//   - Gemini：installed-app 政策限 redirect host 为 localhost（不可改，见 internal/login_gemini）。
 //
 // 其余渠道的回调**不是**这种形状：有的由网关侧轮询/捕获（glm、小浣熊、OfficeAce），
-// 有的是本机引导页（Loomy），不接受也不知道怎么消费用户粘回来的 URL，故一律为 false。
+// 有的是本机引导页（Loomy），有的是纯服务端轮询无回调环节（workbuddy/qoder/zcode/minimax 系），
+// 不接受也不知道怎么消费用户粘回来的 URL，故一律为 false。
 func manualCallbackKind(kind provider.Kind) bool {
 	switch kind {
-	case provider.CodeArts, provider.LobsterAI:
+	case provider.CodeArts, provider.LobsterAI, provider.TraeWork, provider.QwenWork, provider.Gemini:
 		return true
 	}
 	return false
@@ -1082,15 +1087,25 @@ func (a *App) pollLogin(ctx context.Context) {
 			return
 		}
 		done, unfinished, perr := flow.Poll(a.loginClient, a.loginStateFP)
-		if perr == nil {
+		// 分派契约（loginFlow.Poll / wrapPoll 的三态，2026-10-18 9f8f4a95 回归教训）：
+		//   pending  → (nil, true, nil)：继续轮询。**不得**调 done —— 该回归曾写成
+		//              `if perr == nil` 就调 done(a)，而 pending 的 done 恒为 nil，
+		//              首个 tick（2s）必 nil 闭包 panic；panic 被 recover 吞掉后
+		//              finishLogin 清 busy，表现是「所有轮询渠道发起登录 2 秒后静默死亡，
+		//              面板无任何响应」。
+		//   成功     → (done, false, nil)：落账号收尾。
+		//   终态错误 → (nil, false, err)：立即结束轮询（继续只会重复报同一个错）。
+		switch {
+		case unfinished:
+			// 还没完成：下一跳再看。
+		case perr == nil:
 			if err := done(a); err != nil {
 				a.setLoginError("登录失败：" + err.Error())
 			}
 			return
-		}
-		if !unfinished {
+		default:
 			// 终态错误（下发验证码失败 / 引导页起不来 / 未捕获到账号 / 换取令牌失败）：
-			// 立即结束轮询，由 defer 释放资源；继续轮询只会重复报同一个错。
+			// 立即结束轮询，由 defer 释放资源。
 			log.Printf("%s login poll failed: %v", a.loginKind, perr)
 			a.setLoginError("登录失败：" + perr.Error())
 			return
@@ -3364,9 +3379,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	// 手动提交授权回调地址（回环回调渠道的远程/局域网兜底）。
 	//
-	// 背景：CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
+	// 背景：回环回调五渠道的回调地址都写死 127.0.0.1/localhost——
+	// CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
 	// LobsterAI 的 portal 按 `redirect_uri` 原样跳回 `http://127.0.0.1:<port>/auth/callback`，
-	// 两者都只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
+	// TraeWork 的回调写死 `http://127.0.0.1:<随机端口>/authorize`（且监听只有 5 分钟寿命），
+	// QwenWork 的 redirect_uri 白名单制不可改（`/callback`），
+	// Gemini 的 installed-app 政策限 redirect host 为 localhost（`/oauth-callback`）。
+	// 五者都只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
 	// 浏览器跳到的是**用户自己机器**的 127.0.0.1（连接被拒），流程只能等到超时。
 	// 这里提供一条人工通道：把跳水后打不开的那条 URL 原样提交，网关解析出 code 后
 	// 走与自动回调**完全相同**的兑换路径（凭据仍由网关侧换，用户不需要交出任何 token）。
@@ -3397,6 +3416,25 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			}
 		case provider.LobsterAI:
 			if err := loginlobsterai.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		case provider.TraeWork:
+			// 状态在文件（login-state.json）而非内存会话，故把路径传进去；
+			// 凭证解析/写入与自动回调同一条 state 通道，Poll 零分叉。
+			if err := logintrae.SubmitCallbackURL(a.loginStateFP, req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		case provider.QwenWork:
+			// 内存 pending 通道（与自动回调同一条，见 internal/login_qwenwork SubmitCallbackURL）。
+			if err := loginqwenwork.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		case provider.Gemini:
+			// 内存 session 通道（state 逐字比对，见 internal/login_gemini SubmitCallbackURL）。
+			if err := logingemini.SubmitCallbackURL(req.URL); err != nil {
 				apiError(w, http.StatusBadRequest, err.Error())
 				return
 			}

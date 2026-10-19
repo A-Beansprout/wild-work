@@ -2805,6 +2805,32 @@ host 无法传入 ⇒ 隐含「浏览器必须与网关同机」这一**未写�
 - 收起时若正筛选着某个「不适用」渠道，会自动清筛选 —— 否则网格空白、连「全部」按钮都一起消失；
 - 全部卡片都被收起时给出可执行提示，不会留一片空白让人以为账号丢了。
 
+## 🔑 登录全坏修复 + 回环回调渠道统一粘贴兜底（R99 / issue #98 / #167 / #168）
+
+**「添加账号」全面修复**（本轮最重的一组，三个独立问题一并收掉）：
+
+1. **登录发起 2 秒必静默死亡**（issue #168、#167 附带项）：v2.9.2 把 14 个渠道的登录轮询收进
+   `loginFlows` 表时，`pollLogin` 只判 `perr == nil` 就调用 `done`，而 pending 态返回 `(nil, true, nil)`
+   ——首个轮询 tick 必调 nil 函数 panic，被 recover 吞掉后 `login_busy` 复位，面板假报「登录完成」。
+   修复：三态分派补 `case unfinished: continue`（PR #169，外部 PR #171 同根因同修法已主动撤回，
+   其生产 A/B 数据佐证了本修复）。**影响所有轮询类渠道**（workbuddy / qodercn / qwenwork / lobsterai /
+   zcode / minimax / codearts / gemini / loomy / raccoon …）。
+2. **TraeWork 添加账号失败**（issue #98）：回调写死 `127.0.0.1:<随机端口>` + 监听仅 5 分钟寿命，
+   从局域网/远程面板登录时回调打在用户自己机器上。修复：登录弹窗新增「粘贴回调地址」兜底
+   （PR #170）——浏览器报打不开没关系，地址栏里就是完整回调地址，原样粘回面板即可，
+   走与自动回调完全相同的兑换路径。
+3. **粘贴兜底统一扩到五渠道**（R104）：凡「回调写死回环地址」的渠道都必须有异地取码入口。
+   `manualCallbackKind` 白名单单一来源扩到 **traework / codearts / lobsterai / qwenwork / gemini**
+   五渠道（后两者本轮补齐 `SubmitCallbackURL`）。同时记录一条评估教训：曾完整实现过 CDP
+   浏览器化捕获后回滚——它只解决「人在网关机前」，对 dashboard 远程 + 网关机无人值守的
+   主流部署无解；**跨机方案动手前必须先确认「人在哪台机器前」**。
+4. **Gemini 登录报 403 restricted_client**（issue #167 第一堵墙）：授权请求携带的 `cclog` /
+   `experimentsandconfigs` 是 Cloud Code 内部 scope，旧 CLI 公开 client 未登记，请求即 403。
+   已剔除（端点鉴权只认 access_token，运行时行为不变）。**已知边界**：Google 已按 client_id +
+   账号类型停用旧 OAuth client 对个人版 Code Assist 的授权（错误文案 "This client is no longer
+   supported..."），这属上游政策变更、代码侧无解；登录错误文案已附可行动引导直说这一事实。
+   个人号走 Antigravity 通道的支持在 2.10 线规划（`#167` 取证充分：agy 全链路可通）。
+
 ## ✅ 验证
 
 - `node scripts/ui-static-check.mjs` 全部通过（新增场景 1.7 共 13 条断言）；
@@ -2812,12 +2838,7 @@ host 无法传入 ⇒ 隐含「浏览器必须与网关同机」这一**未写�
   收起时只重渲染汇总条 / 收起时不清筛选；
 - 测试 stub 补上 `classList.toggle`（原先缺失会让整份检查直接崩溃，而非断言失败）。
 
-
----
-
-# wild-work v2.9.5
-
-## 到期三列改按「精确时刻 + 自然日」判定（R103）
+## 到期三列改按「精确时刻 + 自然日」判定（R105）
 
 之前「今日到期 / 明日到期 / 7 日内到期」三列把到期时刻**截成日期**再比字符串，
 导致上游每日类额度的真实形态（次日 00:00 失效）被算进「明日到期」——
@@ -2858,7 +2879,8 @@ loomy 上游没有到期字段，`ExpireAt` 保持**留空**（不伪造），�
 
 - **到期时刻显示完整「YYYY-MM-DD HH:MM:SS」**，不再被截断。原先 100px 列宽
   只能显示到 `2026-10-20T00:00`，秒与时区后缀被 ellipsis 吃掉；秒级信息
-  恰恰是判断「今晚几点没」的关键。列宽放宽到 142px 并关掉该列的省略号。
+  恰恰是判断「今晚几点没」的关键。列宽按**实测内容宽**定为 182px（该串在
+  11.5px 系统字体下宽 160.4px，加内边距 180.4px），并关掉该列的省略号。
   纯日期粒度（少数渠道）补成「该日 23:59:59」——它的语义是「全天可用」。
 - **预计作废**：`forecast < 0`（观测不足、无法外推）按「全部额度作废」处理。
   此前 `forecast >= 0 && forecast < 额度` 才算风险，把「今天完全没消耗、
@@ -2875,6 +2897,8 @@ loomy 上游没有到期字段，`ExpireAt` 保持**留空**（不伪造），�
 - 新增 `TestExpireBucketOf`（19 例边界：次日 00:00:00 / 00:00:03 / 00:04:59 /
   00:05:00 / 第 7 天 / 第 8 天）、`TestExpireWithinDays`、
   `TestExpiringWithinDaysSum`、`TestExpireBucketsByInstant`、`TestExpiryRowsHoursLeft`；
+- `TestExpiryRiskWhenNoBurn`（闲置号也预警）、`TestExpiryRowsFullInstant`（秒级精度）、
+  `TestExpiryUrgency`（今天红/明天黄/5.7 天后不上色，且与 risk 解耦）；
 - 变异验证 7 处全部确认变红：零点宽限改 0 / 宽限放大到 24h /
   7 日内并入明日 / 阈值退回时长口径 / 只取首个条目 / 7 日内漏加今日明日 /
   临期列表按日期串排序。
