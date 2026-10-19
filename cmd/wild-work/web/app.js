@@ -3449,10 +3449,7 @@ function renderUsageCacheCard(t) {
   el.title = `命中 ${fmtTokensFull(t.cr)} / 上报请求 prompt ${fmtTokensFull(cov)}（${t.cr_reqs || 0} 次上报请求）；未上报的渠道不计入分母`;
 }
 
-const CH_NAMES = {
-  workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork",
-  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts",
-};
+const CH_NAMES = CH_LABEL;
 
 async function loadUsage() {
   try {
@@ -3562,9 +3559,8 @@ function renderUsageChart(st) {
   //     于是图上恒有一条贴 X 轴的长线（用户实测：底部总有一条线）。
   //   · 画成 null ⇒ 该时刻不产生点，曲线只覆盖真正有量的时段（中间自然断开）。
   // 语义上也更准确：0 在这里表示"没观测到用量"，不是"观测到用量为 0"。
-  // connectNulls 必须为 false（默认值）：否则 null 会被跨过连成一条假线。
   const series = active.map((ch) => ({
-    name: CH_NAMES[ch] || ch, type: "line", smooth: true,
+    name: chLabel(ch), type: "line", smooth: true,
     itemStyle: { color: chColor(ch) }, lineStyle: { color: chColor(ch) },
     connectNulls: false,
     data: byDay.map((d) => { const v = d.by_channel[ch]; return v > 0 ? v : null; }),

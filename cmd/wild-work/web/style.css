@@ -15,31 +15,29 @@
 
   /* —— 渠道识别色：徽章 / 费率表头 / 按钮 / 折线图 series 四处共用同一变量，改这里一处全局生效 ——
      变量名 = CH_CLASS 短类名（app.js chColor() 按 --ch-<类名> 读取）；
-     色板按色相环拉开间距保证同图互辨。 */
-  --ch-wb: #2563eb;          /* WorkBuddyCN 蓝（与主色一致） */
-  --ch-wbai: #0d9488;        /* WorkBuddyAI 青绿 */
-  --ch-trae: #d97706;        /* TraeWork 琥珀 */
-  --ch-traecode: #6d28d9;    /* TraeCode 深紫（与浅紫小浣熊靠明度区分） */
-  --ch-qoder: #db2777;       /* 桃红 */
-  --ch-qodercn: #c026d3;     /* 品红（Qoder 家族相邻色相） */
-  --ch-qodercom: #92400e;    /* 深棕 */
-  --ch-qwenwork: #0891b2;    /* 青蓝 */
-  --ch-glm: #15156f;         /* 深靛蓝 */
-  --ch-monkeycode: #65a30d;  /* 草绿 */
-  --ch-raccoon: #8e6bf2;     /* 浅紫（客户端品牌色） */
-  --ch-loomy: #a06103;       /* 琥珀橙（与 TraeWork 琥珀靠明度区分） */
-  --ch-officeace: #cf0a2c;   /* 红（华为红） */
-  --ch-oczen: #475569;       /* 石板灰 */
-  --ch-cline: #15803d;       /* 深绿 */
-  --ch-custom: #6366f1;      /* 自定义渠道兜底色（实际走哈希色，见 chColor） */
-  /* 以下 6 个渠道此前只在 .badge.x 里写死 hex、没有变量，导致折线图
-     chColor() 读不到而全部回退 --ch-custom（R99）。此处补齐，徽章与折线同源。 */
-  --ch-kilo: #1c695d;        /* Kilo 墨青 */
-  --ch-minimax: #76660f;     /* MiniMax 橄榄金（原紫与 TraeCode 撞色，2026-10 调整） */
-  --ch-lobsterai: #036882;   /* LobsterAI 深青蓝（原橙与 Loomy 撞色） */
-  --ch-zcode: #691c37;       /* ZCode 酒红（原青蓝与 QwenWork 撞色） */
-  --ch-gemini: #88117c;      /* Gemini 品紫（原蓝与 WorkBuddyCN 撞色） */
-  --ch-codearts: #82030f;    /* CodeArts 深红（原玫红与 Qoder 撞色） */
+     调色原则：① 贴合各大品牌官方标志色；② 色相环拉开距离消除重叠；③ 告别脏暗色，通透明朗。 */
+  --ch-wb: #2563eb;          /* WorkBuddyCN 蓝（经典科技蓝） */
+  --ch-wbai: #0f766e;        /* WorkBuddyAI 极光青绿（深邃清爽，与科技蓝呼应） */
+  --ch-trae: #047857;        /* TraeWork 智能翠绿（Trae 官方核心色 Intelligent Green） */
+  --ch-traecode: #0284c7;    /* TraeCode 电光海青（Trae 2.0 渐变海天青，彻底摆脱旧深紫，与 sgproxy 彻底拉开） */
+  --ch-qoder: #db2777;       /* Qoder 腾讯桃红 */
+  --ch-qodercn: #c026d3;     /* QoderCN 极光品红 */
+  --ch-qodercom: #7e22ce;    /* QoderCOM 紫罗兰（告别旧深棕） */
+  --ch-qwenwork: #4f46e5;    /* 千问办公 通义紫（阿里通义千问官方极光紫，告别暗青蓝） */
+  --ch-glm: #1e3a8a;         /* 智谱清言 深海宝蓝（智谱官方科技深蓝，告别黑夜般的深暗） */
+  --ch-monkeycode: #4d7c0f;  /* MonkeyCode 生机草绿 */
+  --ch-raccoon: #8e6bf2;     /* 小浣熊 浅紫罗兰（商汤小浣熊客户端品牌色） */
+  --ch-loomy: #b45309;       /* Loomy 暖金琥珀 */
+  --ch-officeace: #dc2626;   /* OfficeAce 华为中国红 */
+  --ch-oczen: #475569;       /* OpenCodeZen 禅意石板灰 */
+  --ch-cline: #15803d;       /* Cline 机器人深绿 */
+  --ch-custom: #6366f1;      /* 自定义渠道兜底色（走黄金角自适应色，见 chColor） */
+  --ch-kilo: #164e63;        /* Kilo 深冷松蓝 */
+  --ch-minimax: #c2410c;     /* MiniMax 活力暖橙（海螺 AI 官方品牌橙，告别橄榄屎黄） */
+  --ch-lobsterai: #e11d48;   /* LobsterAI 龙虾珊瑚红 */
+  --ch-zcode: #581c87;       /* ZCode 极客深紫檀 */
+  --ch-gemini: #88117c;      /* Gemini 官方星云品紫 */
+  --ch-codearts: #991b1b;    /* CodeArts 华为云深绯红 */
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
