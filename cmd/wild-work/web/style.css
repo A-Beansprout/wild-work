@@ -24,22 +24,22 @@
   --ch-qodercn: #c026d3;     /* 品红（Qoder 家族相邻色相） */
   --ch-qodercom: #92400e;    /* 深棕 */
   --ch-qwenwork: #0891b2;    /* 青蓝 */
-  --ch-glm: #3730a3;         /* 深靛蓝（与 WorkBuddyCN 蓝拉开明度差） */
+  --ch-glm: #15156f;         /* 深靛蓝 */
   --ch-monkeycode: #65a30d;  /* 草绿 */
   --ch-raccoon: #8e6bf2;     /* 浅紫（客户端品牌色） */
-  --ch-loomy: #ea580c;       /* 橙 */
+  --ch-loomy: #a06103;       /* 琥珀橙（与 TraeWork 琥珀靠明度区分） */
   --ch-officeace: #cf0a2c;   /* 红（华为红） */
   --ch-oczen: #475569;       /* 石板灰 */
   --ch-cline: #15803d;       /* 深绿 */
   --ch-custom: #6366f1;      /* 自定义渠道兜底色（实际走哈希色，见 chColor） */
   /* 以下 6 个渠道此前只在 .badge.x 里写死 hex、没有变量，导致折线图
      chColor() 读不到而全部回退 --ch-custom（R99）。此处补齐，徽章与折线同源。 */
-  --ch-kilo: #0f766e;        /* Kilo 深青 */
-  --ch-minimax: #7c3aed;     /* MiniMax 紫 */
-  --ch-lobsterai: #ea580c;   /* LobsterAI 橙 */
-  --ch-zcode: #0891b2;       /* ZCode 青蓝 */
-  --ch-gemini: #2563eb;      /* Gemini 蓝 */
-  --ch-codearts: #db2777;    /* CodeArts 玫红 */
+  --ch-kilo: #1c695d;        /* Kilo 墨青 */
+  --ch-minimax: #76660f;     /* MiniMax 橄榄金（原紫与 TraeCode 撞色，2026-10 调整） */
+  --ch-lobsterai: #036882;   /* LobsterAI 深青蓝（原橙与 Loomy 撞色） */
+  --ch-zcode: #691c37;       /* ZCode 酒红（原青蓝与 QwenWork 撞色） */
+  --ch-gemini: #88117c;      /* Gemini 品紫（原蓝与 WorkBuddyCN 撞色） */
+  --ch-codearts: #82030f;    /* CodeArts 深红（原玫红与 Qoder 撞色） */
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

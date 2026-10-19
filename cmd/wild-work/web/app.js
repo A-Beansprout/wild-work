@@ -716,9 +716,39 @@ const chClass = (k) => CH_CLASS[k] || "custom";
 // ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
 // 自定义渠道无品牌色，多个自定义渠道若共用 --ch-custom 会完全撞色；
 // 按渠道名稳定哈希从高区分度色板取色（刷新/重启不变，图表间一致）。
-// 自定义渠道专用色板（5 色）：不绑定品牌，只要求与全部内建渠道色、
-// 以及彼此之间 ΔE2000 ≥15，保证图上一眼能分开。白字对比度全部 ≥4.5。
-const CUSTOM_PALETTE = ["#687817", "#721d3f", "#781717", "#79277c", "#896606"];
+// 自定义渠道配色：按「在 state.custom_channels 里的序号」用黄金角均分色相，
+// 不再用哈希取模——固定长度色池（原 10 色、后改 5 色）在自定义渠道超过池长时
+// 必然撞色，且哈希取模可能让少量渠道就落在同一桶。黄金角（137.508°）保证任意
+// 数量下相邻序号色相间隔最大；明度从 42% 往下压到白字对比 ≥4.5（黄/绿色相
+// 天然更亮，需压更多），所以 5 个自定义渠道各自颜色固定且与内建色板错开。
+const CUSTOM_GOLDEN_ANGLE = 137.508;
+const _customColorCache = {};
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const to = (n) => Math.round(f(n) * 255).toString(16).padStart(2, "0");
+  return `#${to(0)}${to(8)}${to(4)}`;
+}
+function relLuminance(hex) {
+  const v = [1, 3, 5].map((i) => parseInt(hex.substr(i, 2), 16) / 255)
+    .map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+  return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+}
+function customChannelColor(k) {
+  if (_customColorCache[k]) return _customColorCache[k];
+  const list = (state && state.custom_channels) || [];
+  const idx = Math.max(0, list.findIndex((c) => c && c.name === k));
+  const hue = (idx * CUSTOM_GOLDEN_ANGLE) % 360;
+  // 明度从 42% 逐级下压，直到白字对比 ≥4.5（黄/绿最亮，要压到 28% 左右）
+  let hex = hslToHex(hue, 78, 42);
+  for (let l = 42; l >= 22; l--) {
+    hex = hslToHex(hue, 78, l);
+    if (1.05 / (relLuminance(hex) + 0.05) >= 4.5) break;
+  }
+  return (_customColorCache[k] = hex);
+}
 function stableHash(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -726,7 +756,7 @@ function stableHash(s) {
 }
 const _chColorCache = {};
 function chColor(k) {
-  if (isCustomGroup(k)) return CUSTOM_PALETTE[stableHash(k) % CUSTOM_PALETTE.length];
+  if (isCustomGroup(k)) return customChannelColor(k);
   const cls = CH_CLASS[k] || "custom";
   if (_chColorCache[cls]) return _chColorCache[cls];
   let v = "";

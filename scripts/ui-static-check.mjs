@@ -1333,6 +1333,59 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 渠道配色单一来源（R99）----
+// 背景：折线图 chColor() 读 --ch-<类名> 变量取色，但 Kilo/MiniMax/LobsterAI/
+// ZCode/Gemini/CodeArts 六个渠道只在 .badge.x 里写死 hex、没有对应变量，
+// chColor() 读不到就全部回退 --ch-custom，图上这 6 条线同色且与列表徽章对不上。
+// 这里锁住三件事：① 每个渠道都有 --ch-* 变量且徽章走变量；② 徽章统一经
+// chBadge() 取色（与折线同源）；③ 自定义渠道色按黄金角均分、数量再多也不撞色。
+{
+  const needPal = [];
+  const checkPal = (name, pass, extra = "") => needPal.push([name, pass, extra]);
+  const CH = ["wb","wbai","trae","traecode","qoder","qodercn","qodercom","qwenwork",
+    "glm","monkeycode","raccoon","loomy","officeace","oczen","cline","kilo",
+    "minimax","lobsterai","zcode","gemini","codearts"];
+
+  checkPal("21 个内建渠道都有 --ch-* 颜色变量",
+    CH.every((c) => new RegExp(`--ch-${c}:\\s*#[0-9a-fA-F]{6}`).test(css)));
+
+  checkPal(".badge.x 全部走 var(--ch-x)，CSS 里不再硬编码渠道色",
+    CH.every((c) => new RegExp(`\\.badge\\.${c}\\s*\\{\\s*background:\\s*var\\(--ch-${c}\\);`).test(css)));
+
+  checkPal("徽章统一经 chBadge() 渲染（底色 = chColor()，与折线同源）",
+    raw.includes("function chBadge(k, extra)") &&
+    raw.includes("style=\"background:${chColor(k)}\"") &&
+    !raw.includes('class="badge ${chClass('));
+
+  checkPal("自定义渠道色按序号黄金角均分，不用固定色池取模",
+    raw.includes("const CUSTOM_GOLDEN_ANGLE = 137.508") &&
+    raw.includes("customChannelColor(k)") &&
+    !raw.includes("CUSTOM_PALETTE["));
+
+  checkPal("自定义渠道色白字对比度自动达标（黄/绿色相压暗到 ≥4.5）",
+    raw.includes("for (let l = 42; l >= 22; l--)") &&
+    raw.includes("1.05 / (relLuminance(hex) + 0.05) >= 4.5"));
+
+  // 内建 21 色两两可辨：完全同色会导致图上两条线重叠（原 zcode/qwenwork、
+  // gemini/wb、codearts/qoder、lobsterai/loomy 四对完全相同）
+  const hexOf = {};
+  for (const c of CH) {
+    const m = css.match(new RegExp(`--ch-${c}:\\s*(#[0-9a-fA-F]{6})`));
+    if (m) hexOf[c] = m[1].toLowerCase();
+  }
+  const dup = [];
+  const names = Object.keys(hexOf);
+  for (let i = 0; i < names.length; i++)
+    for (let j = i + 1; j < names.length; j++)
+      if (hexOf[names[i]] === hexOf[names[j]]) dup.push(`${names[i]}=${names[j]}`);
+  checkPal("21 个内建渠道色两两不同（无完全同色）", dup.length === 0, dup.join(", "));
+
+  for (const [label, pass, extra] of needPal) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
+    if (!pass) failed++;
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 
