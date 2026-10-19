@@ -3923,29 +3923,30 @@ function fitPlatCols() {
   const el = $("stPlat");
   const rows = [...el.querySelectorAll(".st-plat-row")];
   if (!rows.length || !rows[0].offsetParent) return;
-  // cell 有 overflow:hidden，直接读 scrollWidth 会被当前列宽钳住（量出列宽自身，
-  // 越宽越量不出需求，死循环自洽）。测量前临时放开钳制再读，读完恢复。
-  const wasHidden = [];
+  // 测量「内容需要的宽度」：cell 是 overflow:hidden 的 flex 容器，scrollWidth 被
+  // 当前列宽钳住（列宽 96px 永远量出 96px，死循环自洽）。改成临时把所有 cell
+  // position:absolute + width:max-content：脱离 grid 流按内容自适应撑开，
+  // offsetWidth 即真实需求；一次性进入测量态、统一读、再统一还原（避免逐 cell 反复重排）。
+  const cells = [];
   for (const r of rows) {
     for (const c of r.children) {
-      wasHidden.push([c, c.style.overflow]);
-      c.style.overflow = "visible";
+      cells.push([c, c.style.position, c.style.width]);
+      c.style.position = "absolute";
+      c.style.width = "max-content";
     }
   }
   const max = [];
-  for (const r of rows) {
+  rows.forEach((r) => {
     [...r.children].forEach((c, i) => {
-      // flex cell 里嵌 span 的（合计行精确小注），子项也会随宽度收缩，
-      // 量子项需求之和 + padding 更准；无子项重排后直接读 scrollWidth。
-      let w = c.scrollWidth;
-      for (const k of c.children) w = Math.max(w, k.scrollWidth + c.scrollWidth);
-      max[i] = Math.max(max[i] || 0, w);
+      max[i] = Math.max(max[i] || 0, c.offsetWidth);
     });
-  }
-  for (const [c, o] of wasHidden) c.style.overflow = o;
-  // 首列(#)序号窄、末列(7日内到期)弹性吸收剩余；其余取实测值+2px 余量
+  });
+  for (const [c, p, w] of cells) { c.style.position = p; c.style.width = w; }
+  // 首列(#)序号固定；末列(7日内到期)用 max-content：容器有富余时随 1fr 行为拉伸
+  // 不了就自然收在内容宽（1fr 在总宽超出时会被压到内容之下，末列内容被剪）；
+  // 其余取实测值+2px 余量。
   const cols = max.map((w, i) =>
-    i === 0 ? "28px" : i === max.length - 1 ? "1fr" : (w + 2) + "px");
+    i === 0 ? "28px" : i === max.length - 1 ? "max-content" : (w + 2) + "px");
   el.style.setProperty("--plat-cols", cols.join(" "));
 }
 
