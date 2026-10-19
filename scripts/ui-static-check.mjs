@@ -456,9 +456,15 @@ const FAKE_STATS = {
   // 精确小时数。若接成 days_left，会渲染成「今日到期」而看不出还剩 5.7 小时。
   // 两行：① 能外推（forecast=45，预计作废 55）；② **无法外推**（forecast=-1，
   // 今日没消耗）——后者必须按「全部额度作废」显示，不能出「预计作废 -1分」反数。
+  // 三行覆盖三档配色（urgency）：
+  //   ① today → 红；② tomorrow → 黄；③ later → 不上色。
+  // 注意 ③ 的 risk 故意给 true：颜色必须跟 urgency 走，不跟 risk 走——
+  // 此前用 risk 上色导致 7 天内的行全红（135h 后到期的也红，用户实测反馈）。
   expiry: [
-    { uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, burn_forecast: 45, risk: true },
-    { uid: "4298452267967802", nickname: "闲置号", group: "qwenwork", expire_at: "2026-10-21T00:00:03+08:00", hours_left: 4.7, days_left: 0, amount: 100, today_out: 0, burn_forecast: -1, risk: true },
+    { uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, burn_forecast: 45, risk: true, urgency: "today" },
+    { uid: "4298452267967802", nickname: "闲置号", group: "qwenwork", expire_at: "2026-10-20T08:45:21+08:00", hours_left: 4.7, days_left: 0, amount: 100, today_out: 0, burn_forecast: -1, risk: true, urgency: "today" },
+    { uid: "4298452267967803", nickname: "明日号", group: "traework", expire_at: "2026-10-21T09:32:32+08:00", hours_left: 19.5, days_left: 1, amount: 115, today_out: 10, burn_forecast: 400, risk: false, urgency: "tomorrow" },
+    { uid: "4298452267967804", nickname: "远期号", group: "workbuddyai", expire_at: "2026-10-25T12:06:19+08:00", hours_left: 135.7, days_left: 5, amount: 249, today_out: 0, burn_forecast: -1, risk: true, urgency: "later" },
   ],
   rotation: [{
     group: "traework",
@@ -511,7 +517,22 @@ check("接棒顺序渲染使用中账号", stRotation.includes("使用中 <b>中
 check("接棒顺序含 ① 候补", stRotation.includes("① 健康号"));
 
 const stExpiry = document.getElementById("stExpiry").innerHTML;
-check("临期风险行高亮（st-risk）", stExpiry.includes("st-ex-row st-risk"));
+// 配色按紧迫度分档（2026-10-19 用户定义）：今天红、明天黄、更远不上色。
+// 关键：远期号 risk=true 但 urgency=later，必须**不上色**——若前端拿 risk 上色会变红。
+check("临期配色：今天到期标红（st-risk）", /st-ex-row st-risk[^>]*>[\s\S]*?健康号/.test(stExpiry));
+check("临期配色：明天到期标黄（st-warn）", /st-ex-row st-warn[^>]*>[\s\S]*?明日号/.test(stExpiry));
+// 远期号 risk=true（按今日速度花不完）但 urgency=later：必须不上色。
+// 这条专门锁「颜色跟 urgency 走、不跟 risk 走」——若退回按 risk 上色，
+// 远期号会变红，这条立刻红。
+check("临期配色：5.7 天后到期不上色（即使 risk=true）",
+  (() => {
+    // 按行切分后逐行找，不能用 [\s\S]*? 跨行匹配（会串到下一行）
+    const rows = stExpiry.split('<div class="st-ex-row').slice(1);
+    const far = rows.find((r) => r.includes("远期号"));
+    if (!far) return false;
+    const cls = (far.match(/^([^"]*)"/) || [])[1] || "";
+    return cls.trim() === "";
+  })());
 // R103：剩余列优先用精确小时（hours_left=5.7）而非自然日差（days_left=0）。
 // 若接成 days_left 会渲染「今日到期」，就看不出「只剩 5.7 小时」。
 check("临期剩余时长用精确小时（5.7 小时后，非 days_left 文案）",

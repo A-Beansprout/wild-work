@@ -4145,7 +4145,13 @@ function renderExpiry(ex) {
     const burn = r.risk
       ? ` · 预计作废 ${fmtCredits(r.burn_forecast < 0 ? r.amount : r.amount - r.burn_forecast)}分`
       : "";
-    html += `<div class="st-ex-row${r.risk ? " st-risk" : ""}">` +
+    // 配色按**紧迫度**（后端 urgency），不按 risk：
+    //   今天到期 → 红（st-risk）；明天到期 → 黄（st-warn）；更远 → 不上色。
+    // 此前用 risk 上色，7 天内的行全飘红（135 小时后到期的也红），一片警示等于没有警示。
+    // 「预计作废」文字仍只跟 risk 走：那是数据结论，与颜色分档独立。
+    const urg = r.urgency === "today" ? " st-risk"
+      : (r.urgency === "tomorrow" ? " st-warn" : "");
+    html += `<div class="st-ex-row${urg}">` +
       `<span class="st-ex-tag">${i + 1}</span>` +
       `<span class="st-ex-plat-slot">${chBadge(r.group)}</span>` +
       `<span class="st-ex-name" title="${esc(r.uid)}">${esc(r.nickname || r.uid)}</span>` +

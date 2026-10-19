@@ -484,3 +484,47 @@ func TestExpiryRowsFullInstant(t *testing.T) {
 		t.Errorf("ExpireAt 必须原样保留秒级精度，实际 %q", rows[0].ExpireAt)
 	}
 }
+
+// TestExpiryUrgency 守门「配色按紧迫度分档」而不是按 risk（会不会作废）。
+//
+// 用户实测（2026-10-19）：最近临期 16 行里一堆标红，连 135.7 小时后（5.7 天）
+// 到期的也红。原因是前端拿 risk 上色，而 risk = 7 自然日内到期 且 可能花不完，
+// 于是「7 天内的」全部飘红——一片警示等于没有警示。
+// 用户定义：**今天到期标红、明天到期标黄、更远不上色**。
+func TestExpiryUrgency(t *testing.T) {
+	s := newTestStats(t)
+	base := time.Date(2026, 10, 19, 14, 0, 0, 0, time.Local)
+	s.ApplyPoll([]Account{
+		{UID: "today", Group: "qwenwork", Credits: 100},
+		{UID: "tomorrow", Group: "traework", Credits: 100},
+		{UID: "far", Group: "workbuddyai", Credits: 100},
+	}, base)
+	// 今晚 00:00（次日零点归今日）→ today
+	s.ApplyExpiry("today", []ExpireItem{{At: "2026-10-20T00:00:00+08:00", Amount: 100}})
+	// 明日 08:45 → tomorrow
+	s.ApplyExpiry("tomorrow", []ExpireItem{{At: "2026-10-20T08:45:21+08:00", Amount: 100}})
+	// 5.7 天后（135.7h）→ later（正是用户截图里被误标红的那类）
+	s.ApplyExpiry("far", []ExpireItem{{At: "2026-10-25T12:06:19+08:00", Amount: 100}})
+
+	byUID := map[string]ExpiryRow{}
+	for _, r := range s.Snapshot(base).Expiry {
+		byUID[r.UID] = r
+	}
+	if got := byUID["today"].Urgency; got != UrgencyToday {
+		t.Errorf("今晚 00:00 失效应为 today，实际 %q", got)
+	}
+	if got := byUID["tomorrow"].Urgency; got != UrgencyTomorrow {
+		t.Errorf("明日 08:45 应为 tomorrow，实际 %q", got)
+	}
+	if got := byUID["far"].Urgency; got != UrgencyLater {
+		t.Errorf("5.7 天后应为 later（不该标红），实际 %q", got)
+	}
+	// 关键：far 可能仍然 risk=true（按今日速度花不完），但那只是「预计作废」的数据结论，
+	// 颜色必须跟 urgency 走。两者必须解耦。
+	if !byUID["far"].Risk {
+		t.Log("far 的 risk=false（观测不足时本应为 true），此处不强制")
+	}
+	if byUID["far"].Urgency == UrgencyToday || byUID["far"].Urgency == UrgencyTomorrow {
+		t.Errorf("5.7 天后到期的行不能被归入今天/明天档：%+v", byUID["far"])
+	}
+}

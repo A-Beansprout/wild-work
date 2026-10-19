@@ -118,8 +118,27 @@ type ExpiryRow struct {
 	Amount       int64   `json:"amount"`     // 该到期日各包剩余合计
 	TodayOut     int64   `json:"today_out"`
 	BurnForecast int64   `json:"burn_forecast"`
-	Risk         bool    `json:"risk"`
+	// Risk 按今日速度外推「可能花不完」（数据维度：会不会作废）。
+	// Urgency 按紧迫度分档（视觉维度：标什么颜色），见 UrgencyToday 常量。
+	// 两者独立：今天到期的包就算花得完也该标红（时间上已经来不及），
+	// 而 5 天后的包哪怕算出来会作废也不该标红（还有时间处理）。
+	Risk    bool   `json:"risk"`
+	Urgency string `json:"urgency"` // "today" / "tomorrow" / "later"
 }
+
+// 紧迫度分档（前端配色依据，2026-10-19 用户定义）：
+//   - today：**今天**到期 → 红（时间上已经来不及，最需要现在处理）
+//   - tomorrow：**明天**到期 → 黄（还有一天）
+//   - later：更远 → 不上色（列在「最近临期」里只是告知，不该整片飘红）
+//
+// 与 Risk（会不会作废）是两回事：Risk 回答「按今日速度花得完吗」，
+// Urgency 回答「还剩多久」。此前把两者混用（Risk 且 7 天内就标红），
+// 导致 135 小时后（5.7 天）到期的行也飘红，用户实测反馈「一堆标红」。
+const (
+	UrgencyToday    = "today"
+	UrgencyTomorrow = "tomorrow"
+	UrgencyLater    = "later"
+)
 
 // RotationRow 轮换视图行（使用中 / 接棒顺序）。
 type RotationRow struct {
@@ -582,6 +601,19 @@ func (s *Stats) burnForecastLocked(a *acct, now time.Time) int64 {
 	return int64(float64(a.creditOut) / hours * hoursTo)
 }
 
+// urgencyOf 按自然日把到期时刻分档（配色依据，见 UrgencyToday 等常量）。
+// 复用 provider.ExpireBucketOf，保证与平台表三个到期列、临期阈值同一口径：
+// 次日 00:00:00 失效算「今天」。
+func urgencyOf(expireAt string, now time.Time) string {
+	switch provider.ExpireBucketOf(expireAt, now) {
+	case provider.BucketToday:
+		return UrgencyToday
+	case provider.BucketTomorrow:
+		return UrgencyTomorrow
+	}
+	return UrgencyLater
+}
+
 // expiryRowsLocked 生成最近临期行：每账号一行，取该账号**最早到期时刻**那一批包
 // （同日同账号的包合并展示），按剩余时长升序排列。
 //
@@ -620,13 +652,14 @@ func (s *Stats) expiryRowsLocked(now time.Time) []ExpiryRow {
 			Amount:       dayAmount,
 			TodayOut:     a.creditOut,
 			BurnForecast: forecast,
-			// Risk 语义（2026-10-19 澄清）：7 自然日内到期 且 按今日速度**可能花不完**。
-		// forecast<0 = 观测不足（今日还没消耗过/刷新不足 30 分钟），无法外推——
-		// 这种「马上到期但完全没在消耗」恰恰是最该预警的情形，不能因为「算不出」
-		// 就当作没风险（用户实测：今晚 4.7 小时后到期的 3 个号不红，只有今天花过
-		// 1 分的那个红，反直觉）。故 forecast<0 时按「预计作废 = 全部额度」处理。
-		Risk: provider.ExpireWithinDays(at, now, expiryRiskDays) &&
-			(forecast < 0 || forecast < dayAmount),
+			// Risk：按今日速度外推**可能花不完**（数据维度，决定是否显示「预计作废」）。
+			// forecast<0 = 观测不足（今日还没消耗过/刷新不足 30 分钟），无法外推——
+			// 这种「马上到期但完全没在消耗」恰恰是最该预警的情形，故按「全部额度作废」处理。
+			Risk: provider.ExpireWithinDays(at, now, expiryRiskDays) &&
+				(forecast < 0 || forecast < dayAmount),
+			// Urgency：按**自然日**分档决定配色（视觉维度）。今天红、明天黄、更远不上色。
+			// 这样「一堆 100 多小时后到期的行全飘红」的问题就消失了。
+			Urgency: urgencyOf(at, now),
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {

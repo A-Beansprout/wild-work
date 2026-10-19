@@ -1318,11 +1318,21 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 }
 #mtabStats .st-ex-days { color: #52525b; }
 #mtabStats .st-ex-amt { color: #52525b; overflow: hidden; text-overflow: ellipsis; }
+/* 最近临期配色按紧迫度分三档（2026-10-19 用户定义）：
+   今天到期 = 红（来不及了，现在就得处理）；明天到期 = 黄（还有一天）；更远 = 不上色。
+   此前按 risk（会不会作废）上色，7 天内的行全红——135 小时后到期的也红，
+   一片警示等于没有警示。 */
 #mtabStats .st-ex-row.st-risk { color: var(--danger); font-weight: 600; }
 #mtabStats .st-ex-row.st-risk .st-ex-tag,
 #mtabStats .st-ex-row.st-risk .st-ex-days,
 #mtabStats .st-ex-row.st-risk .st-ex-date,
 #mtabStats .st-ex-row.st-risk .st-ex-amt { color: var(--danger); }
+
+#mtabStats .st-ex-row.st-warn { color: var(--warn); font-weight: 600; }
+#mtabStats .st-ex-row.st-warn .st-ex-tag,
+#mtabStats .st-ex-row.st-warn .st-ex-days,
+#mtabStats .st-ex-row.st-warn .st-ex-date,
+#mtabStats .st-ex-row.st-warn .st-ex-amt { color: var(--warn); }
 
 /* 使用中 / 接棒顺序 */
 #mtabStats .st-rot-row {
