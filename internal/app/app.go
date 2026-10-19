@@ -763,9 +763,18 @@ func init() {
 		Poll:  wrapPoll(loginminimax.Poll, loginminimax.ErrPending, func(a *App, r loginminimax.Result) error { a.completeMinimaxLogin(r); return nil }),
 	}
 	loginFlows[provider.LobsterAI] = &loginFlow{
-		Start:    loginlobsterai.Start,
+		// LobsterAI 回调端口可固定（config.login.lobsterai_callback_port）：portal 只认
+		// http://127.0.0.1:<port>/auth/callback，固定端口才能让「浏览器所在机器」预先
+		// 建一条端口转发（ssh -L），从而在局域网/远程访问面板时也自动完成回调（R97）。
+		// 由 StartLoginFor 在发起前写入（与 regionForLogin 同款模式，避免改表函数签名）。
+		Start: func(c *http.Client, sp string) (string, error) {
+			return loginlobsterai.StartWithPort(c, sp, lobsterAICallbackPort)
+		},
 		Poll:     wrapPoll(loginlobsterai.Poll, loginlobsterai.ErrPending, func(a *App, r loginlobsterai.Result) error { a.completeLobsterAILogin(r); return nil }),
 		Shutdown: loginlobsterai.Shutdown,
+		// R97：本机回调口存活 flowTTL（10m）也比通用 loginTimeout（5m）长，同款问题
+		// （用户还在授权页就先放弃并关掉回调口），超时上限同样收进表。
+		pollTimeout: loginlobsterai.FlowTTL,
 	}
 	loginFlows[provider.ZCode] = &loginFlow{
 		Start: loginzcode.Start,
@@ -786,8 +795,7 @@ func init() {
 		// 本机回调存活 10m（flowTTL）比通用 loginTimeout（5m）长；超时上限对齐该包，
 		// 否则用户还在授权页时就被放弃、回调口已关，浏览器跳回只会「连接被拒」。
 		pollTimeout: logincodearts.FlowTTL,
-	}
-	// Loomy：本机引导页 + 短信验证码，持有 127.0.0.1 监听端口。
+	}	// Loomy：本机引导页 + 短信验证码，持有 127.0.0.1 监听端口。
 	loginFlows[provider.Loomy] = &loginFlow{
 		Start:    loginloomy.Start,
 		Poll:     wrapPoll(loginloomy.Poll, loginloomy.ErrPending, func(a *App, r loginloomy.Result) error { a.completeLoomyLogin(r); return nil }),
@@ -861,6 +869,10 @@ func wrapPoll[R any](
 // 由 App 在发起登录前写入，避免把 region 塞进每张表的函数签名。
 var regionForLogin = "cn"
 
+// lobsterAICallbackPort LobsterAI 回调端口（0=随机）；由 App 发起登录前写入。
+// 写入点与 regionForLogin 同款（见 loginFlows[provider.LobsterAI] 的 Start）。
+var lobsterAICallbackPort int
+
 // lookupLoginFlow 取某渠道的登录能力；不存在时返回 nil（调用方报「未知渠道」）。
 func lookupLoginFlow(kind string) (*loginFlow, bool) {
 	f, ok := loginFlows[provider.Kind(kind)]
@@ -886,6 +898,28 @@ func (a *App) needsPollFor(kind string) bool {
 // ---------------------------------------------------------------------------
 // 账号操作
 // ---------------------------------------------------------------------------
+
+// manualCallbackKind 报告该渠道的授权回调是否**写死回环地址**，因而需要一条
+// 「把浏览器地址栏 URL 粘回来」的人工兜底通道。
+//
+// 为什么要有这个单一来源：/api/login/start 用它决定 `manual_callback`（前端显隐输入行），
+// /api/login/callback 用它决定是否接受提交。两处各写一份条件，漏改一处就是
+// 「输入框显示了、提交却 400」或「后端支持、前端没入口」的半接线状态。
+//
+// 判据（不是所有渠道都需要）：portal 侧只能把浏览器跳回 `http://127.0.0.1:<port>/…`
+// 的，才是「浏览器必须与网关同机」——
+//   - CodeArts：授权页只接受 `port` 参数，跳转目标由 portal 写死（见 internal/login_codearts）；
+//   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）。
+//
+// 其余渠道的回调**不是**这种形状：有的由网关侧轮询/捕获（glm、小浣熊、OfficeAce），
+// 有的是本机引导页（Loomy），不接受也不知道怎么消费用户粘回来的 URL，故一律为 false。
+func manualCallbackKind(kind provider.Kind) bool {
+	switch kind {
+	case provider.CodeArts, provider.LobsterAI:
+		return true
+	}
+	return false
+}
 
 // StartLoginFor 发起指定渠道登录：workbuddy / workbuddyai / traework / qoder / qodercn。
 func (a *App) StartLoginFor(kind string) (string, error) {
@@ -927,7 +961,11 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 
 	// C 表已并入 loginFlows：一条记录一个 Start，结构上不可能再出现
 	// 「两行挤进同一个 case、前者被覆盖」（H2）或「case 只有注释」（H1）。
+	// LobsterAI 的回调端口配置在发起前写入（R97：portal 只认 127.0.0.1:<port>，
+	// 固定端口才能让浏览器侧预建 ssh -L 转发实现全自动回调）。
+	lobsterAICallbackPort = a.cfg.Login.LobsterAICallbackPort
 	authURL, err := flow.Start(a.loginClient, a.loginStateFP)
+
 	if err != nil {
 		a.finishLogin()
 		return "", err
@@ -1009,6 +1047,8 @@ func (a *App) pollLogin(ctx context.Context) {
 	}()
 	// 超时上限由 loginFlows 的 pollTimeout 决定（零值用通用 loginTimeout）。
 	// 原先这里是 `if a.loginKind == provider.CodeArts` 的表外特例，现收进表。
+	// R97：LobsterAI 的回调口存活 flowTTL（10m）也比通用 loginTimeout（5m）长，
+	// 同款问题（用户还在授权页就先放弃并关掉回调口），同样收进表。
 	pollBudget := loginTimeout
 	if f, ok := loginFlows[a.loginKind]; ok && f.pollTimeout != nil {
 		pollBudget = f.pollTimeout()
@@ -3307,21 +3347,23 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"auth_url":       url,
 			"backend_opened": opened,
-			// manual_callback：该渠道的授权回调是**写死回环地址**（当前仅 CodeArts，
-			// 见 internal/login_codearts 的协议说明）。浏览器与网关不同机时（局域网/
-			// 远程访问面板），回调只能靠用户把地址栏 URL 粘回来，前端据此显示输入框。
 			// needs_poll（2026-10-18 H9）：告知前端这次登录是否需要轮询结果。
 			// GLM 的形态是「只给链接、不跑流程」（凭据靠粘贴 Cookie），后端不置 loginBusy、
 			// 不起 pollLogin；改造前前端只看 auth_url 非空就无条件 startLoginPoll()，
 			// 于是轮询看到 login_busy=false 便提示「登录完成，正在同步账号…」——假成功。
-			"needs_poll":      a.needsPollFor(req.Channel),
-			"manual_callback": kind == provider.CodeArts,
+			"needs_poll": a.needsPollFor(req.Channel),
+			// manual_callback：该渠道的授权回调写死回环地址时（当前 CodeArts 与 LobsterAI，
+			// 判据见 manualCallbackKind 单一来源，R96③/R97），浏览器与网关不同机
+			// （局域网/远程访问面板）就收不到授权码，只能靠用户把地址栏 URL 粘回来，
+			// 前端据此显示输入框。
+			"manual_callback": manualCallbackKind(kind),
 		})
 	})
 	// 手动提交授权回调地址（回环回调渠道的远程/局域网兜底）。
 	//
 	// 背景：CodeArts 的 portal 按 `port` 参数把浏览器跳到 `http://127.0.0.1:<port>/oauth/callback`，
-	// 因此只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
+	// LobsterAI 的 portal 按 `redirect_uri` 原样跳回 `http://127.0.0.1:<port>/auth/callback`，
+	// 两者都只有在「浏览器与网关同一台机器」时授权码才自动回到网关。从局域网别处打开面板时，
 	// 浏览器跳到的是**用户自己机器**的 127.0.0.1（连接被拒），流程只能等到超时。
 	// 这里提供一条人工通道：把跳水后打不开的那条 URL 原样提交，网关解析出 code 后
 	// 走与自动回调**完全相同**的兑换路径（凭据仍由网关侧换，用户不需要交出任何 token）。
@@ -3337,17 +3379,29 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			apiError(w, http.StatusBadRequest, "没有进行中的登录流程，请先发起登录")
 			return
 		}
+		// 白名单与 /api/login/start 的 manual_callback 同源（manualCallbackKind），
+		// 避免出现「前端显示了输入框、这里却 400」的半接线状态。
+		if !manualCallbackKind(kind) {
+			apiError(w, http.StatusBadRequest, fmt.Sprintf(
+				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
+			return
+		}
 		switch kind {
 		case provider.CodeArts:
 			if err := logincodearts.SubmitCallbackURL(req.URL); err != nil {
 				apiError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-		default:
-			apiError(w, http.StatusBadRequest, fmt.Sprintf(
-				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
-			return
+		case provider.LobsterAI:
+			if err := loginlobsterai.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
+		// 提交成功必须回 JSON：PR #163 的合并曾在 multi-parent 合并时把这一行弄丢，
+		// handler 变成空 200（前端 api() 容错空 body 故测试全绿，用户却看到「已提交」后
+		// 无任何响应）。合并不丢行：成功/失败都要给前端一个可判定的响应体。
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.CancelLogin(); err != nil {
