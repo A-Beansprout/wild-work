@@ -1342,25 +1342,50 @@ for (const [label, re] of uniq) {
 {
   const needPal = [];
   const checkPal = (name, pass, extra = "") => needPal.push([name, pass, extra]);
-  const CH = ["wb","wbai","trae","traecode","qoder","qodercn","qodercom","qwenwork",
-    "glm","monkeycode","raccoon","loomy","officeace","oczen","cline","kilo",
-    "minimax","lobsterai","zcode","gemini","codearts"];
+  // 渠道短类名从 app.js 的 CH_CLASS 真源派生，不再手抄一份（手抄的名单漏了 custom，
+  // 导致 .badge.custom 改回硬编码 hex 也能全绿）。
+  const CH_CLASS_SRC = raw.match(/const CH_CLASS = (\{[^}]*\});/);
+  const CH_CLASS = CH_CLASS_SRC ? new Function("return (" + CH_CLASS_SRC[1] + ")")() : {};
+  const CH = [...new Set(Object.values(CH_CLASS)), "custom"];
+  const BUILTIN_CH = Object.values(CH_CLASS);
 
-  checkPal("21 个内建渠道都有 --ch-* 颜色变量",
-    CH.every((c) => new RegExp(`--ch-${c}:\\s*#[0-9a-fA-F]{6}`).test(css)));
+  checkPal(`${BUILTIN_CH.length} 个内建渠道都有 --ch-* 颜色变量`,
+    BUILTIN_CH.every((c) => new RegExp(`--ch-${c}:\\s*#[0-9a-fA-F]{6}`).test(css)));
 
+  // .badge.custom 也必须在扫描范围内（它是兜底色，同样不许写死 hex）。
   checkPal(".badge.x 全部走 var(--ch-x)，CSS 里不再硬编码渠道色",
-    CH.every((c) => new RegExp(`\\.badge\\.${c}\\s*\\{\\s*background:\\s*var\\(--ch-${c}\\);`).test(css)));
+    CH.every((c) => new RegExp(`\\.badge\\.${c}\\s*\\{\\s*background:\\s*var\\(--ch-${c}\\);`).test(css)),
+    CH.filter((c) => !new RegExp(`\\.badge\\.${c}\\s*\\{\\s*background:\\s*var\\(--ch-${c}\\);`).test(css)).join(", "));
 
+  // 徽章只有 chBadge() 一个出口：任何手写的 `<span class="badge ...">` 都会让
+  // 自定义渠道退回 .badge.custom 的单色、并让卡片筛选失效（账号卡片曾长期手拼）。
+  // 旧断言只查 `class="badge ${chClass(` —— 那写法根本不存在，等于空断言。
+  // 先剥注释（chBadge 的说明文字里就举了反例写法），再排除 chBadge 自身的实现行。
+  const rawNoComment = raw.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const handBadge = [...rawNoComment.matchAll(/<span class="badge[ "`]/g)]
+    .filter((m) => !/style="background:\$\{chColor\(k[^)]*\)\}"/.test(rawNoComment.slice(m.index, m.index + 120)));
   checkPal("徽章统一经 chBadge() 渲染（底色 = chColor()，与折线同源）",
-    raw.includes("function chBadge(k, extra)") &&
-    raw.includes("style=\"background:${chColor(k)}\"") &&
-    !raw.includes('class="badge ${chClass('));
+    /function chBadge\(k, list\) \{/.test(raw) &&
+    raw.includes("style=\"background:${chColor(k, list)}\"") &&
+    handBadge.length === 0,
+    handBadge.length ? `仍有 ${handBadge.length} 处手拼徽章` : "");
 
   checkPal("自定义渠道色按序号黄金角均分，不用固定色池取模",
     raw.includes("const CUSTOM_GOLDEN_ANGLE = 137.508") &&
-    raw.includes("customChannelColor(k)") &&
+    raw.includes("customChannelColor(k, list)") &&
     !raw.includes("CUSTOM_PALETTE["));
+
+  // 自定义渠道取色缓存必须带序号：只按渠道名缓存时，删/调序后同名渠道会返回
+  // 过期颜色（与列表序号对不上，且可能与其他渠道撞色）。
+  checkPal("自定义渠道色缓存键含序号（删/调序后不会返回过期颜色）",
+    raw.includes("const ck = `${k}#${idx}`") && raw.includes("_customColorCache[ck]"));
+
+  // 账号卡片的筛选靠 data-group（渠道 key），不靠徽章类名：自定义渠道的短类名
+  // 一律是 custom，拿类名反查会把它们全归到同一个 key 上（且 CLS_KIND 里没有 custom）。
+  checkPal("账号卡片带 data-group（渠道 key），筛选不靠徽章类名反查",
+    /<div class="acct-card[^"]*" data-group="\$\{esc\(a\.group/.test(raw) &&
+    raw.includes("card.dataset.group") &&
+    !raw.includes("CLS_KIND"));
 
   checkPal("自定义渠道色白字对比度自动达标（黄/绿色相压暗到 ≥4.5）",
     raw.includes("for (let l = 42; l >= 22; l--)") &&
@@ -1387,9 +1412,21 @@ for (const [label, re] of uniq) {
     CH.every((c) => new RegExp(`\\.btn\\.primary\\.alt\\.${c}\\s*\\{`).test(css)),
     CH.filter((c) => !new RegExp(`\\.btn\\.primary\\.alt\\.${c}\\s*\\{`).test(css)).join(", "));
 
-  checkPal("index.html 的渠道按钮都带修饰类（裸 btn primary alt 会落到兜底色）",
-    (html.match(/class="btn primary alt"/g) || []).length === 0,
-    (html.match(/<button class="btn primary alt"[^>]*id="([^"]+)"/g) || []).join(", "));
+  // 渠道按钮必须带 `alt <渠道短类名>`。两种漏法都要拦：
+  //   ① 完全裸的 `btn primary`（btnAddWB 曾如此，靠 --primary 恰好等于 --ch-wb 蒙对）；
+  //   ② `btn primary alt` 但没跟渠道类名（落到兜底色）。
+  {
+    const chBtn = [...html.matchAll(/<button class="btn primary([^"]*)" id="(btnAdd\w+|btnOpenCustomModels)"/g)]
+      .map((m) => ({ id: m[2], cls: m[1].trim() }));
+    const badCls = chBtn.filter((b) => {
+      if (b.id === "btnOpenCustomModels") return !/\balt custom\b/.test(b.cls);
+      const m = b.cls.match(/\balt\s+(\S+)/);
+      return !m || !CH.includes(m[1]);
+    });
+    checkPal("index.html 的渠道按钮都带 alt <渠道短类名> 修饰类（裸 btn primary 会落到 --primary）",
+      chBtn.length > 0 && badCls.length === 0,
+      badCls.map((b) => `${b.id}=「btn primary ${b.cls}」`).join(", "));
+  }
 
   // 全仓扫描：渠道类名出现在任何 CSS 规则里时，颜色属性必须走 var(--ch-*)。
   // 历史坑：.badge.oczen 被重复定义两次（后一条写死 #475569 覆盖变量版）、
@@ -1408,15 +1445,56 @@ for (const [label, re] of uniq) {
 
     const dupSel = [];
     for (const c of CH) {
-      for (const kind of ["badge", "ch-header"]) {
-        const re = kind === "badge"
-          ? new RegExp(`^\\.badge\\.${c}\\s*\\{`, "gm")
-          : new RegExp(`\\.fees \\.ch-header\\.${c} `, "g");
+      for (const kind of ["badge", "btn.primary.alt"]) {
+        const re = new RegExp(`^\\.${kind.replace(".", "\\.")}\\.${c}\\s*\\{`, "gm");
         const n = (css.match(re) || []).length;
         if (n > 1) dupSel.push(`${kind}.${c}×${n}`);
       }
     }
     checkPal("渠道 CSS 规则无重复定义（重复会互相覆盖）", dupSel.length === 0, dupSel.join(", "));
+
+    // .ch-header 是费率表改 tab 布局前的表头行，前端已不再渲染（app.js 无 ch-header）。
+    // 保留 23 条规则只会让人误以为费率表头还吃渠道色 —— R99 曾把它们从 hex 改成
+    // var(--ch-*) 却没生效过。这里锁住「有规则必有渲染」。
+    const cssNoComment = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rawNoComment2 = raw.replace(/^\s*\/\/.*$/gm, "");
+    checkPal("CSS 里的渠道配色选择器都有对应的渲染点（无死规则）",
+      !/\.ch-header/.test(cssNoComment) && !/class="ch-header/.test(rawNoComment2),
+      /\.ch-header/.test(cssNoComment) ? "style.css 仍有 .ch-header 死规则" : "app.js 仍在渲染 ch-header");
+  }
+
+  // ---- 渠道名单一致性（同一份渠道集合在前后端各写一份，漂移会静默丢渠道）----
+  {
+    // 1) 前端保留名 vs 后端 BuiltinKinds()：前端漏一个 → 不拦同名、后端才报错。
+    const reservedSrc = raw.match(/const RESERVED_CHANNEL_NAMES = new Set\(\[([\s\S]*?)\]\)/);
+    const reserved = reservedSrc ? new Function("return [" + reservedSrc[1] + "]")() : [];
+    const goKinds = [...readFileSync(new URL("../internal/provider/provider.go", import.meta.url), "utf8")
+      .matchAll(/^\t[A-Za-z]+\s+Kind = "([a-z]+)"/gm)].map((m) => m[1]);
+    const missingReserved = goKinds.filter((k) => !reserved.includes(k));
+    checkPal("前端 RESERVED_CHANNEL_NAMES 覆盖全部内建渠道（与 provider.BuiltinKinds 同集）",
+      missingReserved.length === 0, `缺 ${missingReserved.join(", ")}`);
+
+    // 2) 积分汇总条顺序：漏渠道 → 该渠道被按字母序垫到最末（注释却说与按钮布局一致）。
+    const orderSrc = raw.match(/const CH_SUMMARY_ORDER = (\[[\s\S]*?\]);/);
+    const order = orderSrc ? new Function("return " + orderSrc[1])() : [];
+    const missingOrder = BUILTIN_CH
+      .map((cls) => Object.keys(CH_CLASS).find((k) => CH_CLASS[k] === cls))
+      .filter((k) => k && !order.includes(k));
+    checkPal("CH_SUMMARY_ORDER 覆盖全部内建渠道（漏项会按字母序垫到最末）",
+      missingOrder.length === 0, `缺 ${missingOrder.join(", ")}`);
+
+    // 3) 无签到渠道必须有无签到文案：落兜底「无签到」会把「自动领日活」说错。
+    const noExpSrc = raw.match(/const NO_EXPLICIT_CHECKIN = new Set\(\[([^\]]*)\]\)/);
+    const noExp = noExpSrc ? new Function("return [" + noExpSrc[1] + "]")() : [];
+    const tagSrc = raw.match(/const NO_CHECKIN_TAG = (\{[^}]*\});/);
+    const tags = tagSrc ? new Function("return (" + tagSrc[1] + ")")() : {};
+    const missingTag = noExp.filter((k) => !(k in tags));
+    checkPal("NO_EXPLICIT_CHECKIN 的每个渠道都有专属状态文案（否则落兜底「无签到」）",
+      missingTag.length === 0, `缺 ${missingTag.join(", ")}`);
+
+    // 4) 渠道显示名只有一个来源：CH_NAMES 这类别名会让图例与徽章各走一份。
+    checkPal("渠道显示名只有一个来源（不再有 CH_NAMES 之类的别名表）",
+      !/const CH_NAMES\b/.test(raw) && /const chLabel = \(k\) => CH_LABEL\[k\]/.test(raw));
   }
 
   for (const [label, pass, extra] of needPal) {

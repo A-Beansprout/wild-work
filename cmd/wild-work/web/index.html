@@ -55,17 +55,21 @@
         </div>
         <!-- 中间弹性空白由 flex:1 撑开 -->
         <div class="pa-spacer"></div>
-        <!-- 右组：渠道添加六列 grid，整体靠右；固定两行（6+5，第二行第 6 列留空）。
+        <!-- 右组：渠道添加六列 grid，整体靠右；行数由渠道数决定（6 列 × 3 行 = 18 格，
+             当前 18 个渠道 + 自定义模型正好铺满）。
              列数与列配对由 DOM 顺序决定（行主序自然流），勿再写内联 grid-column/grid-row：
              那会让窄屏无法重排，也会破坏列配对（scripts/ui-static-check.mjs 有顺序断言）。
              行1 = WorkBuddyCN | QoderCN | TraeWork | MonkeyCode | Loomy | Cline
-             行2 = WorkBuddyAI | QoderCOM | 千问办公 | 小浣熊 | 智谱清言 | （空）
+             行2 = WorkBuddyAI | QoderCOM | 千问办公 | 小浣熊 | 智谱清言 | OfficeAce
+             行3 = MiniMax | LobsterAI | ZCode | Gemini | CodeArts | 自定义模型
              即同列上下配对：WorkBuddyCN/WorkBuddyAI、QoderCN/QoderCOM、TraeWork/千问办公、
              MonkeyCode/小浣熊、Loomy/智谱清言；Cline 占第一行末位。
-             新增渠道一律追加到 Cline 之后（第二行第 6 列起），配对不乱。 -->
+             新增渠道一律追加到自定义模型之前（尾部），配对不乱。
+             ⚠️ 每个按钮都必须带 `alt <渠道短类名>` 修饰类：裸 `btn primary`
+               会落到 --primary（现与 --ch-wb 同值，改色板时就静默错色）。 -->
         <!-- 旧 Qoder 渠道已下线（代码保留，仅删界面入口） -->
         <div class="pa-group pa-right">
-          <button class="btn primary" id="btnAddWB">＋ WorkBuddyCN</button>
+          <button class="btn primary alt wb" id="btnAddWB">＋ WorkBuddyCN</button>
           <button class="btn primary alt qodercn" id="btnAddQoderCN">＋ QoderCN</button>
           <button class="btn primary alt trae" id="btnAddTrae">＋ TraeWork</button>
           <button class="btn primary alt monkeycode" id="btnAddMonkeyCode">＋ MonkeyCode</button>

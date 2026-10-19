@@ -714,32 +714,31 @@ const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traec
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
 // ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
-// 自定义渠道无品牌色，多个自定义渠道若共用 --ch-custom 会完全撞色；
-// 按渠道名稳定哈希从高区分度色板取色（刷新/重启不变，图表间一致）。
-// 自定义渠道配色：按「在 state.custom_channels 里的序号」用黄金角均分色相，
-// 不再用哈希取模——固定长度色池（原 10 色、后改 5 色）在自定义渠道超过池长时
-// 必然撞色，且哈希取模可能让少量渠道就落在同一桶。黄金角（137.508°）保证任意
-// 数量下相邻序号色相间隔最大；明度从 42% 往下压到白字对比 ≥4.5（黄/绿色相
-// 天然更亮，需压更多），所以 5 个自定义渠道各自颜色固定且与内建色板错开。
+// 自定义渠道无品牌色，多个自定义渠道若共用 --ch-custom 会完全撞色，故按
+// 「在 state.custom_channels 里的序号」用黄金角均分色相（不绑品牌色）。
+// 不用固定长度色池：色池在渠道数超过池长时必然撞色，哈希取模也可能让少量
+// 渠道就落进同一桶。黄金角（137.508°）保证任意数量下相邻序号色相间隔最大；
+// 明度从 42% 往下压到白字对比 ≥4.5（黄/绿色相天然更亮，需压更多）。
+// ⚠️ 这些色只保证**彼此**可辨，与内建 --ch-* 色板存在 ΔE2000 < 7 的近邻
+//   （前几个序号恰好贴着 officeace / cline / traecode / minimax），同图出现时
+//   仍可能混淆 —— 内建色板改色后需重新核对这一交叉。
 const CUSTOM_GOLDEN_ANGLE = 137.508;
 const _customColorCache = {};
-function hslToHex(h, s, l) {
-  s /= 100; l /= 100;
-  const k = (n) => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-  const to = (n) => Math.round(f(n) * 255).toString(16).padStart(2, "0");
-  return `#${to(0)}${to(8)}${to(4)}`;
-}
 function relLuminance(hex) {
   const v = [1, 3, 5].map((i) => parseInt(hex.substr(i, 2), 16) / 255)
     .map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
   return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
 }
-function customChannelColor(k) {
-  if (_customColorCache[k]) return _customColorCache[k];
-  const list = (state && state.custom_channels) || [];
-  const idx = Math.max(0, list.findIndex((c) => c && c.name === k));
+function customChannelColor(k, list) {
+  // list 显式传入用于「自定义渠道编辑弹窗」：那里渲染的是 editCustomChannels（未保存的
+  // 新渠道也在里面），不能读 state.custom_channels —— 否则新渠道一律 idx=0、全同色。
+  const arr = list || (state && state.custom_channels) || [];
+  const found = arr.findIndex((c) => c && c.name === k);
+  const idx = found < 0 ? arr.length : found;
+  // 缓存键必须带 idx：按序号取色，删/调序后同名渠道的色号会变，
+  // 只按渠道名缓存会返回过期颜色（两个渠道撞色且与列表序号对不上）。
+  const ck = `${k}#${idx}`;
+  if (_customColorCache[ck]) return _customColorCache[ck];
   const hue = (idx * CUSTOM_GOLDEN_ANGLE) % 360;
   // 明度从 42% 逐级下压，直到白字对比 ≥4.5（黄/绿最亮，要压到 28% 左右）
   let hex = hslToHex(hue, 78, 42);
@@ -747,16 +746,13 @@ function customChannelColor(k) {
     hex = hslToHex(hue, 78, l);
     if (1.05 / (relLuminance(hex) + 0.05) >= 4.5) break;
   }
-  return (_customColorCache[k] = hex);
-}
-function stableHash(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
+  return (_customColorCache[ck] = hex);
 }
 const _chColorCache = {};
-function chColor(k) {
-  if (isCustomGroup(k)) return customChannelColor(k);
+function chColor(k, list) {
+  if (isCustomGroup(k) || (list && list.some((c) => c && c.name === k))) {
+    return customChannelColor(k, list);
+  }
   const cls = CH_CLASS[k] || "custom";
   if (_chColorCache[cls]) return _chColorCache[cls];
   let v = "";
@@ -767,12 +763,12 @@ function chColor(k) {
 // chBadge 渠道徽章的唯一渲染入口（R99）：
 //   底色一律取 chColor()，与折线图 series 同源——两处不可能漂移。
 //   内建渠道的 chColor() 读 --ch-<类名>（CSS 里仍有 .badge.x 做无 JS 兜底），
-//   自定义渠道读 CUSTOM_PALETTE 哈希色，故必须内联 background（否则它们全共用
-//   .badge.custom 的单一革蓝，与图上颜色对不上）。
-// extra：追加额外 class（如 "cs-chip-badge"）。
-function chBadge(k, extra) {
-  const cls = ["badge", chClass(k), extra || ""].filter(Boolean).join(" ");
-  return `<span class="${cls}" style="background:${chColor(k)}">${esc(chLabel(k))}</span>`;
+//   自定义渠道读 customChannelColor() 的黄金角自适应色，故必须内联 background
+//   （否则它们全共用 .badge.custom 的单一革蓝，与图上颜色对不上）。
+// ⚠️ 全仓只此一处拼 badge 的 class 与底色：手写 `<span class="badge x">` 会让
+//   自定义渠道退回 .badge.custom、并让 applyAcctFilter 的类名反查失效。
+function chBadge(k, list) {
+  return `<span class="badge ${chClass(k)}" style="background:${chColor(k, list)}">${esc(chLabel(k))}</span>`;
 }
 // varyColor 同渠道第 i（0 起）个系列做颜色变体，避免同渠道多条线同色：
 // 明度阶梯 +14/-14/+28/-28... 封顶在 [22,78]；封顶后转色相偏移（每档 ±18°）继续拉开。
@@ -835,8 +831,17 @@ const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
 // Cline：app.cline.bot → 注册账号 → Account / API Keys 建 sk_ Key（见 internal/cline）。
 const PASTE_KEY_CHANNELS = new Set(["cline"]);
 const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
-// 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
-const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持", kilo: "不支持", zcode: "不支持", gemini: "不支持", cline: "无签到" };
+// 无手动签到渠道的状态文案：每个在 NO_EXPLICIT_CHECKIN 里的渠道都要有一条
+// （漏写就落兜底的「无签到」，把「每日积分自动发放」说成「不支持」）。
+const NO_CHECKIN_TAG = {
+  workbuddyai: "自动领日活奖励",
+  qwenwork: "每日自动发放", // 积分由服务端 00:00 被动发放，无领取动作
+  oczen: "不支持",
+  kilo: "不支持",
+  zcode: "不支持",
+  gemini: "不支持",
+  cline: "无签到",
+};
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
 // 内建名单只有 oczen/kilo/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
@@ -893,8 +898,11 @@ function creditsText(a) {
   return html;
 }
 
-// 渠道汇总固定顺序（与添加按钮布局一致；traecode 是别名池不单独出现，qoder 下线仅存量兜底）
-const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "minimax", "lobsterai", "zcode", "gemini", "codearts", "cline", "officeace", "oczen", "kilo", "qoder"];
+// 渠道汇总固定顺序：与后端 feeChannelOrder（internal/app/app.go）同序，
+// 保持「账号卡片 → 汇总条 → 费率 tab」三处看到同一个渠道顺序。
+// ⚠️ 新增渠道必须同步此表：漏项会被 renderSummary 按字母序垫到最末
+//   （ui-static-check 有覆盖度断言）。qoder 已下线，仅为存量账号兜底留位。
+const CH_SUMMARY_ORDER = ["oczen", "kilo", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "traecode", "qwenwork", "glm", "cline", "monkeycode", "raccoon", "loomy", "minimax", "lobsterai", "zcode", "gemini", "codearts", "officeace", "qoder"];
 
 // renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
 // 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
@@ -974,21 +982,18 @@ function renderSummary() {
 let acctFilter = null;
 
 // applyAcctFilter 按 acctFilter 显示/隐藏账号卡片（与汇总条 chip 联动）。
-// 逐张卡片读徽章的渠道类名反查（卡片本身不带 data-group，避免改动 renderAccounts 的既有结构）。
+// 逐张卡片读 data-group（由 renderAccounts 写入的**渠道 key**，不是 CSS 短类名）：
+//   自定义渠道的短类名一律是 custom，拿类名反查会把它们全归到同一个 key 上，
+//   而“点某渠道 chip 只留该渠道”本来就不能靠类名区分（R99）。
 function applyAcctFilter() {
   const grid = $("acctList");
   if (!grid) return;
   grid.querySelectorAll(".acct-card").forEach((card) => {
-    const badge = card.querySelector(".acct-top .badge");
-    const key = badge ? (CLS_KIND[badge.classList[1]] || "") : "";
+    const key = card.dataset.group || "";
     const show = !acctFilter || key === acctFilter;
     card.classList.toggle("hidden", !show);
   });
 }
-
-// CLS_KIND 徽章 CSS 短类名 → 渠道 key 的反查表（与 CH_CLASS 互逆）。
-const CLS_KIND = {};
-for (const k of Object.keys(CH_CLASS)) CLS_KIND[CH_CLASS[k]] = k;
 
 // setAcctFilter 设置筛选并同步汇总条高亮与账号卡片可见性。
 function setAcctFilter(kind) {
@@ -1022,12 +1027,10 @@ function renderAccounts() {
   empty.classList.add("hidden");
 
   grid.innerHTML = state.accounts.map((a) => {
-    const group = chClass(a.group);
-    const groupName = chLabel(a.group);
     const noCheckin = noExplicitCheckin(a.group); // 无显式签到，签到按钮灰掉
     const noCheckinTitle = a.group === "workbuddyai"
       ? "无需手动签到：定时自动对话保活并领取日活奖励"
-      : `${groupName} 不支持手动签到`;
+      : `${chLabel(a.group)} 不支持手动签到`;
 
     const checkinTag = a.last_checkin_at
       ? `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`
@@ -1107,10 +1110,10 @@ function renderAccounts() {
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
     return `
-    <div class="acct-card${disabledClass}${coolingClass}">
+    <div class="acct-card${disabledClass}${coolingClass}" data-group="${esc(a.group || "workbuddy")}">
       <div class="acct-top">
         <div>
-          <span class="badge ${group}">${groupName}</span>
+          ${chBadge(a.group)}
           ${nameHtml}
         </div>
         <div class="acct-ops">
@@ -1346,7 +1349,6 @@ function renderFees(fees) {
   html += `</div>`;
 
   for (const ch of channels) {
-    const chCls = chClass(ch.channel);
     const models = ch.models || [];
     const hidden = ch.channel !== active ? ' class="hidden"' : '';
     html += `<div class="fees-panel${hidden ? ' hidden' : ''}" data-feepanel="${esc(ch.channel)}">`;
@@ -2191,11 +2193,15 @@ async function saveModelFallback() {
 }
 
 // ---------- 自定义渠道（OpenAI 兼容，R66） ----------
-// RESERVED_CHANNEL_NAMES 与 provider.BuiltinKinds() 同集：与内建渠道（或上游命名空间）
-// 同名时 server/app 两层会指向不同 Runtime，故前端先给即时反馈（后端同样会拒）。
+// RESERVED_CHANNEL_NAMES 与 provider.BuiltinKinds() 同集（+ ModelNamespaces 的上游命名空间）：
+// 与内建渠道同名时 server/app 两层会指向不同 Runtime，故前端先给即时反馈（后端同样会拒）。
+// ⚠️ 新增内建渠道时这里要同步：漏一个就变成「前端不拦、保存后才报错」
+//   （ui-static-check 会对比 provider.go 的 Kind 常量）。
 const RESERVED_CHANNEL_NAMES = new Set([
   "workbuddy", "workbuddyai", "traework", "traecode", "qoder", "qodercn", "qodercom",
-  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai", "zcode", "gemini", "codearts", "glm", "cline", "cline-free",
+  "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai",
+  "zcode", "gemini", "codearts", "glm", "cline", "officeace",
+  "cline-free", // ModelNamespaces：上游 ID 自带命名空间，自定义渠道不得占用
 ]);
 let editCustomChannels = [];
 
@@ -2265,7 +2271,7 @@ function renderCustomChList() {
     return `<div class="cm-provider">
       <div class="cm-provider-row">
         <div class="cm-info">
-          <span class="badge custom">${esc(c.name)}</span>
+          ${chBadge(c.name, editCustomChannels)}
           <span class="cm-url" title="${esc(c.base_url)}">${esc(c.base_url)}</span>
           <span class="cm-key hint" title="${esc(c.api_key || '')}">[${esc(keyMask)}]</span>
           <span class="cm-meta">${models.length} 个模型</span>
@@ -3448,8 +3454,6 @@ function renderUsageCacheCard(t) {
   el.textContent = (pct >= 10 ? pct.toFixed(1) : pct.toFixed(2)) + "%";
   el.title = `命中 ${fmtTokensFull(t.cr)} / 上报请求 prompt ${fmtTokensFull(cov)}（${t.cr_reqs || 0} 次上报请求）；未上报的渠道不计入分母`;
 }
-
-const CH_NAMES = CH_LABEL;
 
 async function loadUsage() {
   try {
