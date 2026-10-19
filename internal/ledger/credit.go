@@ -36,6 +36,18 @@ type itemSnap struct {
 	// WorkBuddy 每日签到包提前一天以 r=0 建档，发放与消耗落在同一刷新窗内时
 	// remain 与快照持平，earn 只能靠 used 差分救回。旧快照无此字段 → 零值，安全。
 	Used int64 `json:"u,omitempty"`
+	// Total 池子总量（R101）：remain 下降时用来区分「池子缩水（整包到期/回收）」
+	// 与「用掉更多」——remain = total - used 是三者的恒等式，故
+	// Δremain = ΔTotal - ΔUsed。旧快照无此字段 → 零值，配合 UsedEver 门槛
+	// 保证老数据一律退回旧口径（不变量 5 向后兼容）。
+	Total int64 `json:"t,omitempty"`
+	// UsedEver 该 key **历史上是否出现过 used>0**（粘性，一旦为真永不清除）。
+	// 用于识别「渠道到底分不区分 total / used」：qwenwork/raccoon/minimax/monkeycode/
+	// loomy/glm 把 Total 填成 Remain、Used 恒 0，用它们的 total 判「池子缩水」会把
+	// 每一次真实消耗都误记成过期；而真记账的渠道（qodercn 等）只要花过一次就会留下
+	// used>0 的痕迹。不能用「本次 used>0」当门槛：整包到期那次 used 常同时归零
+	// （QoderCN 实录 used 1→0），一次性判据会让该 key 从此失去检测能力。
+	UsedEver bool `json:"us,omitempty"`
 }
 
 // snapshots credit-snapshot.json 结构：key "ch/uid" → 条目列表。
@@ -76,7 +88,6 @@ func itemKey(it provider.ResourceItem) string {
 }
 
 // expired 判定条目是否**已失效**（UTC+8 墙钟）。
-//
 // 统一走 provider.ExpireInstant，两种 ExpireAt 写法各按自己的语义：
 //   - "YYYY-MM-DD"：该日全天可用，**次日 00:00** 才失效 ⇒ 当天不算过期；
 //   - RFC3339：精确时刻，到点即失效。
@@ -93,6 +104,39 @@ func expired(expireAt string, now time.Time) bool {
 		return false
 	}
 	return !now.In(expireLoc).Before(t)
+}
+
+// poolShrankExpiry 报告「余额下降」是否由**池子缩水**而非消耗引起（R101）。
+//
+// 背景（2026-10-19 生产实录，用户报「QoderCN 今日消耗 99 分但我没咋用」）：
+// QoderCN 一个 100 分的赠送包整包到期消失，而它此前已被花掉 1 分。上游回包
+// total 2500→2400、used 1→0、remaining 2499→2400 ⇒ 账本按「余额下降 + 无到期日」
+// 记成 spend(-99)，面板显示成「今日消耗」，实际当天真消耗是 0。
+//
+// 判据用的是恒等式 remain = total - used 拆项后的 Δremain = Δtotal - Δused：
+// 「花了钱」是 used 变大（total 不动），「池子被回收/到期」是 total 变小（used 可能同步
+// 归零）。三门槛**缺一不可**：
+//
+//  1. 该条目**未上报到期日**：有到期日的渠道走 expired() 既有判据（那一路本来就对），
+//     本条只接管「上游不给包级到期时间，账本无从判过期」的盲区，对既有渠道零影响；
+//  2. 该 key **历史上或本次出现过 used>0**（UsedEver 粘性标记）：qwenwork/raccoon/
+//     minimax/monkeycode/loomy/glm 六个渠道把 Total 填成 Remain、Used 恒 0（见各自
+//     UserResourceDetail），那种形态下每次真实消耗都会让 Total 一起下降——无此门槛
+//     就会把它们的消耗全记成过期；而真记账的渠道只要花过一次就留下痕迹。粘性而非
+//     一次性判据的原因：整包到期那次 used 常同时归零（实录 used 1→0），一次性判据
+//     会让该 key 从此失去检测能力；
+//  3. **total 确实下降了**：且上次快照必须有 total（老快照无 t 字段 = 0，自动退回旧口径，
+//     保证不变量 5「只增不减」的向后兼容——升级后首轮不改写历史归因）。
+//
+// 只在 remain 已经确认下降时调用，故这里不再复核 delta。
+func poolShrankExpiry(prev itemSnap, curTotal, curUsed int64) bool {
+	if prev.Expire != "" { // 门槛 1
+		return false
+	}
+	if !prev.UsedEver && prev.Used <= 0 && curUsed <= 0 { // 门槛 2（粘性：历史上花过一次即永久信任 used）
+		return false
+	}
+	return prev.Total > 0 && curTotal < prev.Total // 门槛 3
 }
 
 // DiffCredits 余额刷新后差分记账：cur 为本次 UserResourceDetail 拿到的条目，
@@ -119,6 +163,7 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 	type aggEnt struct {
 		name, expire string
 		remain, used int64
+		total        int64
 	}
 	agg := map[string]*aggEnt{} // key → 聚合条目
 	var order []string          // 首现顺序遍历，事件输出稳定可测
@@ -134,6 +179,7 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 		}
 		a.remain += it.Remain // 同 key 多条余额求和，视作一个整体
 		a.used += it.Used
+		a.total += it.Total
 		if a.expire == "" {
 			a.expire = it.ExpireAt // 到期日取首个非空（同 key 通常相同）
 		}
@@ -142,8 +188,11 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 	curMap := map[string]itemSnap{}
 	for _, k := range order {
 		a := agg[k]
-		curMap[k] = itemSnap{Key: k, Remain: a.remain, Expire: a.expire, Used: a.used}
 		p, ok := prevMap[k]
+		// UsedEver 粘性（R101）：历史或本次出现过 used>0 即为真，命中过就不再回头。
+		// 旧快照没有 us 字段，靠 prev.Used>0 兼容识别（见 poolShrankExpiry 门槛 2）。
+		curMap[k] = itemSnap{Key: k, Remain: a.remain, Expire: a.expire, Used: a.used,
+			Total: a.total, UsedEver: (ok && (p.UsedEver || p.Used > 0)) || a.used > 0}
 		if !ok {
 			if firstTime {
 				// 首次见此账号：存量条目由末尾的「存量额度」baseline 统一汇总，
@@ -169,9 +218,10 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 				Amount: delta, Balance: balance, Note: a.name})
 		case delta < 0:
 			// 下降：到期日已过优先归因过期（签到奖励等当天到期条目的典型形态），
-			// 否则归因消耗。
+			// 否则归因消耗
+			// 除非池子本身缩小了（R101）——见 poolShrankExpiry。
 			kind := "spend"
-			if expired(p.Expire, now) {
+			if expired(p.Expire, now) || poolShrankExpiry(p, a.total, a.used) {
 				kind = "expire"
 			}
 			events = append(events, CreditEntry{Ch: ch, UID: uid, Kind: kind,
