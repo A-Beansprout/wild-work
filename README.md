@@ -11,11 +11,7 @@
 - **思考链死循环检测（防癫拦截）**：流式生成中逐帧检测推理复读/空转，命中即中断 SSE 并向客户端返回错误（`code=upstream_reasoning_loop`），由下游 AI 客户端自行重试恢复；不罚账号（模型级问题），默认开启，面板「设置」可关闭
 - **OpenAI 兼容代理**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，模型前缀路由
 - **错误分类精细化**：区分「请求问题」与「账号问题」——内容拦截/上下文超限不罚号，限流/风控/账号故障分级冷却，429 不再误判余额耗尽；**单账号渠道（OpenCodeZen）例外：任何错误均不冷却**（无号可轮换，惩罚即等于整渠道下线）
-- **二十渠道聚合**：WorkBuddyCN(CodeBuddy) + WorkBuddyAI（国际版） + TraeWork + TraeCode + QoderCN + QoderCOM（国际版） + 千问办公 + MonkeyCode（`monkeycode/*`，平台托管模型） + 小浣熊（`raccoon/*`） + Loomy（讯飞，`loomy/*`） + 智谱清言（`glm/*`，网页版私有接口 + CDP 自动登录） + Cline（`cline/*`，粘贴官方 API Key，只调度免费模型） + 华为云果办 OfficeAce（`officeace/*`，华为云 AgentArts 模型网关，客户端导入或自助 OAuth 登录） + OpenCodeZen（`oczen/*`，匿名免费、无需账号） + Kilo（`kilo/*`，免密免费池、无需账号） + MiniMax Code（`minimax/*`，设备码授权登录） + LobsterAI（`lobsterai/*`，有道龙虾，本机回调授权登录） + ZCode（`zcode/*`，智谱，设备授权登录） + Gemini（`gemini/*`，Google Code Assist，本机回调授权登录） + CodeArts（`codearts/*`，华为云，PKCE 授权登录），模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；旧 Qoder（`qoder/*`）路由保留但已从界面下线
-  OfficeAce 支持两条添加路径：面板登录按钮走**自助 OAuth**（华为云授权码 + PKCE + DPoP，跨平台），弹窗里的次按钮「从客户端导入」则读本机已登录的 OfficeAce 桌面端凭据（临时 AK/SK 经 DPAPI 解密，仅 Windows）。对话走不过期的网关 Basic 凭据，每日签到的临时凭据约 2 小时有效，本工具会自动续期。
-  小浣熊支持两条添加路径：面板登录按钮走**网页版自动登录**（拉起独立 profile 的浏览器，登录后经 CDP 捕获凭据，跨平台），弹窗里的次按钮「从客户端导入」则复用本机客户端凭据。
-  Loomy 为**导入型**渠道（凭据不由本工具登录产生，从**本机已登录的官方客户端**读取；上游无 refresh 端点，session 约 14 天，到期需重新导入）。
-  智谱清言为**网页版私有接口**渠道（非开放平台），凭据是浏览器 Cookie 里的 `chatglm_refresh_token`；面板登录按钮走 CDP 自动捕获（独立 profile），新账号须在智谱清言 App 登录一次才发放初始额度。
+- **二十渠道聚合**：20 条内建渠道统一按「模型前缀路由」接入（`渠道前缀/<model>`），粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；渠道明细见下文[二十渠道聚合](#二十渠道聚合)。旧 Qoder（`qoder/*`）路由保留但已从界面下线
 - **Cline 免费池**（`cline/*`）：粘贴官方 `sk_` API Key 即用（`app.cline.bot` 自行注册并创建，Key 不过期、不轮换、不与浏览器/客户端互踢）；本渠道**只调度免费模型**，多把 Key 须来自**多个独立账号**（官方额度按账号计，同账号多 Key 共享一份额度，面板会自动识别并提示）
 - **匿名免费通道**（OpenCodeZen）：内置 `public` 凭证即可调用 Zen 上的免费模型（含 `big-pickle`），无需注册/登录；面板固定一个 `[OpenCodeZen] 匿名` 条目（不可增删停用、无签到、积分显示「不适用」）
 - **自动签到**：每日定时签到领额度（Qoder 双区含 10:00–12:00 窗口重试，避免上游活动延迟导致漏领；小浣熊走工作台接口触发**惰性落账**的每日积分，见下），token 保活，冷却状态机
@@ -28,6 +24,34 @@
 - **跨平台**：Windows（完整支持）、macOS（代码已就绪，CI 构建）、Linux（无头模式）
 - **developer→system 角色转换**：自动将下游 Agent 发送的 `<developer>` 角色改写为 `<system>`，避免上游触发内容过滤
 - **上游协议头仿真**：出站自动注入官方客户端指纹头（`X-CodeBuddy-Request`、`X-Machine-ID` 等），降低风控误判风险
+
+## 二十渠道聚合
+
+20 条内建渠道统一按「模型前缀路由」接入（`渠道前缀/<model>`），粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；另有自定义渠道（`custom_channels`，见「自定义渠道接入」）可接入任意 OpenAI 兼容 API。
+
+| 渠道 | 模型前缀 | 接入方式 | 说明 |
+|------|----------|----------|------|
+| WorkBuddyCN（CodeBuddy） | `workbuddy/*` | 浏览器登录 | WorkBuddy 国内版 |
+| WorkBuddyAI | `workbuddyai/*` | 浏览器登录 | WorkBuddy 国际版，与国内版完全独立 |
+| TraeWork | `traework/*` | 浏览器登录 | |
+| TraeCode | `traecode/*` | 复用 TraeWork 账号 | Trae 代码版（`function=solo_agent`），与 TraeWork 同一上游、共用账号 |
+| QoderCN | `qodercn/*` | 浏览器登录 | |
+| QoderCOM | `qodercom/*` | 浏览器登录 | Qoder 国际版 |
+| 千问办公 | `qwenwork/*` | 浏览器登录 | |
+| MonkeyCode | `monkeycode/*` | 从客户端导入 | 平台托管模型 |
+| 小浣熊 | `raccoon/*` | 网页版自动登录（CDP）／从客户端导入 | 两条添加路径：主按钮拉起独立 profile 浏览器登录后经 CDP 捕获凭据（跨平台），次按钮复用本机客户端凭据 |
+| Loomy（讯飞） | `loomy/*` | 从客户端导入 | 导入型渠道：凭据从**本机已登录的官方客户端**读取；上游无 refresh 端点，session 约 14 天，到期需重新导入 |
+| 智谱清言 | `glm/*` | CDP 自动捕获 | **网页版私有接口**（非开放平台），凭据是浏览器 Cookie 里的 `chatglm_refresh_token`；新账号须在智谱清言 App 登录一次才发放初始额度 |
+| Cline | `cline-free/*`（兼容旧写法 `cline/*`） | 粘贴官方 API Key | 只调度免费模型；Key 不过期、不轮换；官方额度按账号计，多把 Key 须来自**多个独立账号**（同账号多 Key 共享一份额度，面板会自动识别并提示） |
+| 华为云果办 OfficeAce | `officeace/*` | 自助 OAuth／从客户端导入 | 华为云 AgentArts 模型网关；两条添加路径：主按钮自助 OAuth（华为云授权码 + PKCE + DPoP，跨平台），次按钮读本机 OfficeAce 桌面端凭据（临时 AK/SK 经 DPAPI 解密，仅 Windows）；对话走不过期的网关 Basic 凭据，每日签到的临时凭据约 2 小时有效并自动续期 |
+| OpenCodeZen | `oczen/*` | 无需账号 | 匿名免费通道，内置 `public` 凭证即可调用 Zen 免费模型 |
+| Kilo | `kilo/*` | 无需账号 | 免密免费池 |
+| MiniMax Code | `minimax/*` | 设备码授权登录 | |
+| LobsterAI（有道龙虾） | `lobsterai/*` | 本机回调授权登录 | |
+| ZCode（智谱） | `zcode/*` | 设备授权登录 | |
+| Gemini | `gemini/*` | 本机回调授权登录 | Google Code Assist |
+| CodeArts（华为云） | `codearts/*` | PKCE 授权登录 | |
+| 旧 Qoder | `qoder/*` | — | 路由保留，已从界面下线 |
 
 ## 项目渊源
 
