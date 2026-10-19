@@ -43,6 +43,24 @@ const FAKE_STATE = {
       last_checkin_at: "2026-10-02 09:00",
       last_checkin_ok: true,
     },
+    // 「不适用」账号（场景 1.7）：无积分概念的渠道（oczen/kilo/cline/自定义）。
+    // 两张卡只靠后端下发的 credits_na 区分 —— 这是「默认收起」的唯一判据，
+    // 前端不再另维护渠道名单（否则新增自定义渠道时会被漏收起）。
+    {
+      uid: "oczen-anon",
+      group: "oczen",
+      nickname: "匿名",
+      credits: 0,
+      expiring_credits: 0,
+      unusable_credits: 0,
+      credits_na: true,
+      cooling: false,
+      until: "",
+      reason: "",
+      disabled: false,
+      last_checkin_at: "",
+      last_checkin_ok: false,
+    },
     // OfficeAce 假数据（场景 1.5）：两张卡片只差「凭据是否缺 refresh_token」这一个字段，
     // 用来验证徽标**由该字段驱动**（而不是恒亮），否则徽标本身就是噪声。
     {
@@ -114,6 +132,13 @@ function mkNode(id) {
       add: (c) => cls.add(c),
       remove: (c) => cls.delete(c),
       contains: (c) => cls.has(c),
+      // toggle 供 applyAcctFilter / 「不适用」收起提示使用；缺了它会在 stub 里
+      // 抛 TypeError，让整份检查在第一个 toggle 处就中断（不是断言失败，是崩）。
+      toggle: (c, force) => {
+        const on = force === undefined ? !cls.has(c) : Boolean(force);
+        if (on) cls.add(c); else cls.delete(c);
+        return on;
+      },
       _set: cls,
     },
     // 运行日志容器（renderAppLog 吸底判定需要；stub 下 pinned 恒 true，只验证 HTML 生成）
@@ -169,6 +194,8 @@ const patched =
   // ⚠️ cache 必须按 uid 建键：真实代码是 detailCache[detailState.uid]，
   //    直接塞「响应对象」会让 detailCache[uid] 为 undefined（静默走空明细分支）。
   + ", renderCreditDetail, showCreditDetail, __setCreditDetailState: (st, resp) => { detailState = st; detailCache = { [st.uid]: resp }; }"
+  // 「不适用」默认收起（R103）：showNoCredit / acctFilter 都是 `let`，toggle 也要直接调
+  + ", applyAcctFilter, toggleNoCredit, __setShowNoCredit: (v) => { showNoCredit = v; }, __setAcctFilter: (v) => { acctFilter = v; }"
   + " };";
 
 new Function("document", "window", "localStorage", "fetch", "location", "navigator", patched)(
@@ -260,6 +287,82 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
     `实际 ${(cards.match(/需重新登录/g) || []).length} 个`);
 }
 
+// ---- 场景 1.7：「不适用」账号默认收起 + 一键展开（R103，2026-10-19 用户要求）----
+// 需求原话：「把不适用的默认隐藏掉，但是有时候又得看一下」。
+// 难点不在隐藏，而在「默认值 + 可逆 + 状态不丢」三件事同时成立：
+//   ① 首帧就必须是收起态（不能先闪一排「不适用」再消失）；
+//   ② 展开入口不能藏在设置里（否则「有时候得看一下」变成要翻两层）；
+//   ③ 收起后不能把用户卡住（若正筛选着某不适用渠道，得自动清筛选，否则网格空白且
+//      连「全部」chip 都随汇总条消失）。
+{
+  const naCardOf = () => cards.split('<div class="acct-card').find((seg) => seg.includes("匿名")) || "";
+  const healthyCardOf = () => cards.split('<div class="acct-card').find((seg) => seg.includes("健康号")) || "";
+  // 注意：按 '<div class="acct-card' 切分后，段内已不含 `class="acct-card`，
+  // 故断言从 `hidden" data-group=` 这一段开始匹配（直接拿 class= 开头会永远不命中）。
+  check("默认收起：「不适用」账号卡片带 hidden 且 data-na=1",
+    /^ hidden" data-group="oczen" data-na="1"/.test(naCardOf()),
+    naCardOf().slice(0, 120));
+  check("默认收起：有余额的卡片不带 hidden（防「一刀切全收起」）",
+    !/^[^"]*hidden/.test(healthyCardOf()), healthyCardOf().slice(0, 120));
+  check("data-na 由后端 credits_na 驱动（非前端渠道名单）",
+    /data-na="\$\{isNoCreditAcct\(a\) \? 1 : 0\}"/.test(raw));
+
+  // 汇总条：收起态下不渲染 oczen 的「不适用」chip，只留一枚可点的开关。
+  T.__setShowNoCredit(false);
+  T.renderSummary();
+  const sumOff = document.getElementById("creditSummary").innerHTML;
+  check("收起时汇总条不出现 oczen 的渠道 chip", !/data-wg="oczen"/.test(sumOff), sumOff.slice(0, 200));
+  check("收起时汇总条保留「不适用」开关 chip（入口在原地）",
+    /data-na-toggle="1"/.test(sumOff) && sumOff.includes("不适用"));
+  check("开关 chip 标出被收起的账号数（1号）", /<span class="cs-num">1号<\/span>/.test(sumOff));
+  check("收起态开关不亮 on 高亮", !/cs-chip clickable cs-na on"/.test(sumOff));
+
+  // 展开态：chip 回来、开关变 on、账号卡片不再 hidden。
+  T.__setShowNoCredit(true);
+  T.renderSummary();
+  const sumOn = document.getElementById("creditSummary").innerHTML;
+  check("展开时 oczen 渠道 chip 回来", /data-wg="oczen"/.test(sumOn), sumOn.slice(0, 200));
+  check("展开态开关带 on 高亮", /cs-chip clickable cs-na on"/.test(sumOn));
+  check("展开时开关文案变「收起」", sumOn.includes("收起"));
+
+  // toggleNoCredit 的副作用：持久化 + 重渲染（不能只改内存变量）。
+  T.__setShowNoCredit(false);
+  T.toggleNoCredit();
+  check("toggleNoCredit 一次即展开（内存状态翻转）", /data-wg="oczen"/.test(document.getElementById("creditSummary").innerHTML));
+  check("toggleNoCredit 会重渲染账号卡片（不是只改汇总条）",
+    !/^ hidden" data-group="oczen"/.test(
+      document.getElementById("acctList").innerHTML
+        .split('<div class="acct-card').find((seg) => seg.includes("匿名")) || "hidden"));
+  T.toggleNoCredit();
+  check("再点一次收起（可逆）", !/data-wg="oczen"/.test(document.getElementById("creditSummary").innerHTML));
+
+  // 卡住场景：筛选着一个「不适用」渠道时收起，必须自动清筛选（否则网格空白）。
+  T.__setShowNoCredit(true);
+  T.__setAcctFilter("oczen");
+  T.toggleNoCredit(); // → 收起，应顺手把 acctFilter 清掉
+  T.renderSummary();
+  const sumAfter = document.getElementById("creditSummary").innerHTML;
+  check("收起时自动清掉指向「不适用」渠道的筛选（不留白网格）",
+    !/cs-all/.test(sumAfter), "「全部」chip 仍在 = 筛选未清");
+
+  // 静态接线：开关必须绑在汇总条事件委派里，且默认值是 false（默认收起）。
+  check("汇总条点击委派里有 data-na-toggle 分支",
+    /if \(target\.closest\("\[data-na-toggle\]"\)\) \{ toggleNoCredit\(\); return; \}/.test(raw));
+  check("默认收起：showNoCredit 初始为 false（仅 localStorage=1 才展开）",
+    /let showNoCredit = false;/.test(raw) && raw.includes('localStorage.getItem(SHOW_NA_KEY) === "1"'));
+  check("展开选择持久化到 localStorage", raw.includes("localStorage.setItem(SHOW_NA_KEY"));
+  check("全部被收起时给出可执行提示（不留空白页）",
+    /id="acctHiddenTip"/.test(
+      readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8"))
+    && raw.includes('$("acctHiddenTip")'));
+
+  // 复原，避免影响后续场景的汇总条断言。
+  T.__setShowNoCredit(false);
+  T.__setAcctFilter(null);
+  T.renderAccounts();
+  T.renderSummary();
+}
+
 // ---- 场景 2：渠道汇总条 ----
 T.renderSummary();
 const sum = document.getElementById("creditSummary").innerHTML;
@@ -333,10 +436,12 @@ const FAKE_STATS = {
   credit_in: 200, credit_out: 150, credit_out_exact: 150.5, credit_expired: 100, credit_used: 50,
   tokens: 12345, reqs: 10,
   token_usage: { today: 9000, days7: 50000, days30: 120000, all: 200000, req_today: 8, req_all: 90, days: 12 },
-  expiring_7d: 300, expiring_7d_accts: 1, expire_today: 100, expire_tomorrow: 200,
+  // expire_today(77) 故意与 credit_expired(100) 取不同值：断言才能分辨「今日作废」
+  // 是否被误接成「今日到期」（两者语义相反，混列会把作废说成还没发生）。
+  expiring_7d: 300, expiring_7d_accts: 1, expire_today: 77, expire_tomorrow: 200,
   platforms: [{
     group: "traework", accounts: 2, credits: 4736, credit_in: 200, credit_out: 150,
-    credit_expired: 100, credit_used: 50, tokens: 12345, expire_7d: 300, expire_today: 100, expire_tomorrow: 0,
+    credit_expired: 100, credit_used: 50, tokens: 12345, expire_7d: 300, expire_today: 77, expire_tomorrow: 0,
   }],
   models: [{ model: "traework/DeepSeek-V4", reqs: 3, tokens: 5000, credit: 12.5, avg_ttfb_ms: 800, avg_tok_per_sec: 45.2, perf_samples: 3 }],
   expiry: [{ uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-08", days_left: 2, amount: 100, today_out: 30, burn_forecast: 45, risk: true }],
@@ -354,11 +459,11 @@ const FAKE_STATS = {
 };
 
 T.renderStats(FAKE_STATS);
-const stSum = document.getElementById("stSum").innerHTML;
-check("汇总条不再渲染总积分（平台表合计行已有同源紫字）", !stSum.includes("总积分"));
-check("汇总条首项为收入积分", stSum.includes("收入积分") && stSum.indexOf("收入积分") < stSum.indexOf("今日消耗"));
-check("今日作废仅 >0 时出现", stSum.includes("今日作废"));
-check("今日到期仅 >0 时出现", stSum.includes("今日到期"));
+const htmlEarly = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+check("汇总横条已删（容器与渲染函数都不存在，信息由合计行承接）",
+  !raw.includes("function stSumItem") && !raw.includes('$("stSum")') && !/id="stSum"/.test(htmlEarly));
+check("合计行消耗列带精确小注（承接旧汇总条唯一独有信息）",
+  /st-plat-sub">\(精 /.test(raw) && raw.includes("credit_out_exact"));
 check("里程碑计数正确", document.getElementById("stMilestone").textContent === "里程碑 1×100分");
 const stToken = document.getElementById("stToken").innerHTML;
 check("Token 多天行含今日/7日/已记录", stToken.includes("Token 今日") && stToken.includes("7日") && stToken.includes("已记录") && stToken.includes("12 天"));
@@ -367,6 +472,14 @@ const stPlat = document.getElementById("stPlat").innerHTML;
 check("平台表渲染渠道徽章（traework）", /badge trae"/.test(stPlat));
 check("平台表含合计行（全池口径 4,736）", stPlat.includes("合计") && stPlat.includes("4,736"));
 check("平台表零值列置灰（st-plat-zero）", stPlat.includes("st-plat-zero"));
+// 「今日作废」独立成列（R101 配套）：此前只藏在合计行 title 里看不见。
+// 与「今日到期」是相反方向的口径（往回看已没了 / 往前看今晚会没），不能合列。
+check("平台表有今日作废列（表头 + 逐渠道取值）",
+  /st-plat-expd[^>]*>今日作废/.test(stPlat) &&
+  /st-plat-expd">100</.test(stPlat) /* 逐渠道 credit_expired=100，而 expire_today=77 */);
+check("合计行今日作废取 credit_expired（非 expire_today；两者不同源）",
+  /st-plat-sum-row[\s\S]*?st-plat-expd">100</.test(stPlat) &&
+  !/st-plat-expd">77</.test(stPlat));
 
 const stRotation = document.getElementById("stRotation").innerHTML;
 check("接棒顺序渲染使用中账号", stRotation.includes("使用中 <b>中招号</b>"));
@@ -429,7 +542,7 @@ check("里程碑 toast 同 id 去重（只写一次已读标记）", toastWrites
 const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
 check('第三个 tab 按钮存在（data-mtab="stats"）', /data-mtab="stats"/.test(html));
 check("#mtabStats body 存在且默认隐藏", /class="mtab-body hidden" id="mtabStats"/.test(html));
-check("运行统计区块骨架存在（stSum/stPlat/stApplog）", /id="stSum"/.test(html) && /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
+check("运行统计区块骨架存在（stPlat/stApplog）", /id="stPlat"/.test(html) && /id="stApplog"/.test(html));
 check("更新角标存在（id=stUpdated，拉取失败可感知）", /id="stUpdated"/.test(html));
 // ---- 第四个 tab：模型列表和费率（原独立 section 移入主 tab 组）----
 check('第四个 tab 按钮存在（data-mtab="fees"）', /data-mtab="fees"/.test(html));
@@ -437,16 +550,30 @@ check("#mtabFees body 存在且默认隐藏", /class="mtab-body hidden" id="mtab
 check("模型费率区块骨架存在（feesBox/btnRefreshFees）", /id="feesBox"/.test(html) && /id="btnRefreshFees"/.test(html));
 check("模型费率区块在 section 内（不再是独立 section）", /<div class="mtab-body hidden" id="mtabFees">[\s\S]*?<\/section>/.test(html) && !/<!-- 模型列表和费率 -->\s*<section class="panel">/.test(html));
 const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
-check("style.css 含运行统计样式段（#mtabStats .st-sum 等）", /#mtabStats \.st-sum/.test(css) && /#mtabStats \.st-plat-row/.test(css));
-// ---- 统计页两条单行条：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
-check("汇总条 st-sum 单行不折行（nowrap + 注解可省略 + 数字不剪）",
-  /#mtabStats \.st-sum \{[^}]*flex-wrap: nowrap/.test(css) &&
-  /#mtabStats \.st-sum-sub \{[^}]*text-overflow: ellipsis/.test(css) &&
-  /#mtabStats \.st-sum-val \{[^}]*flex-shrink: 0/.test(css));
-// 合计行配色与汇总条对齐：资产紫/琥珀，锁住防漂移
+check("style.css 含运行统计样式段（#mtabStats .st-plat-row 等）", /#mtabStats \.st-token/.test(css) && /#mtabStats \.st-plat-row/.test(css));
+// ---- Token 多天行单行：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
+check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
+  /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
+  /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
+  !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
+// 合计行配色：资产紫/琥珀，锁住防漂移
+// 平台表动态列宽：JS 实测经 --plat-cols 应用（固定 px 遇大额数字会截断）
+check("表格剩余宽度由平台列吸收（minmax(实测,1fr)），末列既不吸收也不压缩",
+  /if \(i === 1\) return `minmax\(\$\{w \+ 2\}px, 1fr\)`/.test(raw) &&
+  !/max\.length - 1 \? "max-content"/.test(raw));
+check("平台表列宽动态化（--plat-cols 变量 + fitPlatCols 实测），静态兑底含 96px 精确小注位与 72px 作废位",
+  /#mtabStats \.st-plat-row \{\n  display: grid;[\s\S]*?grid-template-columns: var\(--plat-cols, 28px minmax\(150px, 1fr\) 52px 100px 80px 96px 72px 112px 84px 84px 84px\)/.test(css) &&
+  raw.includes("function fitPlatCols") && raw.includes('style.setProperty("--plat-cols"') &&
+  raw.includes("offsetParent") /* 隐藏时跳过 */ &&
+  /b\.dataset\.mtab === "stats"[\s\S]{0,200}fitPlatCols\(\)/.test(raw) /* 切回时重测 */ &&
+  /\$\("stPlat"\)\.innerHTML = html;\s*fitPlatCols\(\);/.test(raw) /* 渲染后实测，别只留 tab 切换那处 */);
 check("合计行当前积分=资产紫、Token=琥珀（与汇总条同色系）",
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-credits \{ color: #7c3aed/.test(css) &&
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-tokens \{ color: var\(--warn\)/.test(css));
+// 今日作废用 danger 色，与「今日消耗」的 warn 色分开（语义相反：真花掉 / 没花就没了）
+check("今日作废列配色为 danger（与今日消耗的 warn 区分）",
+  /#mtabStats \.st-plat-expd \{ color: var\(--danger\)/.test(css) &&
+  !/#mtabStats \.st-plat-out[^\n]*\.st-plat-expd/.test(css));
 check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
   /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
   /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&

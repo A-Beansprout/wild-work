@@ -196,6 +196,12 @@ body {
 .cs-chip.clickable.on { border-color: var(--primary); background: #eff6ff; }
 .cs-chip.cs-all { padding: 3px 10px; }
 .cs-chip.cs-all .cs-n { color: var(--primary); }
+/* 「不适用」开关 chip：默认收起态用虚线边框与弱色，表明它是开关而不是一个渠道；
+   展开后（.on）转实线 + 主题色，与渠道筛选选中态同源。 */
+.cs-chip.cs-na { border-style: dashed; }
+.cs-chip.cs-na .cs-n { color: var(--muted); }
+.cs-chip.cs-na.on { border-style: solid; }
+.cs-chip.cs-na.on .cs-n { color: var(--primary); }
 /* 账号筛选后隐藏的卡片（applyAcctFilter 控制） */
 .acct-grid .acct-card.hidden { display: none; }
 
@@ -1094,10 +1100,10 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-credits,
 #mtabStats .st-plat-in,
 #mtabStats .st-plat-out,
+#mtabStats .st-plat-expd,
 #mtabStats .st-plat-tokens,
 #mtabStats .st-plat-exp,
 #mtabStats .st-plat-no,
-#mtabStats .st-sum-val,
 #mtabStats .st-token .st-tk-val,
 #mtabStats .st-idx,
 #mtabStats .st-mono,
@@ -1105,35 +1111,13 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-ex-date,
 #mtabStats .st-logbox { font-variant-numeric: tabular-nums; }
 
-/* 全局汇总横条：标签 + 等宽数值 + 小字注解横向排布，点号分隔，窄屏换行 */
-#mtabStats .st-sum {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: nowrap; /* 单行条：wrap 会在内容长度临界时抖动换行（今日作废项出现/消失、数字位数增长） */
-  gap: 2px 0;
-  margin-top: 7px;
-  padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #f7f8fa;
-  font-size: 11.5px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-/* 条目改 inline-flex：窄到放不下时只在条目内部压缩——注解（st-sum-sub）收 …，
-   标签与数字 flex-shrink:0 永不剪；无注解的条目保持刚性，剩余空间由有注解的吸收 */
-#mtabStats .st-sum > .st-sum-item { display: inline-flex; align-items: baseline; white-space: nowrap; min-width: 0; }
-#mtabStats .st-sum > .st-sum-item::after { content: "·"; color: #d4d8e0; margin: 0 9px; }
-#mtabStats .st-sum > .st-sum-item:last-child::after { content: ""; margin: 0; }
-#mtabStats .st-sum-label { flex-shrink: 0; }
-#mtabStats .st-sum-val { margin-left: 5px; font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
-#mtabStats .st-sum-val.ok { color: var(--ok); }    /* 收入积分 */
-#mtabStats .st-sum-val.warn { color: var(--warn); }  /* 消耗积分 / Token */
-#mtabStats .st-sum-val.pur { color: #7c3aed; }     /* 总额度（资产） */
-#mtabStats .st-sum-val.risk { color: var(--danger); } /* 今日到期（今晚作废） */
-#mtabStats .st-sum-sub { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: #a1a1aa; }
-#mtabStats .st-sum-sub::before { content: "（"; }
-#mtabStats .st-sum-sub::after { content: "）"; }
+/* （旧汇总横条 st-sum 已删：与合计行重复。合计行承接全部信息量：
+/* （旧汇总横条 st-sum 已删：与合计行重复。合计行承接全部信息量：
+   当前积分 = 资产紫，消耗 Token = 琥珀，消耗列内嵌「精确」小注。） */
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-credits { color: #7c3aed; font-size: 12.5px; }
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-tokens { color: var(--warn); }
+#mtabStats .st-plat-sub { font-size: 10px; color: #a1a1aa; font-weight: 400; }
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-slot { color: #52525b; }
 
 /* 平台表：grid 固定列宽 + 满高右边框做竖线。
    中列按内容量收窄（固定 px）、末列弹性吸收剩余并左对齐——避免「数字浮在空白里」。
@@ -1141,7 +1125,10 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat { margin-top: 8px; }
 #mtabStats .st-plat-row {
   display: grid;
-  grid-template-columns: 28px 150px 52px 100px 80px 80px 112px 84px 84px 1fr;
+  /* 列宽：JS fitPlatCols 渲染后实测每列最宽内容，经容器变量 --plat-cols 覆盖
+     （数字涨到千/万位列宽自动加宽）；括号内为静态兑底（首渲染/隐藏时），
+     今日消耗 96px 容纳合计行「(精 xxx.xx)」小注，今日作废 72px 容纳三位数+分 */
+  grid-template-columns: var(--plat-cols, 28px minmax(150px, 1fr) 52px 100px 80px 96px 72px 112px 84px 84px 84px);
   font-size: 12px;
   white-space: nowrap;
   border-bottom: 1px solid rgba(23, 23, 23, 0.08);
@@ -1163,6 +1150,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-row.st-plat-head .st-plat-credits,
 #mtabStats .st-plat-row.st-plat-head .st-plat-in,
 #mtabStats .st-plat-row.st-plat-head .st-plat-out,
+#mtabStats .st-plat-row.st-plat-head .st-plat-expd,
 #mtabStats .st-plat-row.st-plat-head .st-plat-tokens,
 #mtabStats .st-plat-row.st-plat-head .st-plat-exp {
   color: #a1a1aa;
@@ -1177,11 +1165,15 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-credits,
 #mtabStats .st-plat-in,
 #mtabStats .st-plat-out,
+#mtabStats .st-plat-expd,
 #mtabStats .st-plat-tokens,
 #mtabStats .st-plat-exp { font-size: 11.5px; }
 #mtabStats .st-plat-credits { color: var(--text); font-size: 12px; font-weight: 600; }
 #mtabStats .st-plat-in { color: var(--ok); }
 #mtabStats .st-plat-out { color: var(--warn); }
+/* 今日作废：已到期消失的额度，用 danger 色与「今日消耗」的 warn 色区分开
+   （两者语义相反：一个是真花掉，一个是没花就没了） */
+#mtabStats .st-plat-expd { color: var(--danger); }
 #mtabStats .st-plat-tokens { color: #52525b; }
 #mtabStats .st-plat-exp { color: #52525b; }
 #mtabStats .st-plat-exp.st-risk { color: var(--danger); font-weight: 600; }
@@ -1192,17 +1184,16 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   border-top: 1px solid rgba(23, 23, 23, 0.08);
   font-weight: 600;
 }
-/* 合计行：与顶部汇总条同色系——当前积分 = 资产紫（st-sum-val.pur），消耗 Token = 琥珀（warn）。
-   子行颜色保持各列语义色（绿收入/琥珀消耗），零值置灰不变 */
-#mtabStats .st-plat-row.st-plat-sum-row .st-plat-credits { color: #7c3aed; font-size: 12.5px; }
-#mtabStats .st-plat-row.st-plat-sum-row .st-plat-tokens { color: var(--warn); }
+/* （旧汇总横条 st-sum 已删：与合计行重复。合计行承接全部信息量：
+   当前积分 = 资产紫，消耗 Token = 琥珀，消耗列内嵌「精确」小注。） */
+#mtabStats .st-plat-sub { font-size: 10px; color: #a1a1aa; font-weight: 400; }
 #mtabStats .st-plat-row.st-plat-sum-row .st-plat-slot { color: #52525b; }
 
 /* Token 多天行（标题右侧，虚线分隔，数值蓝色等宽） */
 #mtabStats .st-token {
   display: flex;
   align-items: baseline;
-  flex-wrap: nowrap; /* 同 st-sum：单行条。极窄时整条截尾（overflow:hidden），
+  flex-wrap: nowrap; /* 单行条。极窄时整条截尾（overflow:hidden），
      不让条目各自等比压缩出满屏 …；相邻的里程碑/上次更新自带 ellipsis 会先收缩 */
   gap: 2px 0;
   margin-left: 14px;
@@ -1393,7 +1384,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-ab-sum.st-ab-err { color: #a16207; background: #fef9c3; border-color: #fde68a; }
 
 @media (max-width: 640px) {
-  #mtabStats .st-plat-row { grid-template-columns: 24px 96px 40px 76px 60px 60px 84px 64px 64px 1fr; font-size: 11px; }
+  #mtabStats .st-plat-row { font-size: 11px; } /* 列宽统一走 --plat-cols 动态实测，窄屏字号缩小后重测自然适配 */
   #mtabStats .st-ex-row { grid-template-columns: 24px 88px 120px 96px 88px 1fr; font-size: 11px; }
   #mtabStats .st-ab-row { grid-template-columns: 24px 64px 88px 110px 1fr 76px 64px; font-size: 11px; }
 }

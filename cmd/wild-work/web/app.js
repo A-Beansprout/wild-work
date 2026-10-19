@@ -930,8 +930,14 @@ function renderSummary() {
 
   const fmt = (n) => n.toLocaleString("zh-CN");
   // 已知渠道按固定顺序，未知渠道（新增时）按字母序垫后，保证不丢行
-  const chs = CH_SUMMARY_ORDER.filter((k) => byCh[k])
+  let chs = CH_SUMMARY_ORDER.filter((k) => byCh[k])
     .concat(Object.keys(byCh).filter((k) => !CH_SUMMARY_ORDER.includes(k)).sort());
+  // 「不适用」渠道（无积分概念：oczen/kilo/cline/自定义渠道）默认不进汇总条：
+  // 它们的 chip 只有一句「不适用」，既不反映余额也不参与合计，纯噪声。
+  // 收起时改由末尾一枚开关 chip 汇总提示（点它原地展开），账号卡片同步收起。
+  const naChs = chs.filter((k) => byCh[k].na);
+  const naAccts = naChs.reduce((n, k) => n + byCh[k].n, 0);
+  if (!showNoCredit) chs = chs.filter((k) => !byCh[k].na);
 
   let total = 0, totalExp = 0, staleChs = 0;
   let html = `<span class="cs-title">积分汇总</span>`;
@@ -969,6 +975,18 @@ function renderSummary() {
     html += `<span class="cs-chip clickable cs-all" data-wg="" role="button" tabindex="0" title="显示全部账号">`
       + `<span class="cs-n">全部</span></span>`;
   }
+  // 「不适用」开关：默认收起（只留这一枚），展开后上面会重新出现这些渠道的 chip。
+  // 入口刻意放在被隐藏 chip 的原位，不额外占工具栏一格（R103）。
+  if (naChs.length) {
+    const names = naChs.map(chLabel).join("、");
+    const naTitle = showNoCredit
+      ? `收起「不适用」渠道（${names}）及其账号卡片`
+      : `展开「不适用」渠道（${names}）：这些渠道无积分概念，余额恒为「不适用」`;
+    html += `<span class="cs-chip clickable cs-na${showNoCredit ? " on" : ""}" data-na-toggle="1"`
+      + ` role="button" tabindex="0" title="${esc(naTitle)}">`
+      + `<span class="cs-n">不适用</span><span class="cs-num">${naAccts}号</span>`
+      + `<span class="cs-n">${showNoCredit ? "收起" : "展开"}</span></span>`;
+  }
   html += `<span class="cs-chip cs-total" title="各渠道可用积分合计（不含「不可用」、匿名通道与 Token 计量渠道）">`
     + `<span class="cs-title">合计</span><span class="cs-num">${fmt(total)}</span>`
     + (totalExp > 0 ? `<span class="cs-exp">临期${fmt(totalExp)}</span>` : "")
@@ -981,6 +999,39 @@ function renderSummary() {
 // 汇总条 chip 与账号卡片同源于 state.accounts，点某个渠道 chip 即筛选其账号卡片。
 let acctFilter = null;
 
+// showNoCredit 「不适用」账号（无积分概念的渠道：oczen/kilo/cline/自定义渠道）是否展开。
+// **默认收起**：这些卡片永远只有一句「不适用」，却各占一整张卡片位置、汇总条上还各占一枚
+// chip，页面上真正有余额的渠道反被稀释（2026-10-19 用户要求「不适用的默认隐藏掉，
+// 但有时候又得看一下」）。开关放在汇总条末尾的「不适用 N号」chip 上——被隐藏的正是那几枚
+// chip，展开入口就在原地，不额外占工具栏。选择持久化到 localStorage，刷新不弹回默认。
+const SHOW_NA_KEY = "acct-show-na";
+let showNoCredit = false;
+try { showNoCredit = localStorage.getItem(SHOW_NA_KEY) === "1"; } catch (e) { /* 存储不可用时保持默认收起 */ }
+function persistShowNoCredit() {
+  try { localStorage.setItem(SHOW_NA_KEY, showNoCredit ? "1" : "0"); } catch (e) { /* 忽略 */ }
+}
+// isNoCreditAcct 该账号是否「无积分概念」：以后端下发的 credits_na 为准（与汇总条同口径，
+// 含 R66 的自定义渠道动态判定），不在前端另维护一份渠道名单。
+const isNoCreditAcct = (a) => Boolean(a && a.credits_na);
+
+// toggleNoCredit 展开/收起「不适用」渠道与账号卡片。
+function toggleNoCredit() {
+  showNoCredit = !showNoCredit;
+  persistShowNoCredit();
+  // 收起时若正筛选着某个「不适用」渠道，必须先清筛选：否则筛选态指向已隐藏的渠道，
+  // 网格一片空白，而用来取消筛选的「全部」chip 也随汇总条一起消失了。
+  if (!showNoCredit && acctFilter
+      && (state.accounts || []).some((a) => isNoCreditAcct(a) && (a.group || "workbuddy") === acctFilter)) {
+    acctFilter = null;
+  }
+  // 重渲染账号卡片而不只改 class：hidden 的直接来源是 renderAccounts 里的 naHiddenClass，
+  // 只靠 applyAcctFilter 改 class 时，任何一次 render() 都会把收起态“覆盖回去”（两处各写一份
+  // 可见性就是漂移源）。重渲染卡片的代价很小，换来单一真相。
+  renderSummary();
+  renderAccounts();
+  applyAcctFilter();
+}
+
 // applyAcctFilter 按 acctFilter 显示/隐藏账号卡片（与汇总条 chip 联动）。
 // 逐张卡片读 data-group（由 renderAccounts 写入的**渠道 key**，不是 CSS 短类名）：
 //   自定义渠道的短类名一律是 custom，拿类名反查会把它们全归到同一个 key 上，
@@ -988,11 +1039,27 @@ let acctFilter = null;
 function applyAcctFilter() {
   const grid = $("acctList");
   if (!grid) return;
+  let shown = 0;
   grid.querySelectorAll(".acct-card").forEach((card) => {
     const key = card.dataset.group || "";
-    const show = !acctFilter || key === acctFilter;
+    // 两道独立过滤，取「与」：① 渠道 chip 筛选；② 收起「不适用」账号。
+    // 必须同时判——筛选到某渠道时也不该把它被收起的「不适用」账号漏出来。
+    const naHidden = !showNoCredit && card.dataset.na === "1";
+    const show = !naHidden && (!acctFilter || key === acctFilter);
     card.classList.toggle("hidden", !show);
+    if (show) shown++;
   });
+  // 全部卡片都被收起时给出可执行的提示：留一片空白会被当成「账号丢了」。
+  const tip = $("acctHiddenTip");
+  if (tip) {
+    const total = grid.querySelectorAll(".acct-card").length;
+    const naTotal = grid.querySelectorAll('.acct-card[data-na="1"]').length;
+    const hide = total > 0 && shown === 0 && naTotal > 0;
+    tip.classList.toggle("hidden", !hide);
+    if (hide) {
+      tip.textContent = `已收起 ${naTotal} 个「不适用」账号（无积分概念的渠道）· 点汇总条末尾的「不适用」展开`;
+    }
+  }
 }
 
 // setAcctFilter 设置筛选并同步汇总条高亮与账号卡片可见性。
@@ -1007,6 +1074,8 @@ function bindSummaryFilter() {
   const el = $("creditSummary");
   if (!el) return;
   const pick = (target) => {
+    // 「不适用」开关走独立分支：它不是渠道筛选（没有 data-wg），点了要展开/收起整组。
+    if (target.closest("[data-na-toggle]")) { toggleNoCredit(); return; }
     const chip = target.closest(".cs-chip.clickable");
     if (!chip) return;
     setAcctFilter(chip.dataset.wg || null);
@@ -1060,8 +1129,12 @@ function renderAccounts() {
     //   不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
     // - 自定义渠道（R66）：无积分/无签到，但账号可在设置里停用/删除，
     //   故保留停用/删除/改名入口，只去掉签到/刷新积分两个无意义按钮。
-    const noCredits = hasNoCredits(a.group);
+    // 判定优先用后端下发的 credits_na（单一真相），前端名单只作旧载荷的兜底。
+    const noCredits = isNoCreditAcct(a) || hasNoCredits(a.group);
     const fixedAcct = noCredits && !isCustomGroup(a.group);
+    // 默认收起的「不适用」卡片：渲染时就带上 hidden（而不是等 applyAcctFilter），
+    // 首帧不会先闪一排「不适用」再消失；applyAcctFilter 后续负责保持同步。
+    const naHiddenClass = (!showNoCredit && isNoCreditAcct(a)) ? " hidden" : "";
     // 问号图标：hover 展示 oczen 通道说明（免费反代范围/私有 Key/代理三项）。
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
@@ -1110,7 +1183,7 @@ function renderAccounts() {
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
     return `
-    <div class="acct-card${disabledClass}${coolingClass}" data-group="${esc(a.group || "workbuddy")}">
+    <div class="acct-card${disabledClass}${coolingClass}${naHiddenClass}" data-group="${esc(a.group || "workbuddy")}" data-na="${isNoCreditAcct(a) ? 1 : 0}">
       <div class="acct-top">
         <div>
           ${chBadge(a.group)}
@@ -3711,6 +3784,7 @@ function bindMainTabs() {
       }
       if (b.dataset.mtab === "stats") {
         loadStats(); // 切到运行统计 tab 时拉最新（后台 30s 轮询兜底）
+        fitPlatCols(); // 之前隐藏时跳过测量，切回时按当前字号重算列宽
       }
     };
   });
@@ -3814,12 +3888,6 @@ async function loadAppLog() {
 }
 
 // 汇总横条条目（标签 + 等宽数值 + 可选小字注解）
-function stSumItem(label, val, cls, sub) {
-  return `<span class="st-sum-item"><span class="st-sum-label">${label}</span>` +
-    `<span class="st-sum-val ${cls || ""}">${val}</span>` +
-    (sub ? `<span class="st-sum-sub">${sub}</span>` : "") + `</span>`;
-}
-// Token 多天行条目
 function stTkItem(label, val) {
   return `<span class="st-tk-item">${label} <span class="st-tk-val">${val}</span></span>`;
 }
@@ -3853,18 +3921,8 @@ function buildPerfLookup(models) {
 
 function renderStats(s) {
   const tu = s.token_usage || {};
-  // 汇总横条：作废/今日到期仅 >0 时出现（避免每天多条 0 值噪音）
-  $("stSum").innerHTML =
-    // 总积分不进汇总条：平台表合计行已有同源数字（紫色资产色），避免双处维护同一资产值
-    stSumItem("收入积分", fmtCredits(s.credit_in), "ok", "签到事件口径") +
-    stSumItem("今日消耗", fmtCredits(s.credit_used), "warn", "精确 " + fmtCreditS(s.credit_out_exact)) +
-    (Number(s.credit_expired) > 0
-      ? stSumItem("今日作废", fmtCredits(s.credit_expired), "risk", "积分包到期 · 非消耗")
-      : "") +
-    stSumItem("消耗 Token", fmtTokensFull(s.tokens), "warn") +
-    (Number(s.expire_today) > 0
-      ? stSumItem("今日到期", fmtCredits(s.expire_today) + "分", "risk", "今晚作废尽快消耗")
-      : "");
+  // 汇总横条已删（与合计行重复）：全池汇总数字全部由平台表合计行呈现，
+  // 仅 >0 才出现的「今日作废/今日到期」也走合计行（列常年存在，零值置灰）。
   $("stMilestone").textContent = s.milestone_count > 0 ? `里程碑 ${s.milestone_count}×100分` : "";
   renderPlatformTable(s);
   // Token 多天行（今日情况标题右侧）
@@ -3881,9 +3939,10 @@ function renderStats(s) {
   handleToasts(s.toasts || []);
 }
 
-// 平台表（今日情况主视图）：列 = #/平台/账号/当前积分/今日收入/今日消耗(净值)/今日Token/
-// 今日到期/明日到期/7日内到期，末行合计。「今日消耗」= 差值花费 − 积分包到期作废（净值才是真消耗）。
-// 合计行取全池口径，与顶部汇总横条严格同源（合计 == 横条可互相印证）。
+// 平台表（今日情况主视图）：列 = #/平台/账号/当前积分/今日收入/今日消耗(净值)/今日作废/
+// 今日消耗Token/今日到期/明日到期/7日内到期，末行合计。「今日消耗」= 差值花费 − 积分包到期作废
+// （净值才是真消耗）；「今日作废」= ledger 当日 expire 流水（往回看：已经没了多少），
+// 与「今日到期」（往前看：今晚余额里还有多少会没）是相反方向的两个口径，不能混为一列。
 function renderPlatformTable(s) {
   const rows = s.platforms || [];
   if (!rows.length) { $("stPlat").innerHTML = ""; return; }
@@ -3894,6 +3953,7 @@ function renderPlatformTable(s) {
     `<span class="st-plat-credits">当前积分</span>` +
     `<span class="st-plat-in">今日收入</span>` +
     `<span class="st-plat-out" title="花费差值扣除积分包到期作废后的净消耗">今日消耗</span>` +
+    `<span class="st-plat-expd" title="今日已到期的积分包额度（已从余额消失，不是消耗）">今日作废</span>` +
     `<span class="st-plat-tokens">今日消耗Token</span>` +
     `<span class="st-plat-exp">今日到期</span>` +
     `<span class="st-plat-exp">明日到期</span>` +
@@ -3907,26 +3967,70 @@ function renderPlatformTable(s) {
       stPlatNum("st-plat-credits", r.credits, "分") +
       stPlatNum("st-plat-in", r.credit_in) +
       stPlatNum("st-plat-out", r.credit_used) +
+      stPlatNum("st-plat-expd", r.credit_expired) +
       stPlatTok(r.tokens) +
       stPlatNum("st-plat-exp", r.expire_today, "分") +
       stPlatNum("st-plat-exp", r.expire_tomorrow, "分") +
       stPlatNum("st-plat-exp", r.expire_7d, "分") +
       `</div>`;
   });
-  // 合计行：与顶部汇总横条同源
+  // 合计行：与旧汇总横条同信息量——消耗列带「精确」小注（逐请求 usage 帧口径），
+  // title 悬浮说明净消耗 = 差值花费 - 作废。
+  const sumExact = Number(s.credit_out_exact) > 0 ? ` title="净消耗 ${fmtCredits(s.credit_used)}：差值扣除作废 ${fmtCredits(s.credit_expired)}；逐请求精确 ${fmtCreditS(s.credit_out_exact)}"` : "";
   html += `<div class="st-plat-row st-plat-sum-row">` +
     `<span class="st-plat-no"></span>` +
     `<span class="st-plat-slot">合计</span>` +
     `<span class="st-plat-accts">${fmtCredits(s.total_accounts)}</span>` +
     stPlatNum("st-plat-credits", s.total_credits, "分") +
     stPlatNum("st-plat-in", s.credit_in) +
-    stPlatNum("st-plat-out", s.credit_used) +
+    `<span class="st-plat-out"${sumExact}>${fmtCredits(s.credit_used)}${Number(s.credit_out_exact) > 0 ? ` <span class="st-plat-sub">(精 ${fmtCreditS(s.credit_out_exact)})</span>` : ""}</span>` +
+    stPlatNum("st-plat-expd", s.credit_expired) +
     stPlatTok(s.tokens) +
     stPlatNum("st-plat-exp", s.expire_today, "分") +
     stPlatNum("st-plat-exp", s.expire_tomorrow, "分") +
     stPlatNum("st-plat-exp", s.expiring_7d, "分") +
     `</div>`;
   $("stPlat").innerHTML = html;
+  fitPlatCols();
+}
+
+// fitPlatCols 平台表动态列宽：每行是独立 grid，固定 px 遇到大额数字会截断
+// （合计行「(精 xxx.xx)」/积分上千/万）；也不能改 auto 列——各行独立解析会跨行错位。
+// 渲染后实测每列所有行（含表头/合计）最宽 cell 的 scrollWidth，经容器 CSS 变量
+// --plat-cols 统一应用。不可见时（tab 隐藏）scrollWidth 全为 0，跳过等切回时重测。
+function fitPlatCols() {
+  const el = $("stPlat");
+  const rows = [...el.querySelectorAll(".st-plat-row")];
+  if (!rows.length || !rows[0].offsetParent) return;
+  // 测量「内容需要的宽度」：cell 是 overflow:hidden 的 flex 容器，scrollWidth 被
+  // 当前列宽钳住（列宽 96px 永远量出 96px，死循环自洽）。改成临时把所有 cell
+  // position:absolute + width:max-content：脱离 grid 流按内容自适应撑开，
+  // offsetWidth 即真实需求；一次性进入测量态、统一读、再统一还原（避免逐 cell 反复重排）。
+  const cells = [];
+  for (const r of rows) {
+    for (const c of r.children) {
+      cells.push([c, c.style.position, c.style.width]);
+      c.style.position = "absolute";
+      c.style.width = "max-content";
+    }
+  }
+  const max = [];
+  rows.forEach((r) => {
+    [...r.children].forEach((c, i) => {
+      max[i] = Math.max(max[i] || 0, c.offsetWidth);
+    });
+  });
+  for (const [c, p, w] of cells) { c.style.position = p; c.style.width = w; }
+  // 首列(#)固定 28px；平台列 minmax(实测, 1fr)——吸收表格剩余空白（徽章左对齐，
+  // 空白自然落在徽章右侧）；其余列固定为实测宽 +2px 余量。
+  // 末列不用 1fr：总宽超出时 1fr 会被压到内容之下把数字剪掉；
+  // 也不用 max-content：它不吸收空白，右侧会裸露一块「无主宽度」。
+  const cols = max.map((w, i) => {
+    if (i === 0) return "28px";
+    if (i === 1) return `minmax(${w + 2}px, 1fr)`;
+    return (w + 2) + "px";
+  });
+  el.style.setProperty("--plat-cols", cols.join(" "));
 }
 
 // 平台表数值单元格：0 值置灰「—」（避免满屏 0 淹没真正有数的列），颜色由列类自带

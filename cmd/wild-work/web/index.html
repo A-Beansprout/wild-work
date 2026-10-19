@@ -92,6 +92,8 @@
     </div>
     <div id="creditSummary" class="credit-summary hidden" title="各渠道积分汇总（与账号卡片同源）"></div>
     <div id="acctList" class="acct-grid"></div>
+    <!-- 全部卡片都被「收起不适用」过滤掉时的提示（否则一片空白会被当成账号丢了） -->
+    <div id="acctHiddenTip" class="empty hidden"></div>
     <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
     </div>
 
@@ -139,7 +141,6 @@
     <div class="mtab-body hidden" id="mtabStats">
     <div class="st-panel">
       <div class="st-sec-head"><span>今日情况</span><div class="st-token" id="stToken"></div><span class="st-sec-info" id="stMilestone"></span><span class="st-sec-info" id="stUpdated"></span></div>
-      <div class="st-sum" id="stSum"></div>
       <div class="st-plat" id="stPlat"></div>
     </div>
     <div class="st-rotation" id="stRotation"></div>
