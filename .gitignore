@@ -22,6 +22,7 @@ docs/*
 !docs/渠道接入备忘.md
 !docs/接口参考.md
 !docs/模型降级链定义.md
+!docs/全渠道登录授权方式梳理.md
 
 # 临时文件
 temp/
