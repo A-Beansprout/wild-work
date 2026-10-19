@@ -2642,3 +2642,53 @@ host 无法传入 ⇒ 隐含「浏览器必须与网关同机」这一**未写�
 | [@lzmuhioin](https://github.com/lzmuhioin) | issue #157 + PR #162 签到遮蔽修复（含真机二进制级 A/B）；issue #160 + PR #161 CodeArts 异地登录兜底（含真机端到端登录成功） |
 | [@ezjbc](https://github.com/ezjbc) | PR #159 模型饱和请求内换模型 + 降级链四维处置 + 唯一权威定义文档 |
 | [@lzb354411](https://github.com/lzb354411) | PR #158 Qoder 双区签到窗口与资格文案 + MonkeyCode 三步签到 + OfficeAce 凭据链 |
+
+# wild-work v2.9.2
+
+本版合并两个外部 PR（#163 / #166），修复一批「渠道明明能用却全坏」的实测故障与 LobsterAI 跨机登录问题。
+
+## 🔧 渠道全坏类故障（PR #163，[@lzb354411](https://github.com/lzb354411)）
+
+- **SSE 帧前缀兼容（fix #164，lobsterai 全部模型 502）**：上游实测发 `data:{...}`（冒号后无空格），
+  而解析器只认 `data: `（带空格）⇒ 帧不被识别触发「空流」兜底，正常回答被追加一帧
+  `empty upstream stream` 错误，非流式直接 502。现收成唯一入口 `sseDataPayload()`
+  （WHATWG SSE 规范：冒号后空格可选），并加结构门禁测试禁止再写窄判据。
+- **developer 角色归一（officeace 400 / lobsterai 500）**：两渠道请求体不走
+  `upstream.PrepareBody` 且漏复制 role 归一。现导出 `upstream.NormalizeRoles` 统一调用
+  （实测同账号同模型唯一变量 role：user→200，developer→500 空体）。
+- **上游故障不再惩罚健康账号**：① 5xx 默认不计入账号错误（实测一次上游 500 风暴把
+  三个健康账号打成 10 分钟冷却、整渠道 503），保留 `CountServerErrorAsAccountFault`
+  显式退出；② `ErrModelBlocked` 只冻该 (账号,模型)，不再冻结整号（兑现定义注释）。
+- **officeace 出站节流**：上游限 1 req/s（429 ModelArts.81101），按 `base_url` 共享
+  串行化（实测两不同账号同秒各 429 ⇒ 限的是网关维度，不是账号），`ChatThrottleInterval` 可配。
+- **登录编排收成单一来源表**：`StartLoginFor`/`CancelLogin`/`pollLogin` 里 6-7 张手工
+  渠道表收进 `loginFlows` 一张声明式表（init 自检），顺带修掉三个实锤 Bug：
+  小浣熊网页登录整条死（Loomy 的 Start 被串写覆盖）、取消 Loomy 时引导页不关、
+  GLM 提示「登录完成」实则什么都没发生（假成功，现由 `needs_poll` 显式下发）。
+- **MonkeyCode 诊断增强**：粘性路由补查 `SessionDead`（原先登录态失效的账号仍被粘住，
+  每请求白打一次必 401 的探测）；503 文案单列「登录态失效 N 个」（原先被「余额耗尽」误导）。
+
+## 🔐 LobsterAI 跨机登录（PR #166 + issue #165，[@lzmuhioin](https://github.com/lzmuhioin)）
+
+- **人工回调通道**：面板不在网关本机时，浏览器登录后会停在一条打不开的 `127.0.0.1` 地址
+  （上游 portal 只认 `http://127.0.0.1:<port>/auth/callback`，改 LAN IP 无效——已实测并回滚）。
+  现可把那条 URL 粘回面板，网关解析 code 后走与自动回调完全相同的兑换路径；
+  state 不放宽、含端口自检（拦「粘到上一次登录的地址」）。
+- **可固定回调端口**：新增 `config.login.lobsterai_callback_port`（默认 0=随机）。固定端口后
+  在浏览器所在机器建一条 `ssh -L 127.0.0.1:<port>:127.0.0.1:<port> <网关>` 转发即可全自动回调。
+- 登录等待上限对齐 `FlowTTL`（10m，原 5m 会在用户还在登录页时先关掉回调口）；补回调取证日志。
+
+## ✅ 验证
+
+- `go build ./... && go vet ./... && go test ./...` 全绿（47 包）；
+- `node scripts/ui-static-check.mjs` 全部通过；
+- 本版新增回归测试：SSE 无空格帧 + 单一来源门禁、developer 归一（officeace/lobsterai）、
+  5xx 不罚号 / 404 只冻该模型、officeace 节流、登录编排结构锁（AST）、GLM 假成功、
+  LobsterAI 人工回调 7 例 + 固定端口 3 例（含 redirect_uri 恒回环护栏）。
+
+## 🙏 致谢
+
+| 贡献者 | 内容 |
+|--------|------|
+| [@lzb354411](https://github.com/lzb354411) | PR #163 渠道全坏类故障 7 项（SSE 帧前缀 / developer 角色 / 上游故障不罚号 / officeace 节流 / 登录编排收表） |
+| [@lzmuhioin](https://github.com/lzmuhioin) | issue #165 + PR #166 LobsterAI 跨机登录兜底（含 portal 源码取证与真机端到端验证） |
