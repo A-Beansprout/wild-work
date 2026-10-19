@@ -7,6 +7,7 @@
 ## 功能
 
 - **三接口协议兼容**：`/v1/chat/completions`（OpenAI Chat）+ `/v1/responses`（OpenAI Responses）+ `/v1/messages`（Anthropic Messages，含 `count_tokens`）+ **`/v1/systemone`（Jev 结构化决策）**，可直接接入 `codex` CLI、`claude` CLI 与需要语义决策的自动化流程
+- **OpenAI Images 生图**（glm 渠道）：`/v1/images/generations`（文生图）+ `/v1/images/edits`（参考图改图），OpenAI Images API 兼容，外部工具零改造接入（详见下文「生图 API」）
 - **请求体指纹脱敏**：自动清除 Claude Code / Codex CLI 注入的模板句，防止上游 11128 内容拦截
 - **思考链死循环检测（防癫拦截）**：流式生成中逐帧检测推理复读/空转，命中即中断 SSE 并向客户端返回错误（`code=upstream_reasoning_loop`），由下游 AI 客户端自行重试恢复；不罚账号（模型级问题），默认开启，面板「设置」可关闭
 - **OpenAI 兼容代理**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，模型前缀路由
@@ -341,7 +342,68 @@ export ANTHROPIC_MODEL="traework/glm-5.2"
 > 会触发内容策略拦截（上游返回 `code=11128 Illegal API invocation from an unapproved channel`），
 > 实测 `traework/*`、`qoder/*`、部分 `workbuddy/*` 模型不受影响；如遇拦截请更换渠道模型。
 
-### 5. Jev 结构化决策端点（`/v1/systemone`）
+### 5. 生图 API（OpenAI Images 兼容，glm 渠道）
+
+同一端口提供 OpenAI Images API 兼容端点，由 glm（智谱清言）渠道承载，**不依赖其它渠道**：
+
+| 端点 | 用途 | 说明 |
+|------|------|------|
+| `POST /v1/images/generations` | 文生图 | 一次上游固定产 4 图，`n` ≤ 4 取前 N 张；12~15s |
+| `POST /v1/images/edits` | 参考图改图 | 多参考图自动拼版托管；输出比例**跟随输入图** |
+
+鉴权与 Chat 相同（`Authorization: Bearer <API Key>`）。
+`model` 字段可省略或任意填写（服务端忽略，固定走 glm 画图通道；不换模型、不做请求内换号）。
+
+#### 文生图
+
+```bash
+curl -X POST "http://127.0.0.1:7863/v1/images/generations" \
+  -H "Authorization: Bearer WildWorkAPI" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm/image",
+    "prompt": "鲸系女仆立绘，蓝白渐变长发，手持一碗米饭",
+    "n": 1,
+    "size": "1024x1024"
+  }'
+```
+
+- `size` 支持 OpenAI 尺寸与裸比例两种写法：`1024x1024` / `864x1152` / `1152x864` /
+  `720x1280` / `1280x720`，或 `1:1` / `3:4` / `4:3` / `9:16` / `16:9`（也可 `auto`）。
+  **其它值一律 400**——上游对非法比例会静默降级为 1:1，本层直接拦截；
+- `response_format` 默认 `b64_json`（产物 CDN 直链会过期，服务端下载后内联返回）；
+  传 `"url"` 则返回直链（过期失效，需自取自存）；
+- 响应结构与 OpenAI 一致：`{"created": …, "data": [{"b64_json": …, "revised_prompt": …}]}`。
+
+#### 参考图改图
+
+双形态入参：
+
+- **multipart**（OpenAI 官方 SDK 形状）：文件字段 `image`（可重复，也接受 `image[]`），
+  另有 `prompt`、`output_format`（`png` 时产物真转 PNG——上游原生产 JPEG）；
+- **JSON**：`{"prompt": "…", "image": ["https://… | data:image/png;base64,…"]}`。
+
+```bash
+curl -X POST "http://127.0.0.1:7863/v1/images/edits" \
+  -H "Authorization: Bearer WildWorkAPI" \
+  -F "prompt=给这个角色换上红色围巾，保持立绘风格" \
+  -F "image=@./character.webp" \
+  -F "output_format=png"
+```
+
+- 单张 `http(s)` URL 参考图直接透传上游（不过图床，链路最短）；
+  本地文件 / base64 / 多图则自动**拼版**（referenceN 标注）+ 图床托管，对调用方透明；
+- 产物默认下载转 `b64_json`（下载失败时回退 `url` 直链）；`output_format=png` 可让
+  产物真转 PNG（上游原生产 JPEG）；请求的 `size` 被忽略——
+  **输出比例跟随输入图**（`aspect_ratio` 对 edits 无效，实证）。
+
+#### 限制与注意
+
+- 生图依赖 glm 渠道账号池；402/限流等按 glm 模型级冷却处理，下一次请求自动换号；
+- **产物不自动删除**，走图床的参考图会上传到第三方图床（含隐私提示，敏感图勿用）；
+- edits 的多图拼版出图效果以双人设定集定性验证过，任意 N 张未全量验证。
+
+### 6. Jev 结构化决策端点（`/v1/systemone`）
 
 OpenCode Zen 上还有一个免费的结构化决策模型 **Jev（`jev-1.13-free`）**。
 它不是聊天模型——不能调 `/v1/chat/completions`（会 500），只能通过专用端点调用。
