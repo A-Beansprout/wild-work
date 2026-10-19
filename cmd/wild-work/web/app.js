@@ -3864,9 +3864,10 @@ function renderStats(s) {
   handleToasts(s.toasts || []);
 }
 
-// 平台表（今日情况主视图）：列 = #/平台/账号/当前积分/今日收入/今日消耗(净值)/今日Token/
-// 今日到期/明日到期/7日内到期，末行合计。「今日消耗」= 差值花费 − 积分包到期作废（净值才是真消耗）。
-// 合计行取全池口径，与顶部汇总横条严格同源（合计 == 横条可互相印证）。
+// 平台表（今日情况主视图）：列 = #/平台/账号/当前积分/今日收入/今日消耗(净值)/今日作废/
+// 今日消耗Token/今日到期/明日到期/7日内到期，末行合计。「今日消耗」= 差值花费 − 积分包到期作废
+// （净值才是真消耗）；「今日作废」= ledger 当日 expire 流水（往回看：已经没了多少），
+// 与「今日到期」（往前看：今晚余额里还有多少会没）是相反方向的两个口径，不能混为一列。
 function renderPlatformTable(s) {
   const rows = s.platforms || [];
   if (!rows.length) { $("stPlat").innerHTML = ""; return; }
@@ -3877,6 +3878,7 @@ function renderPlatformTable(s) {
     `<span class="st-plat-credits">当前积分</span>` +
     `<span class="st-plat-in">今日收入</span>` +
     `<span class="st-plat-out" title="花费差值扣除积分包到期作废后的净消耗">今日消耗</span>` +
+    `<span class="st-plat-expd" title="今日已到期的积分包额度（已从余额消失，不是消耗）">今日作废</span>` +
     `<span class="st-plat-tokens">今日消耗Token</span>` +
     `<span class="st-plat-exp">今日到期</span>` +
     `<span class="st-plat-exp">明日到期</span>` +
@@ -3890,6 +3892,7 @@ function renderPlatformTable(s) {
       stPlatNum("st-plat-credits", r.credits, "分") +
       stPlatNum("st-plat-in", r.credit_in) +
       stPlatNum("st-plat-out", r.credit_used) +
+      stPlatNum("st-plat-expd", r.credit_expired) +
       stPlatTok(r.tokens) +
       stPlatNum("st-plat-exp", r.expire_today, "分") +
       stPlatNum("st-plat-exp", r.expire_tomorrow, "分") +
@@ -3897,7 +3900,7 @@ function renderPlatformTable(s) {
       `</div>`;
   });
   // 合计行：与旧汇总横条同信息量——消耗列带「精确」小注（逐请求 usage 帧口径），
-  // title 悬浮说明净消耗 = 差值花费 - 作废，不另设汇总条。
+  // title 悬浮说明净消耗 = 差值花费 - 作废。
   const sumExact = Number(s.credit_out_exact) > 0 ? ` title="净消耗 ${fmtCredits(s.credit_used)}：差值扣除作废 ${fmtCredits(s.credit_expired)}；逐请求精确 ${fmtCreditS(s.credit_out_exact)}"` : "";
   html += `<div class="st-plat-row st-plat-sum-row">` +
     `<span class="st-plat-no"></span>` +
@@ -3906,6 +3909,7 @@ function renderPlatformTable(s) {
     stPlatNum("st-plat-credits", s.total_credits, "分") +
     stPlatNum("st-plat-in", s.credit_in) +
     `<span class="st-plat-out"${sumExact}>${fmtCredits(s.credit_used)}${Number(s.credit_out_exact) > 0 ? ` <span class="st-plat-sub">(精 ${fmtCreditS(s.credit_out_exact)})</span>` : ""}</span>` +
+    stPlatNum("st-plat-expd", s.credit_expired) +
     stPlatTok(s.tokens) +
     stPlatNum("st-plat-exp", s.expire_today, "分") +
     stPlatNum("st-plat-exp", s.expire_tomorrow, "分") +

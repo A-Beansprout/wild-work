@@ -1094,6 +1094,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-credits,
 #mtabStats .st-plat-in,
 #mtabStats .st-plat-out,
+#mtabStats .st-plat-expd,
 #mtabStats .st-plat-tokens,
 #mtabStats .st-plat-exp,
 #mtabStats .st-plat-no,
@@ -1120,8 +1121,8 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   display: grid;
   /* 列宽：JS fitPlatCols 渲染后实测每列最宽内容，经容器变量 --plat-cols 覆盖
      （数字涨到千/万位列宽自动加宽）；括号内为静态兑底（首渲染/隐藏时），
-     今日消耗 96px 容纳合计行「(精 xxx.xx)」小注 */
-  grid-template-columns: var(--plat-cols, 28px minmax(150px, 1fr) 52px 100px 80px 96px 112px 84px 84px 84px);
+     今日消耗 96px 容纳合计行「(精 xxx.xx)」小注，今日作废 72px 容纳三位数+分 */
+  grid-template-columns: var(--plat-cols, 28px minmax(150px, 1fr) 52px 100px 80px 96px 72px 112px 84px 84px 84px);
   font-size: 12px;
   white-space: nowrap;
   border-bottom: 1px solid rgba(23, 23, 23, 0.08);
@@ -1143,6 +1144,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-row.st-plat-head .st-plat-credits,
 #mtabStats .st-plat-row.st-plat-head .st-plat-in,
 #mtabStats .st-plat-row.st-plat-head .st-plat-out,
+#mtabStats .st-plat-row.st-plat-head .st-plat-expd,
 #mtabStats .st-plat-row.st-plat-head .st-plat-tokens,
 #mtabStats .st-plat-row.st-plat-head .st-plat-exp {
   color: #a1a1aa;
@@ -1157,11 +1159,15 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-plat-credits,
 #mtabStats .st-plat-in,
 #mtabStats .st-plat-out,
+#mtabStats .st-plat-expd,
 #mtabStats .st-plat-tokens,
 #mtabStats .st-plat-exp { font-size: 11.5px; }
 #mtabStats .st-plat-credits { color: var(--text); font-size: 12px; font-weight: 600; }
 #mtabStats .st-plat-in { color: var(--ok); }
 #mtabStats .st-plat-out { color: var(--warn); }
+/* 今日作废：已到期消失的额度，用 danger 色与「今日消耗」的 warn 色区分开
+   （两者语义相反：一个是真花掉，一个是没花就没了） */
+#mtabStats .st-plat-expd { color: var(--danger); }
 #mtabStats .st-plat-tokens { color: #52525b; }
 #mtabStats .st-plat-exp { color: #52525b; }
 #mtabStats .st-plat-exp.st-risk { color: var(--danger); font-weight: 600; }

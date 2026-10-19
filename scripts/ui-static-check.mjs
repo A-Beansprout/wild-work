@@ -333,10 +333,12 @@ const FAKE_STATS = {
   credit_in: 200, credit_out: 150, credit_out_exact: 150.5, credit_expired: 100, credit_used: 50,
   tokens: 12345, reqs: 10,
   token_usage: { today: 9000, days7: 50000, days30: 120000, all: 200000, req_today: 8, req_all: 90, days: 12 },
-  expiring_7d: 300, expiring_7d_accts: 1, expire_today: 100, expire_tomorrow: 200,
+  // expire_today(77) 故意与 credit_expired(100) 取不同值：断言才能分辨「今日作废」
+  // 是否被误接成「今日到期」（两者语义相反，混列会把作废说成还没发生）。
+  expiring_7d: 300, expiring_7d_accts: 1, expire_today: 77, expire_tomorrow: 200,
   platforms: [{
     group: "traework", accounts: 2, credits: 4736, credit_in: 200, credit_out: 150,
-    credit_expired: 100, credit_used: 50, tokens: 12345, expire_7d: 300, expire_today: 100, expire_tomorrow: 0,
+    credit_expired: 100, credit_used: 50, tokens: 12345, expire_7d: 300, expire_today: 77, expire_tomorrow: 0,
   }],
   models: [{ model: "traework/DeepSeek-V4", reqs: 3, tokens: 5000, credit: 12.5, avg_ttfb_ms: 800, avg_tok_per_sec: 45.2, perf_samples: 3 }],
   expiry: [{ uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-08", days_left: 2, amount: 100, today_out: 30, burn_forecast: 45, risk: true }],
@@ -367,6 +369,14 @@ const stPlat = document.getElementById("stPlat").innerHTML;
 check("平台表渲染渠道徽章（traework）", /badge trae"/.test(stPlat));
 check("平台表含合计行（全池口径 4,736）", stPlat.includes("合计") && stPlat.includes("4,736"));
 check("平台表零值列置灰（st-plat-zero）", stPlat.includes("st-plat-zero"));
+// 「今日作废」独立成列（R101 配套）：此前只藏在合计行 title 里看不见。
+// 与「今日到期」是相反方向的口径（往回看已没了 / 往前看今晚会没），不能合列。
+check("平台表有今日作废列（表头 + 逐渠道取值）",
+  /st-plat-expd[^>]*>今日作废/.test(stPlat) &&
+  /st-plat-expd">100</.test(stPlat) /* 逐渠道 credit_expired=100，而 expire_today=77 */);
+check("合计行今日作废取 credit_expired（非 expire_today；两者不同源）",
+  /st-plat-sum-row[\s\S]*?st-plat-expd">100</.test(stPlat) &&
+  !/st-plat-expd">77</.test(stPlat));
 
 const stRotation = document.getElementById("stRotation").innerHTML;
 check("接棒顺序渲染使用中账号", stRotation.includes("使用中 <b>中招号</b>"));
@@ -448,8 +458,8 @@ check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）
 check("表格剩余宽度由平台列吸收（minmax(实测,1fr)），末列既不吸收也不压缩",
   /if \(i === 1\) return `minmax\(\$\{w \+ 2\}px, 1fr\)`/.test(raw) &&
   !/max\.length - 1 \? "max-content"/.test(raw));
-check("平台表列宽动态化（--plat-cols 变量 + fitPlatCols 实测），静态兑底含 96px 精确小注位",
-  /#mtabStats \.st-plat-row \{\n  display: grid;[\s\S]*?grid-template-columns: var\(--plat-cols, 28px minmax\(150px, 1fr\) 52px 100px 80px 96px 112px 84px 84px 84px\)/.test(css) &&
+check("平台表列宽动态化（--plat-cols 变量 + fitPlatCols 实测），静态兑底含 96px 精确小注位与 72px 作废位",
+  /#mtabStats \.st-plat-row \{\n  display: grid;[\s\S]*?grid-template-columns: var\(--plat-cols, 28px minmax\(150px, 1fr\) 52px 100px 80px 96px 72px 112px 84px 84px 84px\)/.test(css) &&
   raw.includes("function fitPlatCols") && raw.includes('style.setProperty("--plat-cols"') &&
   raw.includes("offsetParent") /* 隐藏时跳过 */ &&
   /b\.dataset\.mtab === "stats"[\s\S]{0,200}fitPlatCols\(\)/.test(raw) /* 切回时重测 */ &&
@@ -457,6 +467,10 @@ check("平台表列宽动态化（--plat-cols 变量 + fitPlatCols 实测），�
 check("合计行当前积分=资产紫、Token=琥珀（与汇总条同色系）",
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-credits \{ color: #7c3aed/.test(css) &&
   /#mtabStats \.st-plat-row\.st-plat-sum-row \.st-plat-tokens \{ color: var\(--warn\)/.test(css));
+// 今日作废用 danger 色，与「今日消耗」的 warn 色分开（语义相反：真花掉 / 没花就没了）
+check("今日作废列配色为 danger（与今日消耗的 warn 区分）",
+  /#mtabStats \.st-plat-expd \{ color: var\(--danger\)/.test(css) &&
+  !/#mtabStats \.st-plat-out[^\n]*\.st-plat-expd/.test(css));
 check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
   /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
   /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
