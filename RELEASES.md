@@ -2843,3 +2843,39 @@ host 无法传入 ⇒ 隐含「浏览器必须与网关同机」这一**未写�
   收起时只重渲染汇总条 / 收起时不清筛选；
 - 测试 stub 补上 `classList.toggle`（原先缺失会让整份检查直接崩溃，而非断言失败）。
 
+---
+
+## 🎨 glm 渠道：IDE 指纹迁移 + 一来一回对话语义 + Images 生图端点（R105）
+
+### 指纹迁移：WEB → IDE(Electron)
+
+glm（智谱清言）渠道整体迁移到 IDE 客户端指纹——WEB 通道受阿里云 WAF「头组合指纹」
+对抗成功率低，IDE 指纹实测 100% 通过且不再需要 refer__991 与退避重试。
+**凭据与授权链路完全不变**（CDP 抓取 + 粘贴兜底），变的只是调用侧 HTTP 指纹；
+40012 归 `ErrSoftRate`。cookie jar 共享，`X-Device-Id` 取 JWT device_id。
+
+### 对话语义简化为一来一回
+
+- `system` 段落忽略；`assistant` / 多 `user` 段落本地 400
+  （`glm_unsupported_conversation`，透传不罚号）；不支持 tool_calls。
+- 保活改为 say hello + 对话后立即删会话（bulk_delete）。
+
+### 新增 `POST /v1/images/generations` 与 `/v1/images/edits`
+
+OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接入**
+（whalechan 适配器实测：设 `OPENAI_BASE_URL` 即走通 character/comic 双技能全链路）：
+
+- `size` 严格映射五档（1024x1024 / 864x1152 / 1152x864 / 720x1280 / 1280x720），
+  非法值 400（上游对非法比例静默降级 1:1，本层拦截）；默认 `b64_json`，`url` 可选；
+- edits 多参考图：imgutil 单行拼版（referenceN 标注）+ 图床托管；
+  单张 http(s) URL 直传；**输出比例跟随输入图**（edits 语义，`aspect_ratio` 无效 [实证]）；
+- 三处生态兼容（whalechan 实测补齐）：multipart 文件字段 `image[]` 与 `image` 同收；
+  `output_format=png` 走 CDN 参数真转换（否则返回 JPEG 字节）；单图托管前统一转码 JPEG；
+- 不做请求内换号轮转（同步长操作轮转代价高，模型级冷却已保证下次自动换号）；
+  生图与对话产物均不自动删除。
+
+### 已知限制
+
+- 多图拼版出图效果仅双人设定集定性通过，任意 N 图未全量验证；
+- 图床依赖第三方（sang.pub，含隐私提示），配置化逃生门未做；
+- edits 输出比例强制跟随输入图，请求 `size` 只对 generations 生效。
