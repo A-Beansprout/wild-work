@@ -912,7 +912,7 @@ func (a *App) needsPollFor(kind string) bool {
 //   - LobsterAI：`redirect_uri` 由本工具给出，但回调口绝不监听非环回（见 internal/login_lobsterai）；
 //   - TraeWork：回调写死 `http://127.0.0.1:<随机端口>/authorize`，且监听只有 5 分钟寿命，
 //     局域网/超时场景下凭证都到不了网关（见 internal/login_trae，issue #98）；
-//   - QwenWork：PKCE(Hydra) 回环回调（`/callback`），redirect_uri 白名单制不可改（R101 前置）；
+//   - QwenWork：PKCE(Hydra) 回环回调（`/callback`），redirect_uri 白名单制不可改（R104 前置）；
 //   - Gemini：installed-app 政策限 redirect host 为 localhost（不可改，见 internal/login_gemini）。
 //
 // 其余渠道的回调**不是**这种形状：有的由网关侧轮询/捕获（glm、小浣熊、OfficeAce），
