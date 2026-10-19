@@ -115,17 +115,32 @@ body {
 .btn:hover { background: #f0f2f5; }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover { background: var(--primary-hover); }
-.btn.primary.alt { background: #0891b2; border-color: #0891b2; }
-.btn.primary.alt:hover { background: #0e7490; }
+/* 默认兜底色：中性石板灰。原先写死 #0891b2，与 qwenwork/zcode 的渠道色
+   完全相同，导致「TraeWork」「自定义模型」等未带修饰类的按钮和它们撞色。 */
+.btn.primary.alt { background: var(--ch-custom); border-color: var(--ch-custom); }
+.btn.primary.alt:hover { filter: brightness(0.88); }
+/* 补齐此前缺失的渠道按钮配色（原先这些按钮没有专属规则，全落到默认色）：
+   TraeWork 甚至没带修饰类、自定义模型用的是不存在的 .custom。 */
+.btn.primary.alt.wb { background: var(--ch-wb); border-color: var(--ch-wb); }
+.btn.primary.alt.wbai { background: var(--ch-wbai); border-color: var(--ch-wbai); }
+.btn.primary.alt.trae { background: var(--ch-trae); border-color: var(--ch-trae); }
+.btn.primary.alt.traecode { background: var(--ch-traecode); border-color: var(--ch-traecode); }
+.btn.primary.alt.oczen { background: var(--ch-oczen); border-color: var(--ch-oczen); }
+.btn.primary.alt.kilo { background: var(--ch-kilo); border-color: var(--ch-kilo); }
+.btn.primary.alt.custom { background: var(--ch-custom); border-color: var(--ch-custom); }
+.btn.primary.alt.wb:hover, .btn.primary.alt.wbai:hover, .btn.primary.alt.trae:hover,
+.btn.primary.alt.traecode:hover, .btn.primary.alt.oczen:hover, .btn.primary.alt.kilo:hover,
+.btn.primary.alt.custom:hover { filter: brightness(0.88); }
+
 .btn.primary.alt.qoder { background: var(--ch-qoder); border-color: var(--ch-qoder); }
-.btn.primary.alt.qoder:hover { background: #be185d; }
+.btn.primary.alt.qoder:hover { filter: brightness(0.88); }
 .btn.primary.alt.qodercn { background: var(--ch-qodercn); border-color: var(--ch-qodercn); }
-.btn.primary.alt.qodercn:hover { background: #a21caf; }
+.btn.primary.alt.qodercn:hover { filter: brightness(0.88); }
 .btn.primary.alt.qodercom { background: var(--ch-qodercom); border-color: var(--ch-qodercom); }
-.btn.primary.alt.qodercom:hover { background: #7c2d12; }
+.btn.primary.alt.qodercom:hover { filter: brightness(0.88); }
 /* 智谱清言：靛蓝（原品牌蓝与 WorkBuddyCN 蓝同系，为图表可辨性改靛蓝） */
 .btn.primary.alt.glm { background: var(--ch-glm); border-color: var(--ch-glm); }
-.btn.primary.alt.glm:hover { background: #3730a3; }
+.btn.primary.alt.glm:hover { filter: brightness(0.88); }
 /* 智谱清言登录弹层步骤列表 */
 .glm-steps { margin: 4px 0 8px; padding-left: 20px; font-size: 13px; line-height: 1.9; }
 .glm-steps code { background: #f0f2f5; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
@@ -963,7 +978,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 }
 /* qwenwork 千问办公渠道色（青蓝，与紫系区分） */
 .btn.primary.alt.qwenwork { background: var(--ch-qwenwork); border-color: var(--ch-qwenwork); }
-.btn.primary.alt.qwenwork:hover { background: #155e75; }
+.btn.primary.alt.qwenwork:hover { filter: brightness(0.88); }
 .badge.qwenwork { background: var(--ch-qwenwork); }
 .fees .ch-header.qwenwork td { color: var(--ch-qwenwork); }
 .badge.glm { background: var(--ch-glm); }
@@ -971,25 +986,25 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 
 /* monkeycode MonkeyCode 平台托管模型渠道色（草绿，与紫/蓝/青系区分） */
 .btn.primary.alt.monkeycode { background: var(--ch-monkeycode); border-color: var(--ch-monkeycode); }
-.btn.primary.alt.monkeycode:hover { background: #4d7c0f; }
+.btn.primary.alt.monkeycode:hover { filter: brightness(0.88); }
 .badge.monkeycode { background: var(--ch-monkeycode); }
 .fees .ch-header.monkeycode td { color: var(--ch-monkeycode); }
 
 /* raccoon 小浣熊渠道色（取客户端 branding 的紫罗兰 #8E6BF2） */
 .btn.primary.alt.raccoon { background: var(--ch-raccoon); border-color: var(--ch-raccoon); }
-.btn.primary.alt.raccoon:hover { background: #7c56e8; }
+.btn.primary.alt.raccoon:hover { filter: brightness(0.88); }
 .badge.raccoon { background: var(--ch-raccoon); }
 .fees .ch-header.raccoon td { color: var(--ch-raccoon); }
 
 /* loomy 讯飞 Loomy 渠道色（橙，与蓝/紫/青系区分） */
 .btn.primary.alt.loomy { background: var(--ch-loomy); border-color: var(--ch-loomy); }
-.btn.primary.alt.loomy:hover { background: #c2410c; }
+.btn.primary.alt.loomy:hover { filter: brightness(0.88); }
 .badge.loomy { background: var(--ch-loomy); }
 .fees .ch-header.loomy td { color: var(--ch-loomy); }
 
 /* officeace 华为云果办渠道色（华为红） */
 .btn.primary.alt.officeace { background: var(--ch-officeace); border-color: var(--ch-officeace); }
-.btn.primary.alt.officeace:hover { background: #a9081f; }
+.btn.primary.alt.officeace:hover { filter: brightness(0.88); }
 .badge.officeace { background: var(--ch-officeace); }
 .fees .ch-header.officeace td { color: var(--ch-officeace); }
 
@@ -1004,32 +1019,32 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .fees .ch-header.kilo td { color: #0f766e; }
 
 /* minimax：MiniMax Code（紫；账号渠道，与其它紫/青系渠道区分） */
-.btn.primary.alt.minimax { background: #7c3aed; border-color: #7c3aed; }
-.btn.primary.alt.minimax:hover { background: #6d28d9; }
+.btn.primary.alt.minimax { background: var(--ch-minimax); border-color: var(--ch-minimax); }
+.btn.primary.alt.minimax:hover { filter: brightness(0.88); }
 .badge.minimax { background: var(--ch-minimax); }
 .fees .ch-header.minimax td { color: #7c3aed; }
 
 /* lobsterai：LobsterAI（有道龙虾，橙；与 officeace 的华为红区分开） */
-.btn.primary.alt.lobsterai { background: #ea580c; border-color: #ea580c; }
-.btn.primary.alt.lobsterai:hover { background: #c2410c; }
+.btn.primary.alt.lobsterai { background: var(--ch-lobsterai); border-color: var(--ch-lobsterai); }
+.btn.primary.alt.lobsterai:hover { filter: brightness(0.88); }
 .badge.lobsterai { background: var(--ch-lobsterai); }
 .fees .ch-header.lobsterai td { color: #ea580c; }
 
 /* zcode：ZCode（智谱，青蓝；与 glm 的色区分开） */
-.btn.primary.alt.zcode { background: #0891b2; border-color: #0891b2; }
-.btn.primary.alt.zcode:hover { background: #0e7490; }
+.btn.primary.alt.zcode { background: var(--ch-zcode); border-color: var(--ch-zcode); }
+.btn.primary.alt.zcode:hover { filter: brightness(0.88); }
 .badge.zcode { background: var(--ch-zcode); }
 .fees .ch-header.zcode td { color: #0891b2; }
 
 /* gemini：Gemini（Google，蓝；与其它渠道色区分开） */
-.btn.primary.alt.gemini { background: #2563eb; border-color: #2563eb; }
-.btn.primary.alt.gemini:hover { background: #1d4ed8; }
+.btn.primary.alt.gemini { background: var(--ch-gemini); border-color: var(--ch-gemini); }
+.btn.primary.alt.gemini:hover { filter: brightness(0.88); }
 .badge.gemini { background: var(--ch-gemini); }
 .fees .ch-header.gemini td { color: #2563eb; }
 
 /* codearts：CodeArts（华为云，玫红；与 officeace 的华为红区分开） */
-.btn.primary.alt.codearts { background: #db2777; border-color: #db2777; }
-.btn.primary.alt.codearts:hover { background: #be185d; }
+.btn.primary.alt.codearts { background: var(--ch-codearts); border-color: var(--ch-codearts); }
+.btn.primary.alt.codearts:hover { filter: brightness(0.88); }
 .badge.codearts { background: var(--ch-codearts); }
 .fees .ch-header.codearts td { color: #db2777; }
 /* credit-na 积分「不适用」文案（匿名通道无积分） */
@@ -1433,7 +1448,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 
 /* cline：Cline 免费池渠道（深绿，与既有紫/青/蓝系均不冲突） */
 .btn.primary.alt.cline { background: var(--ch-cline); border-color: var(--ch-cline); }
-.btn.primary.alt.cline:hover { background: #166534; }
+.btn.primary.alt.cline:hover { filter: brightness(0.88); }
 .badge.cline { background: var(--ch-cline); }
 .fees .ch-header.cline td { color: var(--ch-cline); }
 

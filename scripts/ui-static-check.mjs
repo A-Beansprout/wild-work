@@ -1380,6 +1380,17 @@ for (const [label, re] of uniq) {
       if (hexOf[names[i]] === hexOf[names[j]]) dup.push(`${names[i]}=${names[j]}`);
   checkPal("21 个内建渠道色两两不同（无完全同色）", dup.length === 0, dup.join(", "));
 
+  checkPal("渠道按钮配色全部走 var(--ch-*)，CSS 里无硬编码 hex",
+    !/\.btn\.primary\.alt[^{]*\{[^}]*#[0-9a-fA-F]{6}/.test(css));
+
+  checkPal("每个渠道按钮都有专属 .btn.primary.alt.<类名> 规则",
+    CH.every((c) => new RegExp(`\\.btn\\.primary\\.alt\\.${c}\\s*\\{`).test(css)),
+    CH.filter((c) => !new RegExp(`\\.btn\\.primary\\.alt\\.${c}\\s*\\{`).test(css)).join(", "));
+
+  checkPal("index.html 的渠道按钮都带修饰类（裸 btn primary alt 会落到兜底色）",
+    (html.match(/class="btn primary alt"/g) || []).length === 0,
+    (html.match(/<button class="btn primary alt"[^>]*id="([^"]+)"/g) || []).join(", "));
+
   for (const [label, pass, extra] of needPal) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}${!pass && extra ? `  ← ${extra}` : ""}`);
     if (!pass) failed++;
