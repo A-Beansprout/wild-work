@@ -193,6 +193,7 @@ func New(opts Options) (*App, error) {
 		auth:     newAuthState(),
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
+	setCurrentApp(a) // CDP 捕获声明（browserassist.go）需要包级访问 state 路径
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
 
 	// 用量/积分双流水（data/ledger/）：优先复用 main 装配的实例
@@ -978,6 +979,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	if flow.openIncognito {
 		a.openAuthURLIncognito(authURL)
 	}
+	// CDP 浏览器化捕获（五回环回调渠道，见 docs/全渠道登录授权方式梳理.md §4）：
+	// 在网关机拉起独立 profile 浏览器完成授权并捕获回环回调。与默认浏览器路径并存
+	// （谁先到谁生效），浏览器不可用时只记日志，不阻断既有监听器/粘贴路径。
+	a.maybeStartBrowserAssist(k, authURL)
 	go a.pollLogin(ctx)
 	log.Printf("%s 登录流程已发起", k)
 	return authURL, nil
@@ -1030,6 +1035,7 @@ func (a *App) CancelLogin() error {
 // 取代了改造前散落在 CancelLogin 与 pollLogin defer 里的 11 个手工 if 分支
 // （两处各写一遍，且曾因插错层级而漏关）。
 func (a *App) shutdownLoginFlow(k provider.Kind) {
+	stopBrowserAssist() // CDP 浏览器会话与渠道监听器同生共死（幂等）
 	if f, ok := loginFlows[k]; ok && f.Shutdown != nil {
 		f.Shutdown()
 	}
