@@ -1077,6 +1077,17 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
   font-weight: 600;
   color: #52525b;
 }
+/* 标题里的 ? 角标：span 自身改成 inline-flex + center，让圆圈与中文按**中心**对齐。
+   为什么不能只靠 .help-mark 的 vertical-align: middle：那是按 x-height 中线对齐，
+   而中文是满格方块（字形盒顶到 baseline 上方一整个 em），两者中心差约 1.5px，
+   截图里圆圈明显偏下（2026-10-19 用户指出「那个问号没有居中」）。
+   也不用固定像素微调（如 top:-1.5px）：实测偏差随字号变（11px→1.06px、16px→1.73px），
+   写死某个值只在 13px 准。flex 居中与字号无关，11~28px 实测偏差 ≤0.45px（亚像素）。
+   只作用于标题这一处，其余 .help-mark 都在 align-items:center 的 flex 行里，本来就居中。 */
+#mtabStats .st-sec-head > span:first-child {
+  display: inline-flex;
+  align-items: center;
+}
 #mtabStats .st-sec-info {
   /* 里程碑计数靠右（Token 多天行插在标题与它之间，用 margin-left:auto 推右） */
   margin-left: auto;
@@ -1267,7 +1278,11 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 /* 最近临期（块级单元格 + 满高右边框竖线，末列弹性左对齐） */
 #mtabStats .st-ex-row {
   display: grid;
-  grid-template-columns: 30px 110px 168px 100px 96px 1fr;
+  /* 到期时刻列要装下完整「2026-10-20 00:00:00」（19 字符）。
+     实测该串在 11.5px 系统字体下**内容宽 160.4px**，加 10px×2 内边距 = 180.4px，
+     给 182px 留 2px 余量。此前给 142px 仍被截（scrollWidth 148 > clientWidth 141），
+     不能按字符数估算，必须按实测内容宽（2026-10-19 用户两次指出截断）。 */
+  grid-template-columns: 30px 110px 150px 182px 96px 1fr;
   font-size: 12px;
   line-height: 1.5;
   white-space: nowrap;
@@ -1294,14 +1309,30 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-ex-row.st-ex-head > span { padding: 4px 10px; }
 #mtabStats .st-ex-name { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 #mtabStats .st-ex-plat-slot { overflow: hidden; }
-#mtabStats .st-ex-date { color: #52525b; font-size: 11.5px; }
+/* 到期时刻列禁止省略：完整时间本身就是信息，截断后无法判断是哪个时刻。
+   注意必须同时压掉 .st-ex-row > span 上的 overflow:hidden（子选择器优先级
+   低于 .st-ex-row > span 的同级声明时会被覆盖，故这里显式写 overflow:visible）。 */
+#mtabStats .st-ex-row > .st-ex-date {
+  color: #52525b; font-size: 11.5px;
+  overflow: visible; text-overflow: clip;
+}
 #mtabStats .st-ex-days { color: #52525b; }
 #mtabStats .st-ex-amt { color: #52525b; overflow: hidden; text-overflow: ellipsis; }
+/* 最近临期配色按紧迫度分三档（2026-10-19 用户定义）：
+   今天到期 = 红（来不及了，现在就得处理）；明天到期 = 黄（还有一天）；更远 = 不上色。
+   此前按 risk（会不会作废）上色，7 天内的行全红——135 小时后到期的也红，
+   一片警示等于没有警示。 */
 #mtabStats .st-ex-row.st-risk { color: var(--danger); font-weight: 600; }
 #mtabStats .st-ex-row.st-risk .st-ex-tag,
 #mtabStats .st-ex-row.st-risk .st-ex-days,
 #mtabStats .st-ex-row.st-risk .st-ex-date,
 #mtabStats .st-ex-row.st-risk .st-ex-amt { color: var(--danger); }
+
+#mtabStats .st-ex-row.st-warn { color: var(--warn); font-weight: 600; }
+#mtabStats .st-ex-row.st-warn .st-ex-tag,
+#mtabStats .st-ex-row.st-warn .st-ex-days,
+#mtabStats .st-ex-row.st-warn .st-ex-date,
+#mtabStats .st-ex-row.st-warn .st-ex-amt { color: var(--warn); }
 
 /* 使用中 / 接棒顺序 */
 #mtabStats .st-rot-row {

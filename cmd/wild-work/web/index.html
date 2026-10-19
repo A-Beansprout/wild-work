@@ -140,7 +140,7 @@
     <!-- ===== Tab: 运行统计（数据来自 /api/stats + /api/stats/logs + /api/logs） ===== -->
     <div class="mtab-body hidden" id="mtabStats">
     <div class="st-panel">
-      <div class="st-sec-head"><span>今日情况</span><div class="st-token" id="stToken"></div><span class="st-sec-info" id="stMilestone"></span><span class="st-sec-info" id="stUpdated"></span></div>
+      <div class="st-sec-head"><span>今日情况<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop"><b>到期三列按自然日、精确时刻判定</b><br>· <b>今日到期</b>：失效时刻落在今天的额度。今天 24:00（次日 00:00:00）失效的也算今天——上游每日类额度的真实形态。<br>· <b>明日到期</b>：落在明天的。<br>· <b>7 日内到期</b>：未来 7 个自然日内（含今日+明日）到期的合计。<br><br><b>今日消耗</b>：今日已用掉的积分（往回看）。<br><b>今日作废</b>：今天已经过期作废的（往回看，已成事实）。<br><br>三者关系：余额差值的减少 = 今日消耗 + 今日作废。<br>「到期」列是<b>前瞻</b>预测，与「已作废」方向相反，不可相减。</span></span></span><div class="st-token" id="stToken"></div><span class="st-sec-info" id="stMilestone"></span><span class="st-sec-info" id="stUpdated"></span></div>
       <div class="st-plat" id="stPlat"></div>
     </div>
     <div class="st-rotation" id="stRotation"></div>
@@ -436,7 +436,7 @@
         </div>
         <div class="hint" style="margin-left:98px;margin-top:-2px;margin-bottom:8px">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
         <div class="row row-switch">
-          <label class="lbl wide" title="到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废">临期阈值<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废。</span></span></label>
+          <label class="lbl wide">临期阈值<span class="help-mark" onclick="event.preventDefault()">?<span class="help-pop">N 个<b>自然日</b>内到期的积分视为临期，调度器优先消耗，减少到期作废。<br><br>按到期<b>时刻</b>精确判定：今天 24:00（次日 00:00）失效的额度算「今天」，不推到明天。</span></span></label>
           <select id="selExpiring" class="select" style="width:110px">
             <option value="1">1 天</option>
             <option value="2">2 天</option>
