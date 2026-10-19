@@ -1635,6 +1635,41 @@ for (const [label, re] of uniq) {
     // 4) 渠道显示名只有一个来源：CH_NAMES 这类别名会让图例与徽章各走一份。
     checkPal("渠道显示名只有一个来源（不再有 CH_NAMES 之类的别名表）",
       !/const CH_NAMES\b/.test(raw) && /const chLabel = \(k\) => CH_LABEL\[k\]/.test(raw));
+
+    // 5) 配色规范文档必须与 CSS 实际色值一致（R99 文档化）。
+    // 为什么需要：docs/渠道配色规范.md 把 21 个色值当「规范基线」公布，一旦有人改
+    // CSS 不改文档，文档就变成错误信息（比没文档更糟——后来者会按错的基线去改）。
+    // 这里逐行比对 §3 色值表的 hex 与 :root 的 --ch-*，任一不一致即失败。
+    {
+      const docPath = new URL("../docs/渠道配色规范.md", import.meta.url);
+      let doc = "";
+      try { doc = readFileSync(docPath, "utf8"); } catch (e) { /* 缺文档下面会报 */ }
+      const rootHex = {};
+      for (const m of css.matchAll(/--ch-([a-z]+):\s*(#[0-9a-fA-F]{6})/g)) rootHex[m[1]] = m[2].toLowerCase();
+      // 表格行形如：| 1 | `traecode` | `traecode` | TraeCode | `#0284c7` | 4.10 | ...
+      // 第 2 格是 **CSS 短类名**（对应 `--ch-<类名>`），第 3 格是渠道 key。
+      // 按格切分而不是写死整行形状：表头列数以后还会变（加指标列），
+      // 写死正则会让“只是加了列”也变成测试失败（假失败同样是噪声）。
+      const docHex = {};
+      for (const line of doc.split("\n")) {
+        if (!/^\|\s*\d+\s*\|/.test(line)) continue;
+        const cells = line.split("|").map((c) => c.trim());
+        const cls = (cells[2] || "").replace(/`/g, "");
+        const hex = (line.match(/`(#[0-9a-fA-F]{6})`/) || [])[1];
+        if (cls && hex) docHex[cls.toLowerCase()] = hex.toLowerCase();
+      }
+      const keys = Object.keys(rootHex).filter((k) => k !== "custom");
+      const missing = keys.filter((k) => !docHex[k]);
+      const drift = keys.filter((k) => docHex[k] && docHex[k] !== rootHex[k])
+        .map((k) => `${k}: CSS ${rootHex[k]} ≠ 文档 ${docHex[k]}`);
+      const extra = Object.keys(docHex).filter((k) => !rootHex[k])
+        .map((k) => `文档有但 CSS 无: ${k}`);
+      checkPal("配色规范文档的色值表与 :root 的 --ch-* 逐个一致（改色必须同步文档）",
+        doc !== "" && missing.length === 0 && drift.length === 0 && extra.length === 0,
+        [doc === "" ? "缺 docs/渠道配色规范.md" : "",
+         missing.length ? `文档缺 ${missing.join(", ")}` : "",
+         ...drift, ...extra].filter(Boolean).join("; "));
+    }
   }
 
   for (const [label, pass, extra] of needPal) {
