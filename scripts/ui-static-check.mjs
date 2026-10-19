@@ -454,7 +454,12 @@ const FAKE_STATS = {
   models: [{ model: "traework/DeepSeek-V4", reqs: 3, tokens: 5000, credit: 12.5, avg_ttfb_ms: 800, avg_tok_per_sec: 45.2, perf_samples: 3 }],
   // hours_left 与 days_left 故意不同步（5.7h ⇒ days_left=0）：断言「剩余」列优先用
   // 精确小时数。若接成 days_left，会渲染成「今日到期」而看不出还剩 5.7 小时。
-  expiry: [{ uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, burn_forecast: 45, risk: true }],
+  // 两行：① 能外推（forecast=45，预计作废 55）；② **无法外推**（forecast=-1，
+  // 今日没消耗）——后者必须按「全部额度作废」显示，不能出「预计作废 -1分」反数。
+  expiry: [
+    { uid: "4298452267967801", nickname: "健康号", group: "traework", expire_at: "2026-10-20T00:00:00+08:00", hours_left: 5.7, days_left: 0, amount: 100, today_out: 30, burn_forecast: 45, risk: true },
+    { uid: "4298452267967802", nickname: "闲置号", group: "qwenwork", expire_at: "2026-10-21T00:00:03+08:00", hours_left: 4.7, days_left: 0, amount: 100, today_out: 0, burn_forecast: -1, risk: true },
+  ],
   rotation: [{
     group: "traework",
     current: { uid: "1606848467182378", nickname: "中招号", group: "traework", credits: 2050, expiring: 0, sticky: "12/50" },
@@ -511,6 +516,19 @@ check("临期风险行高亮（st-risk）", stExpiry.includes("st-ex-row st-risk
 // 若接成 days_left 会渲染「今日到期」，就看不出「只剩 5.7 小时」。
 check("临期剩余时长用精确小时（5.7 小时后，非 days_left 文案）",
   stExpiry.includes("5.7 小时后") && !stExpiry.includes("今日到期"));
+// 到期时刻必须渲染成完整标准时间「YYYY-MM-DD HH:MM:SS」：
+// 后端下发 RFC3339（2026-10-20T00:00:00+08:00），直接显示又长又被列宽截断；
+// 秒级信息是判断「今晚几点没」的关键，不能丢。
+check("到期时刻渲染为完整标准时间（含时分秒，无 T、无时区后缀）",
+  stExpiry.includes("2026-10-20 00:00:00") &&
+  !stExpiry.includes("2026-10-20T00:00:00"));
+// forecast<0（今日没消耗、无法外推）时按「全部额度作废」显示，
+// 不能出现「预计作废 -1分」这种反数。
+// forecast<0 的号（今日没消耗）必须显示「预计作废 100分」（全部额度），
+// 而不是「预计作废 -1分」这种反数。
+check("预计作废不为负（forecast<0 按全部额度）",
+  stExpiry.includes("预计作废 100分") &&
+  !/预计作废\s*-\d/.test(stExpiry));
 check("预计作废量 = 额度−外推消耗（55分）", stExpiry.includes("预计作废 55分"));
 
 const stModels = document.getElementById("stModels").innerHTML;

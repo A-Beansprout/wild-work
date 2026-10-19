@@ -4101,6 +4101,25 @@ function renderRotation(rot) {
   $("stRotation").className = "st-rotation st-block";
 }
 
+// fmtExpireAt 把上游 ExpireAt 渲染成**完整标准时间**「YYYY-MM-DD HH:MM:SS」。
+//
+// 为什么需要：后端下发的是 RFC3339（`2026-10-20T00:00:00+08:00`），直接显示
+// 又长又被列宽截断（用户实测看不到秒）；纯日期粒度（`2026-10-19`，loomy 之外的
+// 少数渠道仍可能给）则补成「该日 23:59:59」——它的语义是「该日全天可用」，
+// 补 00:00:00 会误导成「当天零点就没了」。
+// 时区固定按 UTC+8 展示（与后端 expireLoc 一致），不依赖浏览器本地时区。
+function fmtExpireAt(s) {
+  if (!s) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (m) return `${s} 23:59:59`; // 纯日期：该日全天可用
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return s; // 解析不了就原样显示，不吞信息
+  const d = new Date(t + 8 * 3600 * 1000); // 转成 UTC+8 墙钟后按 UTC 读数
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
 // 最近临期：到期日升序；risk=按今日速度花不完 → 给预计作废量（额度−外推消耗）
 function renderExpiry(ex) {
   if (!ex.length) { $("stExpiry").innerHTML = ""; $("stExpiry").className = "st-expiry"; return; }
@@ -4121,12 +4140,16 @@ function renderExpiry(ex) {
     const dayTxt = Number.isFinite(h) && h > 0
       ? (h < 1 ? `${Math.round(h * 60)} 分钟后` : `${h.toFixed(1)} 小时后`)
       : (r.days_left <= 0 ? "今日到期" : (r.days_left === 1 ? "明日到期" : `${r.days_left} 天后到期`));
-    const burn = r.risk ? ` · 预计作废 ${fmtCredits(r.amount - r.burn_forecast)}分` : "";
+    // 预计作废：burn_forecast<0 表示观测不足、无法外推，此时按「全部额度都会作废」
+    // 展示（与后端 Risk 判定同口径），不能显示「作废 -1 分」这种反数。
+    const burn = r.risk
+      ? ` · 预计作废 ${fmtCredits(r.burn_forecast < 0 ? r.amount : r.amount - r.burn_forecast)}分`
+      : "";
     html += `<div class="st-ex-row${r.risk ? " st-risk" : ""}">` +
       `<span class="st-ex-tag">${i + 1}</span>` +
       `<span class="st-ex-plat-slot">${chBadge(r.group)}</span>` +
       `<span class="st-ex-name" title="${esc(r.uid)}">${esc(r.nickname || r.uid)}</span>` +
-      `<span class="st-ex-date">${esc(r.expire_at)}</span>` +
+      `<span class="st-ex-date">${esc(fmtExpireAt(r.expire_at))}</span>` +
       `<span class="st-ex-days">${esc(dayTxt)}</span>` +
       `<span class="st-ex-amt">${fmtCredits(r.amount)}分 · 已耗 ${fmtCredits(r.today_out)}${burn}</span>` +
       `</div>`;

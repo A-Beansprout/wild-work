@@ -421,3 +421,66 @@ func TestExpiryRowsHoursLeft(t *testing.T) {
 		t.Fatalf("应按剩余时长排（d2 6h 在 d1 10h 前），实际 %+v", rows)
 	}
 }
+
+// TestExpiryRiskWhenNoBurn 守门「算不出消耗」不等于「没风险」。
+//
+// 用户实测（2026-10-19）：最近临期 16 行里只有第 4 行红色。前 3 行是今晚
+// 4.7 小时后到期的 qwenwork 号，今天**一分没花**（creditOut=0 ⇒ forecast=-1）。
+// 旧判据 `forecast >= 0 && forecast < amount` 把「完全没在消耗、马上要作废」
+// 这个最该预警的情形排除掉了，只有今天花过 1 分（forecast=0）的那个红。
+// 新判据：forecast<0 视为「预计作废 = 全部额度」⇒ 照样预警。
+func TestExpiryRiskWhenNoBurn(t *testing.T) {
+	s := newTestStats(t)
+	base := time.Date(2026, 10, 19, 20, 0, 0, 0, time.Local)
+	s.ApplyPoll([]Account{
+		{UID: "idle", Group: "qwenwork", Credits: 100}, // 今天没花过 → forecast=-1
+		{UID: "burn", Group: "qwenwork", Credits: 100}, // 花过一点 → forecast>=0
+		{UID: "far", Group: "qwenwork", Credits: 100},  // 远期，不该预警
+	}, base)
+	// 今晚 4 小时后到期（今日桶内）
+	s.ApplyExpiry("idle", []ExpireItem{{At: "2026-10-20T00:00:00+08:00", Amount: 100}})
+	s.ApplyExpiry("burn", []ExpireItem{{At: "2026-10-20T00:00:00+08:00", Amount: 100}})
+	// 30 天后到期：超出 expiryRiskDays，不该预警
+	s.ApplyExpiry("far", []ExpireItem{{At: "2026-11-18T12:00:00+08:00", Amount: 100}})
+	// burn 号今天消耗过（制造 creditOut>0 与足够观测时长）
+	s.ApplyPoll([]Account{
+		{UID: "idle", Group: "qwenwork", Credits: 100},
+		{UID: "burn", Group: "qwenwork", Credits: 90},
+		{UID: "far", Group: "qwenwork", Credits: 100},
+	}, base.Add(2*time.Hour))
+
+	rows := s.Snapshot(base.Add(2 * time.Hour)).Expiry
+	byUID := map[string]ExpiryRow{}
+	for _, r := range rows {
+		byUID[r.UID] = r
+	}
+	if idle, ok := byUID["idle"]; !ok || !idle.Risk {
+		t.Errorf("今日没消耗但今晚到期的号必须预警（forecast=%d）：%+v", idle.BurnForecast, idle)
+	}
+	if idle := byUID["idle"]; idle.BurnForecast != -1 {
+		t.Errorf("idle 的 forecast 应为 -1（观测不足），实际 %d", idle.BurnForecast)
+	}
+	if burn, ok := byUID["burn"]; !ok || !burn.Risk {
+		t.Errorf("今天花过、额度花不完的号必须预警：%+v", burn)
+	}
+	if far, ok := byUID["far"]; !ok || far.Risk {
+		t.Errorf("30 天后到期的号不该预警（超出 7 自然日窗口）：%+v", far)
+	}
+}
+
+// TestExpiryRowsFullInstant 守门「到期时刻必须带完整时分秒」。
+// 前端渲染「YYYY-MM-DD HH:MM:SS」，后端下发的必须是完整 RFC3339，
+// 不能只有日期（否则秒级信息在源头就丢了，前端补不回来）。
+func TestExpiryRowsFullInstant(t *testing.T) {
+	s := newTestStats(t)
+	base := time.Date(2026, 10, 19, 14, 0, 0, 0, time.Local)
+	s.ApplyPoll([]Account{{UID: "a", Group: "qwenwork", Credits: 100}}, base)
+	s.ApplyExpiry("a", []ExpireItem{{At: "2026-10-20T00:00:03+08:00", Amount: 50}})
+	rows := s.Snapshot(base).Expiry
+	if len(rows) != 1 {
+		t.Fatalf("应有 1 行，实际 %d", len(rows))
+	}
+	if rows[0].ExpireAt != "2026-10-20T00:00:03+08:00" {
+		t.Errorf("ExpireAt 必须原样保留秒级精度，实际 %q", rows[0].ExpireAt)
+	}
+}

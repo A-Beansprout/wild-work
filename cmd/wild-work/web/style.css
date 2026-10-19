@@ -1278,7 +1278,11 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 /* 最近临期（块级单元格 + 满高右边框竖线，末列弹性左对齐） */
 #mtabStats .st-ex-row {
   display: grid;
-  grid-template-columns: 30px 110px 168px 100px 96px 1fr;
+  /* 到期时刻列要装下完整「2026-10-20 00:00:00」（19 字符）。
+     11.5px 等宽数字下约 118px，留 10px×2 内边距 ⇒ 138px；给 142px 防字体差异。
+     此前 100px 只能显示到「2026-10-20T00:00」，秒与偏移被 ellipsis 截掉
+     （2026-10-19 用户指出「要显示完整，不要截断」）。 */
+  grid-template-columns: 30px 110px 150px 142px 96px 1fr;
   font-size: 12px;
   line-height: 1.5;
   white-space: nowrap;
@@ -1305,7 +1309,11 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 #mtabStats .st-ex-row.st-ex-head > span { padding: 4px 10px; }
 #mtabStats .st-ex-name { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 #mtabStats .st-ex-plat-slot { overflow: hidden; }
-#mtabStats .st-ex-date { color: #52525b; font-size: 11.5px; }
+/* 到期时刻列禁止省略：完整时间本身就是信息，截断后无法判断是哪个时刻 */
+#mtabStats .st-ex-date {
+  color: #52525b; font-size: 11.5px;
+  overflow: visible; text-overflow: clip;
+}
 #mtabStats .st-ex-days { color: #52525b; }
 #mtabStats .st-ex-amt { color: #52525b; overflow: hidden; text-overflow: ellipsis; }
 #mtabStats .st-ex-row.st-risk { color: var(--danger); font-weight: 600; }

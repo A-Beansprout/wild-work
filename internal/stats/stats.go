@@ -620,8 +620,13 @@ func (s *Stats) expiryRowsLocked(now time.Time) []ExpiryRow {
 			Amount:       dayAmount,
 			TodayOut:     a.creditOut,
 			BurnForecast: forecast,
-			Risk: provider.ExpireWithinDays(at, now, expiryRiskDays) &&
-				forecast >= 0 && forecast < dayAmount,
+			// Risk 语义（2026-10-19 澄清）：7 自然日内到期 且 按今日速度**可能花不完**。
+		// forecast<0 = 观测不足（今日还没消耗过/刷新不足 30 分钟），无法外推——
+		// 这种「马上到期但完全没在消耗」恰恰是最该预警的情形，不能因为「算不出」
+		// 就当作没风险（用户实测：今晚 4.7 小时后到期的 3 个号不红，只有今天花过
+		// 1 分的那个红，反直觉）。故 forecast<0 时按「预计作废 = 全部额度」处理。
+		Risk: provider.ExpireWithinDays(at, now, expiryRiskDays) &&
+			(forecast < 0 || forecast < dayAmount),
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
