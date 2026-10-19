@@ -1082,15 +1082,25 @@ func (a *App) pollLogin(ctx context.Context) {
 			return
 		}
 		done, unfinished, perr := flow.Poll(a.loginClient, a.loginStateFP)
-		if perr == nil {
+		// 分派契约（loginFlow.Poll / wrapPoll 的三态，2026-10-18 9f8f4a95 回归教训）：
+		//   pending  → (nil, true, nil)：继续轮询。**不得**调 done —— 该回归曾写成
+		//              `if perr == nil` 就调 done(a)，而 pending 的 done 恒为 nil，
+		//              首个 tick（2s）必 nil 闭包 panic；panic 被 recover 吞掉后
+		//              finishLogin 清 busy，表现是「所有轮询渠道发起登录 2 秒后静默死亡，
+		//              面板无任何响应」。
+		//   成功     → (done, false, nil)：落账号收尾。
+		//   终态错误 → (nil, false, err)：立即结束轮询（继续只会重复报同一个错）。
+		switch {
+		case unfinished:
+			// 还没完成：下一跳再看。
+		case perr == nil:
 			if err := done(a); err != nil {
 				a.setLoginError("登录失败：" + err.Error())
 			}
 			return
-		}
-		if !unfinished {
+		default:
 			// 终态错误（下发验证码失败 / 引导页起不来 / 未捕获到账号 / 换取令牌失败）：
-			// 立即结束轮询，由 defer 释放资源；继续轮询只会重复报同一个错。
+			// 立即结束轮询，由 defer 释放资源。
 			log.Printf("%s login poll failed: %v", a.loginKind, perr)
 			a.setLoginError("登录失败：" + perr.Error())
 			return
