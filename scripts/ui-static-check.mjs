@@ -438,6 +438,15 @@ check("模型费率区块骨架存在（feesBox/btnRefreshFees）", /id="feesBox
 check("模型费率区块在 section 内（不再是独立 section）", /<div class="mtab-body hidden" id="mtabFees">[\s\S]*?<\/section>/.test(html) && !/<!-- 模型列表和费率 -->\s*<section class="panel">/.test(html));
 const css = readFileSync(new URL("../cmd/wild-work/web/style.css", import.meta.url), "utf8");
 check("style.css 含运行统计样式段（#mtabStats .st-sum 等）", /#mtabStats \.st-sum/.test(css) && /#mtabStats \.st-plat-row/.test(css));
+// ---- 统计页两条单行条：不许回退成 wrap（wrap 会在内容长度临界时抖动换行）----
+check("汇总条 st-sum 单行不折行（nowrap + 注解可省略 + 数字不剪）",
+  /#mtabStats \.st-sum \{[^}]*flex-wrap: nowrap/.test(css) &&
+  /#mtabStats \.st-sum-sub \{[^}]*text-overflow: ellipsis/.test(css) &&
+  /#mtabStats \.st-sum-val \{[^}]*flex-shrink: 0/.test(css));
+check("Token 多天行 st-token 单行不折行（nowrap，极窄整条截尾）",
+  /#mtabStats \.st-token \{[^}]*flex-wrap: nowrap/.test(css) &&
+  /#mtabStats \.st-token \{[^}]*overflow: hidden/.test(css) &&
+  !/#mtabStats \.st-token \{[^}]*flex-wrap: wrap/.test(css));
 check("更新角标失败警示样式存在（#stUpdated.st-stale）", /#stUpdated\.st-stale/.test(css));
 // ---- 用量 tab 五卡同行（5 列 grid，不换行）----
 check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[^}]*grid-template-columns: repeat\(5, 1fr\)/.test(css));
