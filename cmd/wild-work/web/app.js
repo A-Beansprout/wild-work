@@ -1717,6 +1717,17 @@ async function startLogin(channel, accountLabel) {
     }
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
+    // 2026-10-18（H9）：后端告知这次登录是否需要轮询。
+    // 改造前这里**无条件** startLoginPoll()，而 GLM 属于「只给链接、不跑流程」的渠道
+    // （后端不置 loginBusy、不起 pollLogin）⇒ 轮询看到 login_busy=false 便提示
+    // 「登录完成，正在同步账号…」，实际什么都没发生 —— 假成功。
+    // 现在只有真发起登录流程的渠道才轮询；只给链接的渠道引导用户改用粘贴入口。
+    if (r.needs_poll === false) {
+      $("loginMsg").textContent = "已为你打开登录页。请按页面提示登录后，"
+        + "从浏览器 Cookie 中取出 refresh_token 粘贴到下方，再点「提交」。";
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
     // 手动回调兜底（CodeArts）：它的授权回调写死 http://127.0.0.1:<port>/oauth/callback。
     // 只有「浏览器与网关同一台机器」时授权码才会自动回到网关；从局域网/远程打开面板时，
     // 浏览器会跳到用户自己机器的 127.0.0.1（打不开），流程只能等到超时。

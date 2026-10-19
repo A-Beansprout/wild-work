@@ -138,32 +138,30 @@ func TestReloginChannelSetMatchesBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 app.go 失败：%v", err)
 	}
-	src := string(appGo)
-	// 定位 StartLoginFor 函数体（到下一个顶层 func 为止）。
-	start := strings.Index(src, "func (a *App) StartLoginFor(")
-	if start < 0 {
-		t.Fatal("未找到 StartLoginFor")
-	}
-	rest := src[start:]
-	if i := strings.Index(rest[1:], "\nfunc "); i > 0 {
-		rest = rest[:i+1]
+	_ = appGo // 2026-10-18 收表后不再做源码文本比对，改用运行时查表（见下）。
+
+	// 第 1 层（改造后更可靠）：前端每个 ⟳ 成员都必须在后端单一来源表里**有可用入口**。
+	// 改造前这里比对源码文本里「有没有出现过 provider.X」，位置盲、也分不清空壳 case；
+	// 现在后端只有一张 loginFlows 表，直接查表即可，语义精确：
+	//   - 不在表里                 → unknown login provider（死按钮）
+	//   - 有 Start 或 DisplayURL    → 走 StartLoginFor 即可发起
+	//   - 只有 noFlowReason        → StartLoginFor 会返回说明；**但**若该渠道在前端
+	//                               另有专属入口（见 below），⟳ 仍然可用，不算死按钮。
+	// 专属入口：OfficeAce 是两步流程，前端 `startOfficeAceWebLogin` 直接打
+	// `POST /api/login/officeace_auto`，压根不经过 StartLoginFor。
+	dedicatedUIEntry := map[string]bool{
+		"officeace": true, // app.js startOfficeAceWebLogin → /api/login/officeace_auto
 	}
 	for _, ch := range channels {
-		// 源码比对：switch 里必须出现该渠道（用 provider.Kind 常量名或字面量）。
-		constName := map[string]string{
-			"workbuddy": "provider.WorkBuddy", "workbuddyai": "provider.WorkBuddyAI",
-			"traework": "provider.TraeWork", "qoder": "provider.Qoder",
-			"qodercn": "provider.QoderCN", "qodercom": "provider.QoderCOM",
-			"qwenwork": "provider.QwenWork", "raccoon": "provider.Raccoon",
-			"officeace": "provider.OfficeAce",
-		}[ch]
-		if constName == "" {
-			t.Errorf("RELOGIN_CHANNELS 里的 %q 没有在测试的常量映射里登记（请同步本测试）", ch)
-			continue
-		}
-		if !strings.Contains(rest, constName) {
-			t.Errorf("RELOGIN_CHANNELS 含 %q，但 StartLoginFor 的 switch 未登记 %s ⇒ "+
-				"卡片上的 ⟳ 会弹 unknown login provider（死按钮）", ch, constName)
+		k := provider.Kind(ch)
+		f, ok := loginFlows[k]
+		switch {
+		case !ok:
+			t.Errorf("RELOGIN_CHANNELS 含 %q，但 loginFlows 未登记 provider.%s ⇒ "+
+				"卡片上的 ⟳ 会弹 unknown login provider（死按钮）", ch, k)
+		case f.Start == nil && f.DisplayURL == "" && !dedicatedUIEntry[ch]:
+			t.Errorf("RELOGIN_CHANNELS 含 %q，但它在 loginFlows 里既无 Start 也无 DisplayURL，"+
+				"且前端没有专属入口 ⇒ ⟳ 是死按钮", ch)
 		}
 	}
 

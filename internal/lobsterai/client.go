@@ -229,6 +229,17 @@ func buildChatBody(body []byte) ([]byte, error) {
 	}
 	delete(obj, "tool_choice")
 	delete(obj, "prompt_cache_key")
+	// developer → system：上游对 role 不做白名单校验，而是**内部崩掉**返回
+	// `500 {"code":500,"message":"服务器内部错误","data":null}`（实测，见下）。
+	// 本渠道请求体不经 upstream.PrepareBody，此前漏做归一 ⇒ DSH 一发 developer
+	// 角色，三个健康账号各挨一发 500，被 consecutive errors 冷却 10 分钟，
+	// 整条渠道回 503。与 officeace 的 400 ModelArts.81001 是同一个病、不同的崩法。
+	//
+	// 实测证据（2026-10-18，devdump 抓包，同一账号 123905、同一模型 deepseek-flash）：
+	//   role=user      → 200（正常 SSE）
+	//   role=developer → 500 空体（唯一变量）
+	// 修法统一走 upstream.NormalizeRoles，不再复制一份。
+	upstream.NormalizeRoles(obj)
 	return json.Marshal(obj)
 }
 

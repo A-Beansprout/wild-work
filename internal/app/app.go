@@ -110,11 +110,11 @@ type App struct {
 	httpSrv    *http.Server
 	listenAddr string // 当前监听地址；同地址重复 serve 直接复用，避免自撞端口
 
-	muLogin      sync.Mutex
-	loginBusy    bool
-	loginCtx     context.Context
-	loginCancel  context.CancelFunc
-	loginClient  *http.Client
+	muLogin     sync.Mutex
+	loginBusy   bool
+	loginCtx    context.Context
+	loginCancel context.CancelFunc
+	loginClient *http.Client
 	// loginLabel 用户在登录弹窗里填的「账号标识」（可选，2026-10-17 新增）。
 	// 上游不提供稳定身份字段的渠道（当前是 CodeArts）靠它区分「同一账号重新登录」与
 	// 「新增第二个账号」——否则方案 B 的复用逻辑会把第二个账号覆盖到第一条上（用户实测报告）。
@@ -123,8 +123,8 @@ type App struct {
 	// 前端据此**不再** window.open —— 否则会在日常浏览器里再开一个带登录态的标签页，
 	// 无痕的努力就白费了（授权页照样会复用已登录的华为云账号）。
 	loginBackendOpened bool
-	loginStateFP string
-	loginKind    provider.Kind
+	loginStateFP       string
+	loginKind          provider.Kind
 	// loginErr 上一次登录流程的终态错误（成功/取消/超时为空串）。
 	// 面板的登录轮询只看 login_busy 就宣告「登录完成」，于是失败也会显示成功——
 	// 必须把真实结果带出去（否则用户只看到「登录完成」但账号没加进来）。
@@ -622,6 +622,268 @@ func (a *App) Quit() {
 }
 
 // ---------------------------------------------------------------------------
+// 渠道登录能力：单一来源表
+// ---------------------------------------------------------------------------
+//
+// 为什么需要这张表（2026-10-18 深档排障，H3/H9 的根因）：
+// 改造前「渠道 → 登录能力」被复制成了 5-7 份手工维护的表，全在同一条登录链路上：
+//
+//	A 表 app.go:634   准入判定（混了 5 种语义：真编排 / 导入型拒绝 / 匿名拒绝 /
+//	                  只给链接不轮询 / 两步流程指路）
+//	B 表 app.go:683   loginClient 工厂
+//	C 表 app.go:719   Start() 调用
+//	CancelLogin     6 个 `if kind == provider.X`（各自 Shutdown）
+//	pollLogin       13 个 `if kind == provider.X`（各自 Poll + 收尾）+ defer 里 5 个 Shutdown
+//
+// 同一渠道要在这 5-7 处各登记一次，全靠注释约定「必须与前端对齐」。事故已发生 3 次：
+// officeace 只加前端没加后端（死按钮）、7 渠道只加后端没加前端（无 ⟳ 入口）、
+// Loomy 的 Shutdown 被误插进 Raccoon 的 if 块（取消 Loomy 时不关引导页）。
+// 前两次的「修复」都是再手工对齐一遍 —— 这就是架构问题，不是细心问题。
+//
+// 本表把「一个渠道的登录能力」收成一条记录。新增渠道 = 加一行；
+// 少写一项 = 该字段为 nil，行为由 loginFlows 的调用点统一兜底，不会静默失效。
+type loginFlow struct {
+	// Start 发起登录并**立即**返回可展示的授权页地址。
+	// nil 表示本渠道不通过本表发起（见 noFlowReason）。
+	Start func(c *http.Client, statePath string) (string, error)
+
+	// Poll 单次查询授权结果，unfinished 表示「还没完成」（各包用自己的 ErrPending）。
+	// done 负责把结果落成账号（即原来的 complete*Login）。
+	// nil 表示本渠道不需要轮询（如 GLM 只给链接）。
+	Poll func(c *http.Client, statePath string) (done func(*App) error, unfinished bool, err error)
+
+	// Shutdown 释放登录期间占用的本机资源（浏览器 / 回调监听端口）。幂等，可为 nil。
+	Shutdown func()
+
+	// clientFactory 创建本渠道的 HTTP 客户端；nil 表示用 login.NewClient()。
+	// 改造前这是一整张 switch（B 表），实际上除默认 client 外并无差异。
+	clientFactory func() *http.Client
+
+	// openIncognito 表示授权页必须由本工具用**无痕窗口**拉起，而不是交给前端的
+	// window.open()。适用面：授权页会复用日常浏览器里已登录会话的渠道——
+	// 否则「想添加第二个账号，却总被授权成已登录的那个」（2026-10-17 用户实测）。
+	openIncognito bool
+
+	// pollTimeout 轮询登录结果的超时上限；零值 = 用通用 loginTimeout。
+	//
+	// 为什么需要：部分渠道的本机回调存活时间比通用 5m 长——CodeArts 是 flowTTL（10m）。
+	// 以较短者为上限会在用户还在授权页时先放弃并关掉回调口，浏览器随后跳回
+	// 127.0.0.1:<port> 只会得到「连接被拒」（2026-10-18 真机实测）。
+	//
+	// 该特例原先写在 pollLogin 里当成一个 `if a.loginKind == provider.CodeArts`，
+	// 属表外第二来源；现收进本表，保持「一个渠道一条记录」的约束。
+	pollTimeout func() time.Duration
+
+	// OnlyForRegion 非空时仅在该 region 生效（目前无人使用，留给地区差异渠道）。
+	OnlyForRegion string
+
+	// noFlowReason 非空表示本渠道**不通过本表发起登录**，字符串即给用户的说明。
+	// 用于统一表达改造前 A 表的四种「拒绝/特例」语义：
+	//   - 导入型渠道（凭据来自本机客户端）
+	//   - 匿名/免密渠道（无账号可登）
+	//   - 两步流程渠道（走专属入口）
+	noFlowReason string
+
+	// DisplayURL 非空表示「只把用户引到某个页面，不发起轮询」。
+	// 这是 GLM 的形态：凭据由用户从浏览器 Cookie 取出后粘贴（SubmitGLMToken）。
+	// 与 Start 的区别是**不置 loginBusy、不起 pollLogin** —— 改造前它靠「返回非空 URL」
+	// 伪装成正常登录，前端据此启动了轮询，而轮询见 loginBusy=false 便提示
+	// 「登录完成，正在同步账号…」，实际什么都没发生（H9 假成功）。
+	DisplayURL string
+}
+
+// loginFlows 渠道登录能力的唯一来源。
+//
+// 约定：每条记录要么有 Start（真发起登录），要么有 DisplayURL（只引导不轮询），
+// 要么有 noFlowReason（明确拒绝并说明原因）。三者至少有一，由 init 校验。
+var loginFlows = map[provider.Kind]*loginFlow{}
+
+// newClient 各渠道创建 HTTP 客户端的方式。改造前是一整张 switch，
+// 实际上只有 Raccoon 不用 client、其它都是 NewClient()，故用 nil 表示「用默认 client」。
+func newLoginClient(k provider.Kind) *http.Client {
+	f, ok := loginFlows[k]
+	if !ok || f.clientFactory == nil {
+		return login.NewClient()
+	}
+	return f.clientFactory()
+}
+
+func init() {
+	// —— 走标准 HTTP 授权流（Start + Poll），签名与 login_* 包一一对应 ——
+	loginFlows[provider.WorkBuddy] = &loginFlow{
+		Start: func(c *http.Client, sp string) (string, error) {
+			ep := login.EndpointsForRegion(regionForLogin)
+			url, err := login.Start(c, sp, ep)
+			if err != nil {
+				return "", err
+			}
+			if resolved, rerr := login.ResolveAuthURL(c, url, ep); rerr == nil && resolved != "" {
+				url = resolved
+			}
+			return url, nil
+		},
+		Poll: func(c *http.Client, sp string) (func(*App) error, bool, error) {
+			r, err := login.Poll(c, sp, login.EndpointsForRegion(regionForLogin))
+			if err != nil {
+				if errors.Is(err, login.ErrPending) {
+					return nil, true, nil
+				}
+				return nil, false, err
+			}
+			return func(a *App) error { a.completeLogin(r); return nil }, false, nil
+		},
+	}
+	loginFlows[provider.TraeWork] = &loginFlow{
+		Start: logintrae.Start,
+		Poll:  wrapPoll(logintrae.Poll, logintrae.ErrPending, func(a *App, r logintrae.Result) error { a.completeTraeLogin(r); return nil }),
+	}
+	loginFlows[provider.Qoder] = &loginFlow{
+		Start: loginqoder.Start,
+		Poll:  wrapPoll(loginqoder.Poll, loginqoder.ErrPending, func(a *App, r loginqoder.Result) error { a.completeQoderLogin(r); return nil }),
+	}
+	loginFlows[provider.QoderCN] = &loginFlow{
+		Start: loginqodercn.Start,
+		Poll:  wrapPoll(loginqodercn.Poll, loginqodercn.ErrPending, func(a *App, r loginqodercn.Result) error { a.completeQoderCNLogin(r); return nil }),
+	}
+	loginFlows[provider.QoderCOM] = &loginFlow{
+		Start: loginqodercom.Start,
+		Poll:  wrapPoll(loginqodercom.Poll, loginqodercom.ErrPending, func(a *App, r loginqodercom.Result) error { a.completeQoderCOMLogin(r); return nil }),
+	}
+	loginFlows[provider.WorkBuddyAI] = &loginFlow{
+		Start: loginwbai.Start,
+		Poll:  wrapPoll(loginwbai.Poll, loginwbai.ErrPending, func(a *App, r loginwbai.Result) error { a.completeWbaiLogin(r); return nil }),
+	}
+	loginFlows[provider.QwenWork] = &loginFlow{
+		Start:    loginqwenwork.Start,
+		Poll:     wrapPoll(loginqwenwork.Poll, loginqwenwork.ErrPending, func(a *App, r loginqwenwork.Result) error { a.completeQwenWorkLogin(r); return nil }),
+		Shutdown: loginqwenwork.Shutdown,
+	}
+	loginFlows[provider.Minimax] = &loginFlow{
+		Start: loginminimax.Start,
+		Poll:  wrapPoll(loginminimax.Poll, loginminimax.ErrPending, func(a *App, r loginminimax.Result) error { a.completeMinimaxLogin(r); return nil }),
+	}
+	loginFlows[provider.LobsterAI] = &loginFlow{
+		Start:    loginlobsterai.Start,
+		Poll:     wrapPoll(loginlobsterai.Poll, loginlobsterai.ErrPending, func(a *App, r loginlobsterai.Result) error { a.completeLobsterAILogin(r); return nil }),
+		Shutdown: loginlobsterai.Shutdown,
+	}
+	loginFlows[provider.ZCode] = &loginFlow{
+		Start: loginzcode.Start,
+		Poll:  wrapPoll(loginzcode.Poll, loginzcode.ErrPending, func(a *App, r loginzcode.Result) error { a.completeZCodeLogin(r); return nil }),
+	}
+	loginFlows[provider.Gemini] = &loginFlow{
+		Start:    logingemini.Start,
+		Poll:     wrapPoll(logingemini.Poll, logingemini.ErrPending, func(a *App, r logingemini.Result) error { a.completeGeminiLogin(r); return nil }),
+		Shutdown: logingemini.Shutdown,
+	}
+	loginFlows[provider.CodeArts] = &loginFlow{
+		Start:    logincodearts.Start,
+		Poll:     wrapPoll(logincodearts.Poll, logincodearts.ErrPending, func(a *App, r logincodearts.Result) error { a.completeCodeArtsLogin(r); return nil }),
+		Shutdown: logincodearts.Shutdown,
+		// 授权页会复用日常浏览器里已登录的华为云会话 ⇒ 必须用无痕窗口拉起，
+		// 否则「想添加第二个账号却总被授权成已登录的那个」。
+		openIncognito: true,
+		// 本机回调存活 10m（flowTTL）比通用 loginTimeout（5m）长；超时上限对齐该包，
+		// 否则用户还在授权页时就被放弃、回调口已关，浏览器跳回只会「连接被拒」。
+		pollTimeout: logincodearts.FlowTTL,
+	}
+	// Loomy：本机引导页 + 短信验证码，持有 127.0.0.1 监听端口。
+	loginFlows[provider.Loomy] = &loginFlow{
+		Start:    loginloomy.Start,
+		Poll:     wrapPoll(loginloomy.Poll, loginloomy.ErrPending, func(a *App, r loginloomy.Result) error { a.completeLoomyLogin(r); return nil }),
+		Shutdown: loginloomy.Shutdown,
+	}
+	// Raccoon：网页版 CDP 捕获，签名与其它包同构（两个参数用不上）。
+	// clientFactory 为 nil 表示用默认 client（它根本不发 HTTP 轮询）。
+	loginFlows[provider.Raccoon] = &loginFlow{
+		Start:    loginraccoon.Start,
+		Poll:     wrapPoll(loginraccoon.Poll, loginraccoon.ErrPending, func(a *App, r loginraccoon.Result) error { a.completeRaccoonLogin(r); return nil }),
+		Shutdown: loginraccoon.Shutdown,
+	}
+
+	// —— 不通过本表发起的渠道（改造前 A 表的四种语义，现统一为说明文字）——
+	loginFlows[provider.MonkeyCode] = &loginFlow{
+		noFlowReason: "MonkeyCode 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）",
+	}
+	loginFlows[provider.Oczen] = &loginFlow{
+		noFlowReason: "OpenCodeZen 为匿名通道，无需也无法添加账号",
+	}
+	loginFlows[provider.Kilo] = &loginFlow{
+		noFlowReason: "Kilo 免费池无需登录，也没有可添加的账号",
+	}
+	// GLM：无编程式登录，只把用户引到页面，凭据由粘贴 Cookie 获得（见 DisplayURL 注释）。
+	loginFlows[provider.GLM] = &loginFlow{
+		DisplayURL: loginglm.LoginURL,
+	}
+	loginFlows[provider.OfficeAce] = &loginFlow{
+		noFlowReason: "OfficeAce 登录是两步流程（华为云授权码 + 云端轮询捕获），请用面板的「浏览器登录」入口",
+	}
+
+	// 自检：每条记录必须恰好表达一种「发起方式」，防止将来加渠道时漏填。
+	for k, f := range loginFlows {
+		n := 0
+		if f.Start != nil {
+			n++
+		}
+		if f.DisplayURL != "" {
+			n++
+		}
+		if f.noFlowReason != "" {
+			n++
+		}
+		if n != 1 {
+			panic(fmt.Sprintf("loginFlows[%s] 必须恰好表达一种发起方式（Start / DisplayURL / noFlowReason），实际 %d 种", k, n))
+		}
+	}
+}
+
+// wrapPoll 把「各包各形的 Poll + complete」适配成表中统一的形状。
+// 各包的 Result 类型互不相同，只能在这里用泛型收口，避免 13 份重复的
+// 「err == nil / ErrPending / 不报错就 continue」样板。
+func wrapPoll[R any](
+	poll func(*http.Client, string) (R, error),
+	pending error,
+	done func(*App, R) error,
+) func(*http.Client, string) (func(*App) error, bool, error) {
+	return func(c *http.Client, sp string) (func(*App) error, bool, error) {
+		r, err := poll(c, sp)
+		if err != nil {
+			if errors.Is(err, pending) {
+				return nil, true, nil
+			}
+			return nil, false, err
+		}
+		return func(a *App) error { return done(a, r) }, false, nil
+	}
+}
+
+// regionForLogin 登录时使用的地区（workbuddy 系授权端点分地区）。
+// 由 App 在发起登录前写入，避免把 region 塞进每张表的函数签名。
+var regionForLogin = "cn"
+
+// lookupLoginFlow 取某渠道的登录能力；不存在时返回 nil（调用方报「未知渠道」）。
+func lookupLoginFlow(kind string) (*loginFlow, bool) {
+	f, ok := loginFlows[provider.Kind(kind)]
+	return f, ok
+}
+
+// needsPollFor 该渠道发起登录后是否需要前端轮询结果。
+//
+// 判据只有一条且来自单一来源表：**只给链接、不跑流程**的渠道（DisplayURL 形态，如 GLM）
+// 不需要轮询；其余真发起登录流程的渠道都需要。
+// 这是 H9（GLM 假成功）的唯一判定处——改造前前端靠「auth_url 是否非空」猜，
+// 而 GLM 恰恰返回了非空 URL，于是轮询读不到 login_busy 便谎报「登录完成」。
+//
+// 未知渠道返回 false：既然连登录能力都没登记，本就不该进入轮询。
+func (a *App) needsPollFor(kind string) bool {
+	f, ok := loginFlows[provider.Kind(kind)]
+	if !ok {
+		return false
+	}
+	return f.DisplayURL == "" && f.Start != nil
+}
+
+// ---------------------------------------------------------------------------
 // 账号操作
 // ---------------------------------------------------------------------------
 
@@ -631,47 +893,23 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	if k == "" {
 		k = provider.WorkBuddy
 	}
-	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Minimax, provider.LobsterAI, provider.ZCode, provider.Gemini, provider.CodeArts:
-		// 这些渠道已有登录编排
-	case provider.MonkeyCode:
-		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
-		return "", fmt.Errorf("%s 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）", k)
-	case provider.Raccoon:
-		// 小浣熊：网页版自动登录 —— 拉起独立 profile 的浏览器，用户在网页登录后
-		// 经 CDP 捕获 Cookie 里的 refresh_token 并换取凭据（见 internal/login_raccoon/web.go）。
-		// 面板同时保留「从本机客户端导入」作为替代路径。
-	case provider.Loomy:
-		// Loomy：浏览器登录 —— 起一个 127.0.0.1 的本机登录引导页（手机号 + 短信验证码换 session，
-		// 见 internal/login_loomy）。上游没有 OAuth 授权页，登录入口是讯飞账号服务的短信验证码
-		// 接口（HMAC-SHA1 签名），故由本工具代发短信、代换 session。
-		// 面板同时保留「从本机客户端导入」作为替代路径（internal/app/import_local.go）。
-	case provider.Oczen:
-		// 匿名通道无账号可登（凭证固定为 public，启动时已注入虚拟账号）
-		return "", errors.New("OpenCodeZen 为匿名通道，无需也无法添加账号")
-	case provider.Kilo:
-		// 免密免费池：没有登录流程可走，虚拟账号在启动时注入。
-		// 这里必须显式拒绝——**不能**依赖 default 分支，见本函数末尾第二张 switch 的注释。
-		return "", errors.New("Kilo 免费池无需登录，也没有可添加的账号")
-	case provider.GLM:
-		// 智谱清言无编程式登录：凭据只能由用户从浏览器 Cookie 里取出后粘贴。
-		// 故这里不发起轮询流程，只返回登录页地址；用户粘贴后走 SubmitGLMToken。
-		return loginglm.LoginURL, nil
-	case provider.OfficeAce:
-		// OfficeAce：华为云授权码 + PKCE + DPoP 的**两步**流程，与上面那张 case 列表里
-		// 「一次调用就返回 auth_url」的渠道形态不同——授权结果由云端轮询捕获，故真正的
-		// 流程在 `POST /api/login/officeace_auto`（见 StartOfficeAceLogin）。
-		//
-		// 这里登记它、而不是靠 default 拒绝，是因为 R76 已把「面板显示 ⟳ 一键重新登录」
-		// 的适用面定义为「**有登录编排的渠道**」，而本函数的 switch 就是这一定义的落点；
-		// 前端 `RELOGIN_CHANNELS` 必须与它对齐（回归：TestReloginChannelSetMatchesBackend）。
-		// ⚠️ 2026-10-18 修正：先前只往前端 `RELOGIN_CHANNELS` 加了 officeace、没在这里登记，
-		// 于是卡片上那个 ⟳ 点下去只会弹 `unknown login provider officeace` —— 一个**死按钮**
-		// （独立复核抓出）。现在两侧同时登记，且前端对 officeace 直接走专属入口。
-		return "", fmt.Errorf("OfficeAce 登录是两步流程（华为云授权码 + 云端轮询捕获），请用面板的「浏览器登录」入口")
-	default:
+
+	// 准入与形态判定：全部来自 loginFlows 这一张表。
+	flow, known := loginFlows[k]
+	if !known {
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
+	// 不通过本表发起的渠道：统一用 noFlowReason 说明原因（改造前是 4 个手写 case）。
+	if flow.noFlowReason != "" {
+		return "", errors.New(flow.noFlowReason)
+	}
+	// 只引导不轮询的渠道（GLM）：返回地址但**不置 loginBusy、不起 pollLogin**。
+	// 前端据 /api/state 下发的 capabilities 判定「是否需要轮询」，
+	// 不再靠「返回值非空」猜（改造前正是这个猜法导致 H9 假成功）。
+	if flow.DisplayURL != "" {
+		return flow.DisplayURL, nil
+	}
+	regionForLogin = a.cfg.Region
 	a.muLogin.Lock()
 	if a.loginBusy {
 		a.muLogin.Unlock()
@@ -680,105 +918,24 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.loginCtx, a.loginCancel = ctx, cancel
 	a.loginKind = k
-	switch k {
-	case provider.TraeWork:
-		a.loginClient = logintrae.NewClient()
-	case provider.Qoder:
-		a.loginClient = loginqoder.NewClient()
-	case provider.QoderCN:
-		a.loginClient = loginqodercn.NewClient()
-	case provider.QoderCOM:
-		a.loginClient = loginqodercom.NewClient()
-	case provider.WorkBuddyAI:
-		a.loginClient = loginwbai.NewClient()
-	case provider.QwenWork:
-		a.loginClient = loginqwenwork.NewClient()
-	case provider.Minimax:
-		a.loginClient = loginminimax.NewClient()
-	case provider.LobsterAI:
-		a.loginClient = loginlobsterai.NewClient()
-	case provider.ZCode:
-		a.loginClient = loginzcode.NewClient()
-	case provider.Gemini:
-		a.loginClient = logingemini.NewClient()
-	case provider.CodeArts:
-		a.loginClient = logincodearts.NewClient()
-	case provider.Raccoon:
-		// 网页版登录靠 CDP，不用 HTTP client；置 nil 即可（pollLogin 里也不再用它）。
-	case provider.Loomy:
-		a.loginClient = loginloomy.NewClient()
-	default:
-		a.loginClient = login.NewClient()
-	}
+	// B 表已并入 loginFlows：Raccoon 不发 HTTP 轮询，clientFactory 为 nil 时
+	// 仍给一个默认 client（它用不到，但保持非 nil 可避免各处 nil 判断）。
+	a.loginClient = newLoginClient(k)
 	a.loginBusy = true
 	a.loginErr = ""
 	a.muLogin.Unlock()
 
-	var authURL string
-	var err error
-	switch k {
-	case provider.TraeWork:
-		authURL, err = logintrae.Start(a.loginClient, a.loginStateFP)
-	case provider.Qoder:
-		authURL, err = loginqoder.Start(a.loginClient, a.loginStateFP)
-	case provider.QoderCN:
-		authURL, err = loginqodercn.Start(a.loginClient, a.loginStateFP)
-	case provider.QoderCOM:
-		authURL, err = loginqodercom.Start(a.loginClient, a.loginStateFP)
-	case provider.WorkBuddyAI:
-		authURL, err = loginwbai.Start(a.loginClient, a.loginStateFP)
-	case provider.QwenWork:
-		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
-	case provider.Raccoon:
-		// 网页版登录：拉起独立 profile 的浏览器并返回登录页地址（跨平台，无需注册表/客户端）。
-	case provider.Loomy:
-		// 浏览器登录：起本机登录引导页并**立即**返回其地址（前端 window.open 只在用户
-		// 点击后的短暂窗口内有效），用户在里面完成短信验证码登录后由 pollLogin 收尾。
-		authURL, err = loginloomy.Start(a.loginClient, a.loginStateFP)
-		authURL, err = loginraccoon.Start()
-	case provider.Minimax:
-		// 设备码 + PKCE：Start **立即**返回授权链接（前端 window.open 只在用户点击后的
-		// 短暂窗口内有效），随后由 pollLogin 轮询换 token。
-		authURL, err = loginminimax.Start(a.loginClient, a.loginStateFP)
-	case provider.LobsterAI:
-		// 本机回调授权：Start 起 127.0.0.1 随机端口的回调监听并**立即**返回登录页地址
-		// （前端 window.open 只在用户点击后的短暂窗口内有效），回调到达后由 pollLogin 收尾。
-		authURL, err = loginlobsterai.Start(a.loginClient, a.loginStateFP)
-	case provider.ZCode:
-		// 服务端中介设备授权流：Start 发起 init 并**立即**返回授权链接
-		// （前端 window.open 只在用户点击后的短暂窗口内有效），随后由 pollLogin 轮询。
-		authURL, err = loginzcode.Start(a.loginClient, a.loginStateFP)
-	case provider.Gemini:
-		// loopback OAuth：Start 先监听 127.0.0.1 的动态端口再拼授权 URL 并**立即**返回
-		// （前端 window.open 只在用户点击后的瞬态激活窗口内有效），回调到达后由 pollLogin 收尾。
-		authURL, err = logingemini.Start(a.loginClient, a.loginStateFP)
-	case provider.CodeArts:
-		// PKCE OAuth + 本机回调：Start 起 127.0.0.1 回调监听并**立即**返回授权链接，
-		// 用户授权后由 pollLogin 收尾（回调端口由 Shutdown 关闭）。
-		authURL, err = logincodearts.Start(a.loginClient, a.loginStateFP)
-	case provider.Oczen, provider.Kilo:
-		// 免密渠道没有登录流程。正常情况下上面第一张 switch 已拒绝并返回，走不到这里；
-		// 这条 case 是**防御**：若将来有人把第一张的拒绝删掉，default 会把用户导向
-		// WorkBuddy 的授权页——静默指向错误渠道，比直接报错难查得多。
-		a.finishLogin()
-		return "", fmt.Errorf("%s 为免密渠道，没有登录流程", k)
-	default:
-		ep := login.EndpointsForRegion(a.cfg.Region)
-		authURL, err = login.Start(a.loginClient, a.loginStateFP, ep)
-		if err == nil {
-			if resolved, rerr := login.ResolveAuthURL(a.loginClient, authURL, ep); rerr == nil && resolved != "" {
-				authURL = resolved
-			}
-		}
-	}
+	// C 表已并入 loginFlows：一条记录一个 Start，结构上不可能再出现
+	// 「两行挤进同一个 case、前者被覆盖」（H2）或「case 只有注释」（H1）。
+	authURL, err := flow.Start(a.loginClient, a.loginStateFP)
 	if err != nil {
 		a.finishLogin()
 		return "", err
 	}
 	// 浏览器打开通常由前端 Web UI 通过 window.open() 完成；但 CodeArts 例外：
 	// 它的授权页会**复用日常浏览器里已登录的华为云会话**，于是「想添加第二个账号，
-	// 却总被授权成已登录的那个」（2026-10-17 用户实测报告）。故这里由本工具用**无痕窗口**拉起。
-	if k == provider.CodeArts {
+	// 却总被授权成已登录的那个」（2026-10-17 用户实测报告）。故由本工具用**无痕窗口**拉起。
+	if flow.openIncognito {
 		a.openAuthURLIncognito(authURL)
 	}
 	go a.pollLogin(ctx)
@@ -821,35 +978,21 @@ func (a *App) CancelLogin() error {
 	}
 	cancel()
 	_ = os.Remove(a.loginStateFP)
-	// 千问办公登录附带本机回调 server，取消时一并关闭
-	if kind == provider.QwenWork {
-		loginqwenwork.Shutdown()
-	}
-	// LobsterAI 同样是本机回调型（127.0.0.1 随机端口监听），取消时一并关闭
-	// （pollLogin 的 defer 还会再兜一次；Shutdown 幂等）。
-	if kind == provider.LobsterAI {
-		loginlobsterai.Shutdown()
-	}
-	// Gemini 的 loopback OAuth 同样持有本机监听端口（pollLogin 的 defer 还会再兜一次）。
-	if kind == provider.Gemini {
-		logingemini.Shutdown()
-	}
-	// CodeArts 的 PKCE OAuth 同样持有本机回调端口。
-	if kind == provider.CodeArts {
-		logincodearts.Shutdown()
-	}
-	// 小浣熊网页版登录：取消时关闭浏览器（幂等；pollLogin 的 defer 还会再兜一次）
-	if kind == provider.Raccoon {
-		loginraccoon.Shutdown()
-	}
-	// Loomy 登录引导页占着 127.0.0.1 的随机端口，取消时一并关闭（幂等）。
-	// ⚠️ 必须与上面平铺在同一层：曾经被误插进 Raccoon 的 if 块里，于是只有
-	// 「取消小浣熊登录」时才会执行到，取消 Loomy 时引导页不关（端口/页面残留）。
-	if kind == provider.Loomy {
-		loginloomy.Shutdown()
-	}
+	// 释放本机资源（浏览器 / 127.0.0.1 回调监听端口）：由 loginFlows 的 Shutdown 统一表达。
+	// 改造前这里是 6 个平铺的 `if kind == provider.X`，且注释记载「Loomy 的 Shutdown 曾被
+	// 误插进 Raccoon 的 if 块里，取消 Loomy 时引导页不关」—— 同一个坑的第三次复发。
+	a.shutdownLoginFlow(provider.Kind(kind))
 	log.Printf("登录已取消")
 	return nil
+}
+
+// shutdownLoginFlow 释放某渠道登录期间占用的本机资源（幂等，未登记或无 Shutdown 则无操作）。
+// 取代了改造前散落在 CancelLogin 与 pollLogin defer 里的 11 个手工 if 分支
+// （两处各写一遍，且曾因插错层级而漏关）。
+func (a *App) shutdownLoginFlow(k provider.Kind) {
+	if f, ok := loginFlows[k]; ok && f.Shutdown != nil {
+		f.Shutdown()
+	}
 }
 
 // pollLogin 后台轮询登录结果，写日志。
@@ -858,37 +1001,19 @@ func (a *App) pollLogin(ctx context.Context) {
 		if r := recover(); r != nil {
 			log.Printf("login poll panic: %v", r)
 		}
-		// 小浣熊网页版登录：无论成功、失败、超时、取消还是 panic，
-		// 都必须关闭独立 profile 的浏览器（Shutdown 幂等）。
-		if a.loginKind == provider.Raccoon {
-			loginraccoon.Shutdown()
-		}
-		// LobsterAI 与 Raccoon 同属「持有本机资源」的登录：它起的是 127.0.0.1 上的
-		// 回调监听端口，故无论成功、失败、超时、取消还是 panic，都必须关掉（Shutdown 幂等）。
-		// Loomy 的登录引导页同样持有 127.0.0.1 监听端口，必须一并关闭。
-		if a.loginKind == provider.Loomy {
-			loginloomy.Shutdown()
-		}
-		if a.loginKind == provider.LobsterAI {
-			loginlobsterai.Shutdown()
-		}
-		// Gemini 的 loopback OAuth 同样持有本机监听端口，必须一并关闭。
-		if a.loginKind == provider.Gemini {
-			logingemini.Shutdown()
-		}
-		// CodeArts 的 PKCE OAuth 同样持有本机回调端口。
-		if a.loginKind == provider.CodeArts {
-			logincodearts.Shutdown()
-		}
+		// 释放本机资源：由 loginFlows 的 Shutdown 统一表达（幂等）。
+		// 改造前这里是 5 个平铺的逐渠道 if，且与 CancelLogin 里那 6 个各写一遍 ——
+		// 两处不一致就会漏关（Loomy 引导页就漏过一次）。
+		a.shutdownLoginFlow(a.loginKind)
 		a.finishLogin()
 	}()
-	deadline := time.Now().Add(loginTimeout)
-	// CodeArts 的本机回调存活时间（flowTTL，10m）比通用 loginTimeout（5m）长：
-	// 以较短者为上限会在用户还在授权页时先放弃并关掉回调口，浏览器随后跳回
-	// 127.0.0.1:<port> 只会得到连接被拒（2026-10-18 真机实测）。故对齐到该包的 TTL。
-	if a.loginKind == provider.CodeArts {
-		deadline = time.Now().Add(logincodearts.FlowTTL())
+	// 超时上限由 loginFlows 的 pollTimeout 决定（零值用通用 loginTimeout）。
+	// 原先这里是 `if a.loginKind == provider.CodeArts` 的表外特例，现收进表。
+	pollBudget := loginTimeout
+	if f, ok := loginFlows[a.loginKind]; ok && f.pollTimeout != nil {
+		pollBudget = f.pollTimeout()
 	}
+	deadline := time.Now().Add(pollBudget)
 	log.Printf("登录流程已发起，等待浏览器完成…")
 	t := time.NewTicker(loginPollEvery)
 	defer t.Stop()
@@ -905,164 +1030,30 @@ func (a *App) pollLogin(ctx context.Context) {
 			a.setLoginError("登录超时（未收到授权回调），请重新发起登录")
 			return
 		}
-		if a.loginKind == provider.CodeArts {
-			r, err := logincodearts.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeCodeArtsLogin(r)
-				return
-			}
-			if !errors.Is(err, logincodearts.ErrPending) {
-				log.Printf("codearts login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.Gemini {
-			r, err := logingemini.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeGeminiLogin(r)
-				return
-			}
-			if !errors.Is(err, logingemini.ErrPending) {
-				log.Printf("gemini login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.ZCode {
-			r, err := loginzcode.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeZCodeLogin(r)
-				return
-			}
-			if !errors.Is(err, loginzcode.ErrPending) {
-				log.Printf("zcode login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.LobsterAI {
-			r, err := loginlobsterai.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeLobsterAILogin(r)
-				return
-			}
-			if !errors.Is(err, loginlobsterai.ErrPending) {
-				log.Printf("lobsterai login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.Minimax {
-			r, err := loginminimax.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeMinimaxLogin(r)
-				return
-			}
-			if !errors.Is(err, loginminimax.ErrPending) {
-				log.Printf("minimax login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.TraeWork {
-			r, err := logintrae.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeTraeLogin(r)
-				return
-			}
-			if !errors.Is(err, logintrae.ErrPending) {
-				log.Printf("trae login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.Qoder {
-			r, err := loginqoder.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeQoderLogin(r)
-				return
-			}
-			if !errors.Is(err, loginqoder.ErrPending) {
-				log.Printf("qoder login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.QoderCN {
-			r, err := loginqodercn.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeQoderCNLogin(r)
-				return
-			}
-			if !errors.Is(err, loginqodercn.ErrPending) {
-				log.Printf("qodercn login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.QoderCOM {
-			r, err := loginqodercom.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeQoderCOMLogin(r)
-				return
-			}
-			if !errors.Is(err, loginqodercom.ErrPending) {
-				log.Printf("qodercom login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.WorkBuddyAI {
-			r, err := loginwbai.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeWbaiLogin(r)
-				return
-			}
-			if !errors.Is(err, loginwbai.ErrPending) {
-				log.Printf("workbuddyai login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.QwenWork {
-			r, err := loginqwenwork.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeQwenWorkLogin(r)
-				return
-			}
-			if !errors.Is(err, loginqwenwork.ErrPending) {
-				log.Printf("qwenwork login poll failed: %v", err)
-			}
-			continue
-		}
-		if a.loginKind == provider.Loomy {
-			r, err := loginloomy.Poll(a.loginClient, a.loginStateFP)
-			if err == nil {
-				a.completeLoomyLogin(r)
-				return
-			}
-			if !errors.Is(err, loginloomy.ErrPending) {
-				// 终态错误（下发验证码失败 / 引导页起不来）：立即结束轮询，
-				// 由 defer 关闭引导页；继续轮询只会重复报同一个错。
-				log.Printf("loomy login poll failed: %v", err)
-				a.setLoginError("登录失败：" + err.Error())
-				return
-			}
-			continue
-		}
-		if a.loginKind == provider.Raccoon {
-			r, err := loginraccoon.Poll()
-			if err == nil {
-				a.completeRaccoonLogin(r)
-				return
-			}
-			if !errors.Is(err, loginraccoon.ErrPending) {
-				// 终态错误（未捕获到账号 / 换取令牌失败 / 已取消）：立即结束轮询，
-				// 由 defer 关闭浏览器；继续轮询只会重复报同一个错。
-				log.Printf("raccoon login poll failed: %v", err)
-				a.setLoginError("登录失败：" + err.Error())
-				return
-			}
-			continue
-		}
-		r, err := login.Poll(a.loginClient, a.loginStateFP, login.EndpointsForRegion(a.cfg.Region))
-		if err == nil {
-			a.completeLogin(r)
+		// 分派：由 loginFlows 表决定，不再逐渠道 if。
+		// 改造前这里是 13 个几乎相同的块（每块 5-8 行样板：Poll → 判 err → 判 ErrPending
+		// → 不报错就 continue → setLoginError），且块序与 A/B/C 三张表的顺序无关，
+		// 新增渠道时极易漏写其中一处（漏了就是「登录永远等超时」）。
+		flow, known := loginFlows[a.loginKind]
+		if !known || flow.Poll == nil {
+			// 表里没登记 Poll：DisplayURL / noFlowReason 的渠道已在 StartLoginFor 提前返回，
+			// 走不到这里。兜底成「立即失败」而不是死循环等超时。
+			a.setLoginError("登录失败：该渠道未提供轮询能力")
 			return
 		}
-		if !errors.Is(err, login.ErrPending) {
-			log.Printf("workbuddy login poll failed: %v", err)
+		done, unfinished, perr := flow.Poll(a.loginClient, a.loginStateFP)
+		if perr == nil {
+			if err := done(a); err != nil {
+				a.setLoginError("登录失败：" + err.Error())
+			}
+			return
+		}
+		if !unfinished {
+			// 终态错误（下发验证码失败 / 引导页起不来 / 未捕获到账号 / 换取令牌失败）：
+			// 立即结束轮询，由 defer 释放资源；继续轮询只会重复报同一个错。
+			log.Printf("%s login poll failed: %v", a.loginKind, perr)
+			a.setLoginError("登录失败：" + perr.Error())
+			return
 		}
 	}
 }
@@ -1731,6 +1722,7 @@ func (a *App) CancelOfficeAceLogin() error {
 // officeAceLoginStatus OfficeAce 自助登录状态（**单一来源**：前端读的字段名以此为准）。
 //
 // 字段契约（app.js 的 startOfficeAcePoll 依赖它）：
+//
 //	status: pending | exchanging | done | failed | expired | canceled | idle
 //	可选 error / uid / nickname / warning
 //
@@ -1747,7 +1739,6 @@ type officeAceLoginStatus struct {
 
 // oaLoginActive 该状态是否表示「流程进行中」（此时不允许再起一条）。
 func oaLoginActive(st string) bool { return st == "pending" || st == "exchanging" }
-
 
 // completeQwenWorkLogin 登录成功：写 auth 文件、重载账号池。
 // 千问办公无签到活动（每日积分服务端被动发放），不做首次签到。
@@ -3319,6 +3310,11 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			// manual_callback：该渠道的授权回调是**写死回环地址**（当前仅 CodeArts，
 			// 见 internal/login_codearts 的协议说明）。浏览器与网关不同机时（局域网/
 			// 远程访问面板），回调只能靠用户把地址栏 URL 粘回来，前端据此显示输入框。
+			// needs_poll（2026-10-18 H9）：告知前端这次登录是否需要轮询结果。
+			// GLM 的形态是「只给链接、不跑流程」（凭据靠粘贴 Cookie），后端不置 loginBusy、
+			// 不起 pollLogin；改造前前端只看 auth_url 非空就无条件 startLoginPoll()，
+			// 于是轮询看到 login_busy=false 便提示「登录完成，正在同步账号…」——假成功。
+			"needs_poll":      a.needsPollFor(req.Channel),
 			"manual_callback": kind == provider.CodeArts,
 		})
 	})
@@ -3352,7 +3348,6 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 				"%s 渠道不需要手动回调：它的凭据由网关侧轮询/捕获，不接受回调地址", kind))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.CancelLogin(); err != nil {
