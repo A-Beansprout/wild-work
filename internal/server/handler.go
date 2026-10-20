@@ -974,6 +974,42 @@ func (h *Handler) serveRotation(
 				lastKind = provider.ErrQueued
 				continue
 			}
+			// 其余「首帧即错误、一字节未写」的分类错误（典型：qodercom 的 envelope 403 里
+			// 包着 code 110/112 额度耗尽帧 → ErrHardCredit）：此刻换号还来得及，不应当作
+			// 「已写流的残留错误」只罚不换（那样 5 个号全耗尽时客户端只能干等下次请求）。
+			// 与写后分支的区别仅在「能不能换」：已写出字节的流无法撤回，只能罚号 + 透传。
+			if serr != nil && !sw.written && len(rt.Pool.List()) > 1 {
+				var sec provider.StreamErrorClassifier
+				if errors.As(serr, &sec) && sec.Kind().Rotatable() {
+					kind := sec.Kind()
+					h.stickyClear(rt)
+					switch kind {
+					case provider.ErrHardCredit:
+						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.hardCooldown(), "stream 402 权益不足")
+					case provider.ErrSoftRate:
+						rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(serr.Error()), "stream 429 限流")
+					case provider.ErrSessionDead:
+						rt.Pool.MarkSessionDead(acct.UID, serr.Error())
+					case provider.ErrAccountFault:
+						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "stream account fault")
+					default:
+						rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					}
+					clearSSEHeaders(w)
+					log.Printf("stream error before write platform=%s uid=%s model=%s kind=%s（换下一个账号）err=%v",
+						rt.Kind, acct.UID, model, kind, serr)
+					lastErr = serr
+					lastKind = kind
+					// 额度耗尽透 402（付费墙语义，客户端/用户一看就知道要充值/换号），
+					// 其余保留上游原始状态码；body 用原文，保留上游错误码与文案。
+					lastStatus = http.StatusPaymentRequired
+					if pe := (*provider.Error)(nil); errors.As(serr, &pe) && pe.Status >= 400 {
+						lastStatus = pe.Status
+					}
+					lastBody = []byte(serr.Error())
+					continue
+				}
+			}
 			cu := cacheUsageOf(usage) // 缓存命中（上游未上报时 reported=false，面板显示「—」）
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
 			// 记账失败不干扰主流程——锦上添花功能。

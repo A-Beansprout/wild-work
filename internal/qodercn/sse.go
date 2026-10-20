@@ -264,15 +264,35 @@ func queueNotice(body string, statusCode int, headers map[string][]string) *prov
 // envelopeError 识别「HTTP 200 里包着的业务错误帧」（非排队）：这种帧同样没有
 // choices，当普通 chunk 透传只会让客户端拿到空 delta 干等。按外包 statusCode
 // 分类后上抛，走 handler 的统一错误路径（可轮换/可冷却/可降级）。
+//
+// 额度耗尽单独判（2026-10-20 qodercom 同族实测，本渠道代码同源一并补）：
+// 码 110「Billing daily count exceeded」与 112「pricingUrl 付费墙」都是**账号级**
+// 额度耗尽——文案不含 hardMarkers 的 "quota exceeded"，按 statusCode 分类只会落到
+// 普通 4xx，变成「只换号不冷却」，下次请求又撞同一堵墙。归 ErrHardCredit 后
+// 整号硬冷却 + 换下一个号。
 func envelopeError(body string, statusCode int) error {
-	if statusCode < 400 || body == "" || strings.Contains(body, "\"choices\"") {
+	if body == "" || strings.Contains(body, "\"choices\"") {
 		return nil
 	}
-	return &provider.Error{
-		Kind:   Classify(statusCode, body),
-		Status: statusCode,
-		Msg:    truncate(body, 200),
+	vals := unwrapLayers(body)
+	if code, _ := vals["code"].(string); code == "110" || code == "112" {
+		// 包成 Classified：流式路径要靠 Kind() 认出 ErrHardCredit 才能「整号冷却 + 换号」。
+		return &provider.Classified{Err: &provider.Error{
+			Kind:   provider.ErrHardCredit,
+			Status: 402, // 语义是付费墙，透传给客户端用 402 比 403 准确
+			Msg:    "upstream quota exhausted (code " + code + "): " + truncate(body, 200),
+		}}
 	}
+	if b, ok := vals["isQuotaExceeded"].(bool); ok && b {
+		return &provider.Classified{Err: &provider.Error{
+			Kind:   provider.ErrHardCredit,
+			Status: 402,
+			Msg:    "upstream quota exhausted: " + truncate(body, 200),
+		}}
+	}
+	// 通用 statusCode>=400 交给 sseError：它能从文案里取 retryAfterSeconds，
+	// 并在出口补带 code/retry_after_seconds 的结构化 error 帧（R108）。
+	return nil
 }
 
 // unwrapLayers 把「message 字段里再套一层 JSON 字符串」逐层解开，收集各层键值（深层覆盖浅层）。

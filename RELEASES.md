@@ -3165,3 +3165,114 @@ client := custom.NewWithTimeout(cc, cfg.Upstream.TimeoutSeconds)
   锁死「300s 真的传到 `HTTP.Timeout` 与 `HeaderTimeout`」「传 0 回落默认值」。
 
 > 阈值仍是常量而非配置项（按 R58 的口径不新增用户概念）；要再调就改 `defaultHeaderTimeout`。
+
+> 一句话：**大 prompt 慢在上游排队，不是慢在你家网络**——等响应头这一段给足 180s，
+> 同时把 `upstream.timeout_seconds` 真正接到自定义渠道上。
+
+## 🐛 压缩上下文必然超时（sgproxy + gpt-6.1-sol）
+
+生产实录（2026-10-20）：自定义渠道 `sgproxy` 上的 `gpt-6.1-sol` 做上下文压缩时恒失败，
+日志一模一样，**每次距请求开始精确 90.0~90.6 秒**：
+
+```
+upstream transport error platform=sgproxy uid=custom-sgproxy
+  err=Post "http://38.135.82.8:8317/v1/chat/completions":
+      net/http: timeout awaiting response headers
+```
+
+同日 46 次、历史 114 次，全是这一句。
+
+### 🔍 根因：三处硬编码 + 一条从未接上的线
+
+| 位置 | 旧值 | 问题 |
+|---|---|---|
+| `custom/client.go` `ResponseHeaderTimeout` | **90s 硬编码** | 大 prompt 首字节由上游排队决定 |
+| `custom/client.go` `idle.Monitor` | 90s 硬编码 | 这条**本来就该是 90s**（见下） |
+| `custom/client.go` `HTTP.Timeout` | 120s 硬编码 | 不读配置 |
+| `buildCustomRuntimes` | `custom.New(cc)` | 内建渠道逐个注入 `upstream.timeout_seconds`，**自定义渠道从 R66 起就没接** |
+
+压缩请求等于把整段会话重发一遍。事故时该会话 prompt 已到 **922,572 token**，
+本机实测同链路首字节 20~45s（空载小请求也要 8~11s），**90s 在正常波动里就会被越线**。
+
+### 🔧 修法：只放宽「等响应头」这一段
+
+```go
+// 响应头上限 = max(180s, upstream.timeout_seconds)，180s 是硬下限
+client := custom.NewWithTimeout(cc, cfg.Upstream.TimeoutSeconds)
+```
+
+| 阶段 | 值 | 为什么 |
+|---|---|---|
+| 等响应头 | **180s 起**，跟随 `timeout_seconds` 放宽 | 上游排队/推理启动慢，**等下去有意义** |
+| 流中空闲 | **90s 不变** | 拿到响应头后彻底卡死，多等只是让用户多等 |
+| 流式总超时 | **仍然不设**（R35） | 长回答不能被整体超时掐断 |
+| 非流式总超时 | `upstream.timeout_seconds` | 与内建渠道口径统一 |
+
+## ✅ 回归
+
+- `internal/custom/timeout_test.go`：默认 180s / 注入 120s 仍取 180s / **注入 30s 不得把上限
+  压到 30s** / 注入 600s 跟随放宽 / `StreamHTTP.Timeout` 恒 0 / `IdleTimeout` 恒 90s
+  不随放宽 / 下限不得低于 90s 的反向护栏 / 慢响应头 300ms 端到端仍成功；
+- `cmd/wild-work/custom_channels_test.go`：`TestBuildCustomRuntimesWiresUpstreamTimeout`
+  锁死「300s 真的传到 `HTTP.Timeout` 与 `HeaderTimeout`」「传 0 回落默认值」。
+
+> 阈值仍是常量而非配置项（按 R58 的口径不新增用户概念）；要再调就改 `defaultHeaderTimeout`。
+
+## 🔁 同族补丁：`qoder` / `qodercom` 的 envelope 错误帧（R111）
+
+上面只修了 QoderCN。用户实测指出「**QoderCOM 好像没通过，只有 CN 的**」——确实如此：
+`qoder`/`qodercom` 的解析器**完全没有** envelope 错误识别，上游同样 200 开流、塞一帧
+没有 `choices` 的业务错误、然后挂住 180 秒。本渠道实测首帧：
+
+```json
+data:{"headers":{"Content-Type":["application/json"]},
+      "body":"{\"code\":\"112\",\"message\":\"{\\\"pricingUrl\\\":\\\"https://qoder.com/pricing?client=qoder\\\"}\"}",
+      "statusCodeValue":403,"statusCode":"FORBIDDEN"}
+```
+
+另一形态是 `{"code":"110","message":"Billing daily count exceeded"}`。
+
+### 🧪 这两个码是「账号额度耗尽」，不是排队
+
+用户判断正确（「应该是这个账号的吧」）。三条证据：
+
+| 证据 | 内容 |
+|---|---|
+| **A/B 单发**（同号同 body，只换模型） | `deepseek-flash` 与 `glm-5.3-flash` **都回 112** ⇒ 不是模型级 |
+| `GET /api/v2/quota/usage` | 五个号全部 `isQuotaExceeded: true`、`total=0, remaining=0` |
+| 帧内 payload | `112` 带 `pricingUrl`（付费页）；`110` 是「当日计费用量超限」 |
+
+⇒ 归 **`ErrHardCredit`**：整号硬冷却 + 换下一个号。若按普通 4xx 处理（只换号不冷却），
+下次请求会又撞同一堵墙。
+
+### 🔧 修法：三渠道各写一份，不共享代码
+
+按 R58「本仓渠道包历来不共享 SSE 实现」，`qoder` / `qodercom` / `qodercn` **各自**
+在 `parseNestedSSE` 里加 `envelopeNotice`，在 `onChunk` **之前**判定：
+
+| 帧内容 | 归类 | 处置 |
+|---|---|---|
+| `10605` / `isQueued` | `ErrQueued` | 只冷「号×模型」30s + 换号 |
+| `110` / `112` / `pricingUrl` / `isQuotaExceeded` | `ErrHardCredit` | 整号硬冷却 + 换号 |
+| 其余 `statusCodeValue ≥ 400` | 各渠道 `Classify` | 按类别 |
+
+> 码 `110` 的文案 `Billing daily count exceeded` **不含** hardMarkers 的 `quota exceeded`，
+> 必须显式列码——这正是它此前落成普通 4xx 的原因。
+>
+> ⚠️ 三个 `Classify` 里的新增码必须放在 **429 判定之后**，否则破坏「429 优先」不变量
+> （`TestClassifyOrder` 会当场变红）。
+
+### 🧩 配套：流首帧的错误也能换号了
+
+`provider.Error` 的字段名就叫 `Kind`，无法再定义 `Kind()` 方法 ⇒ 新增
+`provider.Classified` 包装器（带 `Unwrap`），让流式路径能问出错误类别。
+
+handler 新增「**首帧即错误、一字节未写**」的通用换号路径：此前 `ErrHardCredit` 在流首帧
+只「罚号 + return」，5 个号全耗尽时客户端拿不到「该充值」这个可行动结论。现在会按类别惩罚
+后换下一个号，全号耗尽才透传 402 原文。
+
+**回归**：`internal/qodercom/envelope_notice_test.go`、`internal/qoder/envelope_notice_test.go`
+（各 4 类，独立实现独立测）、`internal/qodercn/queue_frame_test.go` 增额度耗尽例、
+`internal/server/handler_queue_test.go` 增「首号耗尽 → 换号成功」「全号耗尽 → 试满 + 402」。
+
+

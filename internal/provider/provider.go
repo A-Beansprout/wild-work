@@ -3,6 +3,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -303,6 +304,33 @@ type Error struct {
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, e.Msg)
+}
+
+// Classified 把 *Error 包装成实现了 StreamErrorClassifier 的错误，供**流式路径**使用。
+//
+// 为什么需要包装而不是直接给 Error 加 Kind() 方法：字段名就叫 Kind，与方法同名会冲突。
+// 为什么流式路径需要它：渠道在流首帧发现「上游 200 里包着业务错误」时（如 qodercom 的
+// envelope 403 → code 110/112 额度耗尽），一字节未写就上抛错误——此刻还来得及换号，
+// 但 handler 必须能问出错误类别（ErrHardCredit ⇒ 整号硬冷却 + 换号）。
+// 不包装则只能走「已写流」分支（只罚不换），5 个号全耗尽时客户端只能干等下次请求。
+type Classified struct{ Err *Error }
+
+// Kind 实现 StreamErrorClassifier。
+func (c *Classified) Kind() ErrKind { return c.Err.Kind }
+
+func (c *Classified) Error() string { return c.Err.Error() }
+
+// Unwrap 让 errors.As(err, &pe) 仍能取回原始 *provider.Error（保留 Status/Msg）。
+func (c *Classified) Unwrap() error { return c.Err }
+
+// AsClassified 把任何带 Kind 字段的 provider.Error 转成 StreamErrorClassifier 可识别的错误；
+// 不是 *provider.Error 时原样返回（如 *Queued 自己就实现了 Kind()）。
+func AsClassified(err error) error {
+	var pe *Error
+	if errors.As(err, &pe) {
+		return &Classified{Err: pe}
+	}
+	return err
 }
 
 // ModelInfo 动态/静态模型信息。

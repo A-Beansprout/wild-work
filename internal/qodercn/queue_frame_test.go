@@ -100,12 +100,21 @@ func TestEnvelopeErrorFrameNotForwarded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	_, err := StreamCapture(rec, strings.NewReader("data:"+env+"\n\n"), "m", nil)
 
-	var pe *provider.Error
-	if !errors.As(err, &pe) {
-		t.Fatalf("业务错误帧应上抛 *provider.Error，实际 err=%v", err)
+	// 合并后口径：通用信封错误由 sseError 承接（带 Kind/退避秒数），出口补一帧
+	// 结构化 error；不得把原始信封当 chunk 透传，也不得补 [DONE]（R36/R108）。
+	var sErr *sseError
+	if !errors.As(err, &sErr) {
+		t.Fatalf("业务错误帧应上抛 *sseError，实际 %T: %v", err, err)
 	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("错误帧不得透传给客户端，实际写了 %d 字节", rec.Body.Len())
+	if sErr.status != 500 {
+		t.Errorf("status=%d 期望 500", sErr.status)
+	}
+	out := rec.Body.String()
+	if strings.Contains(out, `"delta"`) || strings.Contains(out, "[DONE]") {
+		t.Fatalf("错误帧不得被当 chunk 透传、也不得补 [DONE]: %s", out)
+	}
+	if !strings.Contains(out, `"error"`) {
+		t.Fatalf("应补一帧结构化 error 让客户端看到原因: %s", out)
 	}
 }
 
@@ -138,5 +147,35 @@ func TestClassifyQueueBody(t *testing.T) {
 	}
 	if got := Classify(403, "blocked by security policy"); got == provider.ErrQueued {
 		t.Fatalf("普通 403 不应误判为排队，实际 %v", got)
+	}
+}
+
+// TestQuotaExhaustedFrameIsHardCredit 额度耗尽帧（110/112/pricingUrl/isQuotaExceeded）
+// 必须归 ErrHardCredit 且零字节写出（2026-10-20 qodercom 同族实测，本渠道代码同源一并补）。
+func TestQuotaExhaustedFrameIsHardCredit(t *testing.T) {
+	cases := map[string]string{
+		"112 付费墙": mustMarshal(t, map[string]any{
+			"code":    "112",
+			"message": mustMarshal(t, map[string]any{"pricingUrl": "https://qoder.com/pricing?client=qoder"}),
+		}),
+		"110 当日用量超限": `{"code":"110","message":"Billing daily count exceeded"}`,
+	}
+	for name, inner := range cases {
+		t.Run(name, func(t *testing.T) {
+			env := mustMarshal(t, map[string]any{"body": inner, "statusCodeValue": 403})
+			rec := httptest.NewRecorder()
+			_, err := StreamCapture(rec, strings.NewReader("data:"+env+"\n\n"), "deepseek-flash", nil)
+
+			var pe *provider.Error
+			if !errors.As(err, &pe) {
+				t.Fatalf("额度耗尽帧应上抛 *provider.Error，实际 err=%v", err)
+			}
+			if pe.Kind != provider.ErrHardCredit {
+				t.Fatalf("Kind = %v, want ErrHardCredit（账号级额度耗尽）", pe.Kind)
+			}
+			if rec.Body.Len() != 0 {
+				t.Fatalf("错误帧不得写出任何字节，实际 %d 字节: %s", rec.Body.Len(), rec.Body.String())
+			}
+		})
 	}
 }

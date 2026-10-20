@@ -182,3 +182,75 @@ func TestTransportErrorDoesNotRotate(t *testing.T) {
 		t.Fatalf("传输层错误不得换号（应只打 1 个号），实际 %d 次", n)
 	}
 }
+
+// quotaFrameUpstream 假上游：对 hardUIDs 里的账号在流首帧返回 ErrHardCredit
+// （模拟 qodercom 的 envelope 403 里包 code 110/112 额度耗尽帧），其余账号正常出字。
+type quotaFrameUpstream struct {
+	queueUpstream
+	hardUIDs map[string]bool
+}
+
+func (u *quotaFrameUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	raw, _ := io.ReadAll(r)
+	uid := string(raw)
+	// 用 Classified 包装：流式路径靠 Kind() 认出 ErrHardCredit（provider.Error 的
+	// 字段名就叫 Kind，不能再有同名方法，故生产代码也用同一包装）。
+	if u.hardUIDs[uid] {
+		// 关键：不写任何字节就上抛（真实实现里这帧原本会被当 chunk 透传，客户端干等 180s）。
+		return nil, &provider.Classified{Err: &provider.Error{Kind: provider.ErrHardCredit, Status: 402,
+			Msg: "upstream quota exhausted (code 112): Billing daily count exceeded"}}
+	}
+	// 正常账号：自己写一帧，不能转交给 queueUpstream（reader 已被读空）。
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"up",`+
+		`"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`+"\n\n"+
+		"data: [DONE]\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return nil, nil
+}
+
+// TestHardCreditFirstFrameRotates 首帧额度耗尽（qodercom code 110/112）：
+// 一字节未写 ⇒ 整号硬冷却 + 换下一个号，最终 200；不是「只罚不换」让客户端干等。
+func TestHardCreditFirstFrameRotates(t *testing.T) {
+	h, p, _ := newQueueHandler(t)
+	up := &quotaFrameUpstream{queueUpstream: queueUpstream{queued: map[string]bool{}},
+		hardUIDs: map[string]bool{"uA": true}}
+	h.cfg.Runtimes[provider.QoderCN].Upstream = up
+
+	rec := postStream(t, h)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("换号后应成功 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	up.mu.Lock()
+	calls := append([]string(nil), up.calls...)
+	up.mu.Unlock()
+	if len(calls) != 2 || calls[0] != "uA" {
+		t.Fatalf("应先打 uA、额度耗尽后换号再打一次，实际调用序列 %v", calls)
+	}
+	st, _ := p.Status("uA")
+	if !st.Cooling {
+		t.Fatalf("额度耗尽应整号硬冷却（ErrHardCredit），实际 status=%+v", st)
+	}
+}
+
+// TestHardCreditAllAccountsExhausted 全部账号额度耗尽：逐号试满后透传 402，
+// 而不是 503「渠道不可用」（用户需要看到「没钱了/该充值」这个可行动结论）。
+func TestHardCreditAllAccountsExhausted(t *testing.T) {
+	h, _, _ := newQueueHandler(t)
+	up := &quotaFrameUpstream{queueUpstream: queueUpstream{queued: map[string]bool{}},
+		hardUIDs: map[string]bool{"uA": true, "uB": true, "uC": true}}
+	h.cfg.Runtimes[provider.QoderCN].Upstream = up
+
+	rec := postStream(t, h)
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("全号额度耗尽应透传 402，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	up.mu.Lock()
+	n := len(up.calls)
+	up.mu.Unlock()
+	if n != 3 {
+		t.Fatalf("应把 3 个号各试一次，实际 %d 次", n)
+	}
+}

@@ -63,7 +63,7 @@ func NewWithTimeout(timeout time.Duration) *Client {
 	return &Client{
 		HTTP:        &http.Client{Timeout: timeout, Transport: tr},
 		StreamHTTP:  &http.Client{Transport: tr}, // 共用 Transport，不设 Timeout
-		IdleTimeout: idle.DefaultTimeout,          // 流中空闲监控兜底（见 internal/idle）
+		IdleTimeout: idle.DefaultTimeout,         // 流中空闲监控兜底（见 internal/idle）
 		Base:        OpenAPIBase,
 		Gateway:     GatewayBase,
 		modelMap:    map[string]string{},
@@ -157,7 +157,6 @@ func (c *Client) get(path, dt string) (*http.Response, error) {
 	billingHeaders(req, dt)
 	return c.HTTP.Do(req)
 }
-
 
 func readBody(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
@@ -462,6 +461,13 @@ func Classify(status int, body string) provider.ErrKind {
 	// 换号可能命中不同队列 ⇒ 独立类别，冷却「号×模型」而不是罚整号（见 provider.Queued）。
 	if strings.Contains(body, "10605") || strings.Contains(body, "isQueued") {
 		return provider.ErrQueued
+	}
+	// 账号额度耗尽（qodercom 同族实测 110「Billing daily count exceeded」/ 112 付费墙）：
+	// 文案不含 hardMarkers 的 "quota exceeded"，必须显式列码。
+	if strings.Contains(body, `"code":"110"`) || strings.Contains(body, `"code":"112"`) ||
+		strings.Contains(body, `\"code\":\"110\"`) || strings.Contains(body, `\"code\":\"112\"`) ||
+		strings.Contains(body, "pricingUrl") {
+		return provider.ErrHardCredit
 	}
 	// 429 优先于 hardRule：限流 body 高频带 "quota exceeded"。
 	if status == http.StatusTooManyRequests {
