@@ -404,6 +404,11 @@ func main() {
 	// 长回答会在超时点被掐断且无终止帧（实测 2026-09-27 触发 5 次）。
 	glmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 
+	// 自定义渠道（R110）：与内建渠道同一口径——`upstream.timeout_seconds` 决定非流式
+	// 总超时，同时把它当作「等响应头」上限的下限（大 prompt 首字节天然慢，不能用
+	// 内建渠道那套紧值）。此处只算一次，下面两处 buildCustomRuntimes 共用。
+	upstreamTimeout := time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+
 	// 开发期调试开关：把各渠道出站对话请求的**上游原始响应**落盘（仅 -tags devdump
 	// 构建有效，见 internal/devdump）。这里只做一次启动期读取与提示；真正的接线在
 	// 下方 wrapDumps（R57 起这是唯一统一改 Transport 的地方，且只在启动时做一次）。
@@ -631,7 +636,7 @@ func main() {
 		provider.CodeArts:    {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
 	}
 
-	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)
+	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir, upstreamTimeout)
 	for k, rt := range initCustomAppRts {
 		appRuntimes[k] = rt
 	}
@@ -732,7 +737,7 @@ func main() {
 	})
 	// 面板保存自定义渠道时热更新内层 handler、app 运行时与兼容层路由表（R66）
 	appInst.SetCustomChannelsSyncer(func(customChannels []custom.ChannelConfig) {
-		newServerRts, newAppRts, newNames := buildCustomRuntimes(customChannels, stateDir)
+		newServerRts, newAppRts, newNames := buildCustomRuntimes(customChannels, stateDir, upstreamTimeout)
 		inner.SetCustomRuntimes(newServerRts)
 		appInst.UpdateCustomRuntimes(newAppRts)
 
@@ -1104,14 +1109,17 @@ func migrateStateFiles(oldStateFile, stateDir string) {
 }
 
 // buildCustomRuntimes 将配置中的自定义渠道列表装配为 server 与 app 运行时（R66）。
-func buildCustomRuntimes(channels []custom.ChannelConfig, stateDir string) (map[provider.Kind]*server.Runtime, map[provider.Kind]*app.Runtime, []string) {
+//
+// upstreamTimeout 是 `config.upstream.timeout_seconds`（0 = 渠道默认值）。内建渠道在
+// main 里逐个注入 `xxxUp.HTTP.Timeout`，自定义渠道原先漏了这条接线（R110）。
+func buildCustomRuntimes(channels []custom.ChannelConfig, stateDir string, upstreamTimeout time.Duration) (map[provider.Kind]*server.Runtime, map[provider.Kind]*app.Runtime, []string) {
 	sRuntimes := map[provider.Kind]*server.Runtime{}
 	aRuntimes := map[provider.Kind]*app.Runtime{}
 	var names []string
 
 	for _, cc := range channels {
 		k := provider.Kind(cc.Name)
-		client := custom.New(cc)
+		client := custom.NewWithTimeout(cc, upstreamTimeout)
 		p := pool.New(filepath.Join(stateDir, "state-custom-"+cc.Name+".json"))
 		au := &auth.Auth{
 			Kind:      cc.Name,

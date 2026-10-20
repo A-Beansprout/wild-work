@@ -3111,3 +3111,57 @@ allowed for user type [personal_free_user]` 是账号等级差异，换到 pro �
 
 > 顺带把散落在注释、文档里的 `MaxRotate` 表述全部改为「轮转上限 = 渠道账号数」，
 > `docs/模型降级链定义.md` 的维度表补上第五类处置 `upstream-transparent`。
+
+# wild-work v2.9.5 — 自定义渠道的「等响应头」不再卡在 90 秒
+
+> 一句话：**大 prompt 慢在上游排队，不是慢在你家网络**——等响应头这一段给足 180s，
+> 同时把 `upstream.timeout_seconds` 真正接到自定义渠道上。
+
+## 🐛 压缩上下文必然超时（sgproxy + gpt-6.1-sol）
+
+生产实录（2026-10-20）：自定义渠道 `sgproxy` 上的 `gpt-6.1-sol` 做上下文压缩时恒失败，
+日志一模一样，**每次距请求开始精确 90.0~90.6 秒**：
+
+```
+upstream transport error platform=sgproxy uid=custom-sgproxy
+  err=Post "http://38.135.82.8:8317/v1/chat/completions":
+      net/http: timeout awaiting response headers
+```
+
+同日 46 次、历史 114 次，全是这一句。
+
+### 🔍 根因：三处硬编码 + 一条从未接上的线
+
+| 位置 | 旧值 | 问题 |
+|---|---|---|
+| `custom/client.go` `ResponseHeaderTimeout` | **90s 硬编码** | 大 prompt 首字节由上游排队决定 |
+| `custom/client.go` `idle.Monitor` | 90s 硬编码 | 这条**本来就该是 90s**（见下） |
+| `custom/client.go` `HTTP.Timeout` | 120s 硬编码 | 不读配置 |
+| `buildCustomRuntimes` | `custom.New(cc)` | 内建渠道逐个注入 `upstream.timeout_seconds`，**自定义渠道从 R66 起就没接** |
+
+压缩请求等于把整段会话重发一遍。事故时该会话 prompt 已到 **922,572 token**，
+本机实测同链路首字节 20~45s（空载小请求也要 8~11s），**90s 在正常波动里就会被越线**。
+
+### 🔧 修法：只放宽「等响应头」这一段
+
+```go
+// 响应头上限 = max(180s, upstream.timeout_seconds)，180s 是硬下限
+client := custom.NewWithTimeout(cc, cfg.Upstream.TimeoutSeconds)
+```
+
+| 阶段 | 值 | 为什么 |
+|---|---|---|
+| 等响应头 | **180s 起**，跟随 `timeout_seconds` 放宽 | 上游排队/推理启动慢，**等下去有意义** |
+| 流中空闲 | **90s 不变** | 拿到响应头后彻底卡死，多等只是让用户多等 |
+| 流式总超时 | **仍然不设**（R35） | 长回答不能被整体超时掐断 |
+| 非流式总超时 | `upstream.timeout_seconds` | 与内建渠道口径统一 |
+
+## ✅ 回归
+
+- `internal/custom/timeout_test.go`：默认 180s / 注入 120s 仍取 180s / **注入 30s 不得把上限
+  压到 30s** / 注入 600s 跟随放宽 / `StreamHTTP.Timeout` 恒 0 / `IdleTimeout` 恒 90s
+  不随放宽 / 下限不得低于 90s 的反向护栏 / 慢响应头 300ms 端到端仍成功；
+- `cmd/wild-work/custom_channels_test.go`：`TestBuildCustomRuntimesWiresUpstreamTimeout`
+  锁死「300s 真的传到 `HTTP.Timeout` 与 `HeaderTimeout`」「传 0 回落默认值」。
+
+> 阈值仍是常量而非配置项（按 R58 的口径不新增用户概念）；要再调就改 `defaultHeaderTimeout`。
