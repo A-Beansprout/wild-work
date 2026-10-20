@@ -3026,3 +3026,21 @@ OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接�
 - 多图拼版出图效果仅双人设定集定性通过，任意 N 图未全量验证；
 - 图床依赖第三方（sang.pub，含隐私提示），配置化逃生门未做；
 - edits 输出比例强制跟随输入图，请求 `size` 只对 generations 生效。
+
+## 六、工具结果里的图片改走 vision 通道，不再 stringify 成 base64 文本（R108，issue #174）
+
+Codex 的 `view_image` 把截图以 `input_image` 块放进 `function_call_output`。
+旧版 `internal/gateway` 的 `stringifyOutput` 取不到文本块就回退 `json.Marshal`，
+整张 PNG 的 base64 变成一条超长**文本**消息——实测 1.6MB base64 ≈ 146 万 token，
+把 1M 上下文的 `deepseek-v4.1-flash` 直接打成
+`prompt is too long: 1596603 tokens > 1048576 maximum`，会话报废；
+同一张图按 vision 只花约 1K token。
+
+- 新增 `toolContentValue`：`input_image` / `image_url` / Anthropic `image{source}`
+  一律转成 Chat 的 `image_url` 内容块（`role:"tool"` 的 content 用数组，`detail` 透传）；
+  纯文本仍返回 string（零行为变化）；只有图片时补 `[image]` 文本占位。
+- `/v1/responses` 与 `/v1/messages` 两条路径统一走它，WorkBuddy 国内版/国际版一并修复。
+- 实测（同一张 1996×1248 截图）：旧版 `prompt is too long`，新版
+  `input_tokens=1013`，模型准确描述截图内容（CN `workbuddy/deepseek-v4-pro` 亦 1013→3271 正常）。
+- 回归：`internal/gateway/tool_image_test.go` 7 例。
+
