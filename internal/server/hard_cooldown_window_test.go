@@ -58,8 +58,8 @@ func newHardCooldownHandler(t *testing.T, hardFor func(time.Time) time.Duration)
 	p := pool.New(t.TempDir() + "/state.json")
 	p.Add(&auth.Auth{Kind: "glm", AccessToken: "at-A", ExpiresAt: 4102444800, UID: "uA"})
 	p.Add(&auth.Auth{Kind: "glm", AccessToken: "at-B", ExpiresAt: 4102444800, UID: "uB"})
-	p.SetCreditDetail("uA", 1000, 0, 0)
-	p.SetCreditDetail("uB", 900, 0, 0)
+	p.SetCreditDetail("uA", 1000, 0, 0, time.Time{})
+	p.SetCreditDetail("uB", 900, 0, 0, time.Time{})
 	h := NewHandler(Config{
 		Runtimes: map[provider.Kind]*Runtime{
 			provider.GLM: {Kind: provider.GLM, Pool: p, Upstream: payRequiredUpstream{},

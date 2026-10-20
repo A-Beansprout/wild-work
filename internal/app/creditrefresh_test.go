@@ -506,7 +506,7 @@ func TestResourceDetailWritesBackPoolSnapshot(t *testing.T) {
 	a, p := newTestApp(t, provider.TraeWork, up, "uid-rd")
 
 	// 先置旧快照，模拟「上次刷新事件之后又发生了消耗」。
-	p.SetCreditDetail("uid-rd", 9999, 0, 0)
+	p.SetCreditDetail("uid-rd", 9999, 0, 0, time.Time{})
 
 	remain, items, expiring, unusable, err := a.ResourceDetail("uid-rd")
 	if err != nil {

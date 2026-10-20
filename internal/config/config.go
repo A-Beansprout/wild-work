@@ -133,9 +133,9 @@ type Config struct {
 		CheckinHours   []int    `json:"checkin_hours,omitempty"` // 旧格式：[9,21]
 		CheckinTimes   []string `json:"checkin_times,omitempty"` // 新格式：["09:00","21:30"]
 		KeepaliveHours []int    `json:"keepalive_hours"`         // [22]
-		// ExpiringThresholdHours 临期阈值（小时）：到期日在此范围内的积分视为「临期」,
-		// Pick() 临期优先消耗。默认 24，下限 24（低于 24 会被钳到 24）。
-		ExpiringThresholdHours int `json:"expiring_threshold_hours,omitempty"`
+		// 临期阈值已于 2026-10-20 删除（R112）：选号改用「最早到期时刻升序」，
+		// 不再需要「N 天内算临期」这个开关；面板临期额度固定按 provider.ExpiringDays 算。
+		// 旧配置里的 expiring_threshold_hours 字段会被静默忽略（json 未知字段不报错）。
 	} `json:"schedule"`
 
 	Upstream struct {
@@ -229,10 +229,6 @@ type Config struct {
 	DailyGrantEnabled bool `json:"-"`
 	// DailyGrantBufferDur 发奖窗口缓冲（默认 30m）。
 	DailyGrantBufferDur time.Duration `json:"-"`
-	// ExpiringThresholdDur 临期阈值（时长形态，保留供既有调用方使用）。
-	// 自 2026-10-19 起临期判定改用**自然日**口径（ExpiringThresholdDays），
-	// 本字段仅作展示/兼容，不再参与判据。
-	ExpiringThresholdDur time.Duration `json:"-"`
 }
 
 // ModelFallbackRule 单条模型降级规则：From（"channel/model" 全路径）在其渠道内
@@ -263,7 +259,6 @@ func Default() *Config {
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.CheckinTimes = []string{"09:00", "21:00"}
 	c.Schedule.KeepaliveHours = []int{22}
-	c.Schedule.ExpiringThresholdHours = 24
 	c.Upstream.TimeoutSeconds = 120
 	c.Compat.DefaultChannel = "workbuddy"
 	c.Compat.MaxTokensCap = 32000
@@ -502,14 +497,6 @@ func (c *Config) normalize() error {
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
 	}
-	// 临期阈值：默认 24h，下限 24h（日期粒度的到期判定低于一天没有意义）。
-	if c.Schedule.ExpiringThresholdHours <= 0 {
-		c.Schedule.ExpiringThresholdHours = 24
-	}
-	if c.Schedule.ExpiringThresholdHours < 24 {
-		c.Schedule.ExpiringThresholdHours = 24
-	}
-	c.ExpiringThresholdDur = time.Duration(c.Schedule.ExpiringThresholdHours) * time.Hour
 	if c.Compat.MaxTokensCap < 0 {
 		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
 	}
@@ -609,24 +596,4 @@ func NextDailyGrant(now time.Time, at, buffer time.Duration) time.Time {
 		next = next.AddDate(0, 0, 1)
 	}
 	return next
-}
-
-// ExpiringThresholdDays 临期阈值（自然日数，1/2/3）。
-//
-// 2026-10-19 起临期判定统一用**自然日**口径：days 个自然日内到期
-// （次日 00:00 失效算今日，见 provider.ExpireWithinDays）。
-// 由 ExpiringThresholdHours 换算；非整日时向上取整（保守，宁可提前预警）。
-func (c *Config) ExpiringThresholdDays() int {
-	h := c.Schedule.ExpiringThresholdHours
-	if h <= 0 {
-		h = 24
-	}
-	days := h / 24
-	if h%24 != 0 {
-		days++
-	}
-	if days < 1 {
-		days = 1
-	}
-	return days
 }

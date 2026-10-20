@@ -661,8 +661,16 @@ func ExpireWithinDays(expireAt string, now time.Time, days int) bool {
 	return !day.After(limit)
 }
 
+// ExpiringDays 面板「临期额度」的展示窗口（自然日，固定 1 天 = 今日到期）。
+//
+// 自 2026-10-20 起**不再是路由参数**：选号改用「最早到期时刻升序」
+// （EarliestExpire），窗口大小只决定面板上那一列/汇总条怎么加总，
+// 因此取消设置项（原 R18 的可配阈值被 R112 取代）。
+const ExpiringDays = 1
+
 // ExpiringWithinDays 统计 days 个自然日内到期的**可消耗**积分小计。
-// 调度器临期优先消耗的判据（替代旧的时长口径 ExpiringWithin）。
+// 自 R112 起仅用于**展示**（面板三口径的「临期额度」/汇总条）；路由判据是
+// EarliestExpire（最早到期时刻），不再看这个量。
 func ExpiringWithinDays(items []ResourceItem, days int, now time.Time) int64 {
 	var expiring int64
 	for _, it := range items {
@@ -674,6 +682,31 @@ func ExpiringWithinDays(items []ResourceItem, days int, now time.Time) int64 {
 		}
 	}
 	return expiring
+}
+
+// EarliestExpire 返回「可消耗 + 有剩余 + 尚未失效」条目中**最早的到期时刻**。
+// ok=false 表示该账号没有任何可用的到期信息（渠道不下发 expire_at，如 Qoder；
+// 或所有包都已失效）——调用方应把它当作「到期未知」，排在已知到期时刻的账号之后。
+//
+// 这是选号的**唯一**路由判据（R112）：快过期的先烧，减少到期作废。
+// 与 ExpiringWithinDays 的区别：那个是**体量**（窗口内到期积分之和），两个账号
+// 体量相同时它无法分辨谁更急；这里是**紧迫度**（绝对时刻），天然可比。
+func EarliestExpire(items []ResourceItem, now time.Time) (time.Time, bool) {
+	var earliest time.Time
+	ok := false
+	for _, it := range items {
+		if !it.Usable || it.InfoOnly || it.Remain <= 0 || it.ExpireAt == "" {
+			continue
+		}
+		t, valid := ExpireInstant(it.ExpireAt)
+		if !valid || !t.After(now) {
+			continue // 已失效的包不参与「最快过期」判定
+		}
+		if !ok || t.Before(earliest) {
+			earliest, ok = t, true
+		}
+	}
+	return earliest, ok
 }
 
 // ExpiringWithin 统计 horizon 时长内到期的**可消耗**积分小计（临期额度）。

@@ -454,9 +454,6 @@ func main() {
 		qoderCheckinRetryUntil = 12 * 60 // 12:00（上游同款兑底截止）
 	)
 
-	// 临期阈值（全渠道共用，scheduler/App 两侧同源，默认 24h，下限 24h）
-	expiringThreshold := cfg.ExpiringThresholdDur
-
 	// 积分流水记账器：在 scheduler 之前创建（签到后差分记账用）；
 	// App 内部不重建，main 装配时统一注入。失败仅降级为无统计。
 	lg, lgerr := ledger.New(filepath.Join(stateDir, "ledger"))
@@ -464,38 +461,38 @@ func main() {
 		log.Printf("ledger init failed（统计功能不可用）: %v", lgerr)
 	}
 
-	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
+	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）。
 	// CheckinMinutes 用显式空切片关闭（传 nil 会被 scheduler.New 补成默认 9:00/21:00）。
-	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// WorkBuddy 国际版：无显式签到（ActivitiesOnly 模式）。
 	// 定时仍对每个账号调用 DailyCheckin，其实现为「免费模型对话保活 + 签到探测」；
 	// 不记录/上报签到状态，保持对用户透明。
 	// Keepalive 关闭（token 有效期 365 天，无需每日刷新），用显式空切片关闭
 	// （传 nil 会被 scheduler.New 补成默认 22:00）。
 	wbaSch := scheduler.New(scheduler.Config{Pool: wbaPool, Upstream: wbaUp, Name: "workbuddyai",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ActivitiesOnly: true, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ActivitiesOnly: true, Ledger: lg})
 	// 千问办公：无签到活动（每日积分服务端被动发放，无需保活/领取）；
 	// CheckinMinutes + KeepaliveHours 均为显式空切片，本渠道没有任何定时任务
 	// （token 由 deviceToken/refresh 按需轮换，定时保活反而会与千问办公 App
 	// 互踩 —— 见备忘 §7.5 风险 1）。
 	// 余额/费率靠 StartCreditAutoRefresh 循环拉取。
 	qwSch := scheduler.New(scheduler.Config{Pool: qwPool, Upstream: qwUp, Name: "qwenwork",
-		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}, Ledger: lg})
 	// QoderCN：仅 campaigns 活动路径（legacy daily-check-in 已 DISABLED，其 claim 恒返回
 	// 409 会造成「假成功」，故不再使用）。签到窗口对齐上游 qoder2api：10:00 开放，
 	// 活动可能在整点后才创建，故 10:00–12:00 之间每分钟重试，直到真正领到或超时。
-	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in）；其余同 QoderCN。
-	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// MonkeyCode：已实现签到（控制台 Cookie 走 POST {console}/api/v1/users/wallet/checkin，
 	// 见 internal/monkeycode/checkin.go）。签到时刻用全局配置；**不设 CheckinRetryUntil**
 	// ——它是「直接领一次」的接口，没有 Qoder 那种「活动整点后才创建」的延迟，
 	// 每个签到时刻单次尝试即可（失败状态会在下一个时刻重试），避免窗口内每分钟空跑。
 	// KeepaliveHours 仍为显式空切片：上游无 refresh 端点，保活没有可刷的东西。
 	mcSch := scheduler.New(scheduler.Config{Pool: mcPool, Upstream: mcUp, Name: "monkeycode",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, Ledger: lg})
 	// 小浣熊：签到走 setting_info（每日积分惰性落账的触发点，见 internal/raccoon/checkin.go）。
 	// access_token 实测仅 ≈2h，而 refresh_token ≈30 天，
 	// 故保活比其它渠道更密（每 4 小时一次）以减少「请求先 401 再刷新」的额外往返；
@@ -504,7 +501,7 @@ func main() {
 	// 签到时间用全局配置（checkinMinutes）：上游按天去重、无活动上线延迟问题，
 	// 故**不设 CheckinRetryUntil**（窗口重试是为「活动尚未创建」设计的，本渠道无此语义）。
 	rcSch := scheduler.New(scheduler.Config{Pool: rcPool, Upstream: rcUp, Name: "raccoon",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{1, 5, 9, 13, 17, 21}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{1, 5, 9, 13, 17, 21}, Ledger: lg})
 	// Loomy：已实现签到（宠物每日打工奖励，POST /api/v1/pet-work/rewards，
 	// 见 internal/loomy/checkin.go）——判据是该账号当日**有效对话轮次**（上游算），
 	// 故未在官方客户端用过该账号时结果是「未达档位」（如实可重试状态）。
@@ -513,17 +510,16 @@ func main() {
 	// KeepaliveHours 仍为显式空切片：**上游无 refresh 端点**（session 14 天，到期需重新登录/导入），
 	// 保活没有可刷的东西（refreshToken 为空，调度器会跳过并只记一条日志）。
 	lmSch := scheduler.New(scheduler.Config{Pool: lmPool, Upstream: lmUp, Name: "loomy",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, Ledger: lg})
 	// Cline：官方 API Key **不过期**、无签到活动、无 refresh token ⇒ 定时任务全部关闭。
 	// 必须传显式空切片 []int{}（R39）：传 nil 会被 scheduler.New 的零值兜底补上默认时间，
 	// 于是每天空跑一次必然失败的签到，并在面板渲染红色「签到失败」。
 	clSch := scheduler.New(scheduler.Config{Pool: clPool, Upstream: clUp, Name: "cline",
-		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}, Ledger: lg})
 	// OfficeAce：有每日签到（bonus/claim）但要先有临时凭据（V11 签名），保活用于续期。
 	// CheckinMinutes 用全局签到时间；KeepaliveHours 用配置保活时段（临时凭据约 2h 到期）。
 	oaSch := scheduler.New(scheduler.Config{Pool: oaPool, Upstream: oaUp, Name: "officeace",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// OpenCodeZen 匿名：无账号、无签到、无 token 可保活（凭证是常量 public）。
 	// CheckinMinutes/KeepaliveHours 均为显式空切片 → 调度器不发生任何上游调用。
 	ocSch := scheduler.New(scheduler.Config{Pool: ocPool, Upstream: ocUp, Name: "oczen",
@@ -536,13 +532,11 @@ func main() {
 	// MiniMax：有每日签到（7 天面板，claim 幂等判据是响应里的 claim_result），
 	// 也需要 token 保活（refresh_token 会轮换，刷新后必须落盘）。
 	mimSch := scheduler.New(scheduler.Config{Pool: mimPool, Upstream: mimUp, Name: "minimax",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// LobsterAI：有每日签到（三步：slot → context → check_in，客户端幂等键），
 	// 也需要 token 保活（refresh 会轮换，刷新后必须落盘）。
 	lobSch := scheduler.New(scheduler.Config{Pool: lobPool, Upstream: lobUp, Name: "lobsterai",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// ZCode：**无签到**（积分领取依赖阿里云验证码 + headful 浏览器，本仓不实现；
 	// DailyCheckin 返回明确的「不支持」错误而不是伪造成功），且凭据**不可续期**
 	// （JWT 无 exp）⇒ 定时任务全关。必须传显式空切片（R39）：传 nil 会被补成默认
@@ -553,20 +547,17 @@ func main() {
 	// ⇒ 只开保活；CheckinMinutes 用显式空切片关闭（R39：传 nil 会被补成默认 9:00/21:00，
 	// 每天空跑两次必然失败的签到并污染面板）。
 	gemSch := scheduler.New(scheduler.Config{Pool: gemPool, Upstream: gemUp, Name: "gemini",
-		CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// CodeArts：有每日签到（三步，走 HMAC 签名；本包实现了 CheckinReporter/CheckinGranter，
 	// 签到结果按结构化状态上报），也需要 token 保活（续期后必须落盘，不变量 20）。
 	caSch := scheduler.New(scheduler.Config{Pool: caPool, Upstream: caUp, Name: "codearts",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
 	// KeepaliveHours 也用同一时段（保活=签到，不必额外一次）。
 	glmSch := scheduler.New(scheduler.Config{Pool: glmPool, Upstream: glmUp, Name: "glm",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		ExpiringThreshold: expiringThreshold, Ledger: lg})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},
@@ -625,19 +616,19 @@ func main() {
 		provider.QoderCN:     {Kind: provider.QoderCN, Pool: qcnPool, Upstream: qcnUp, Scheduler: qcnSch},
 		provider.QoderCOM:    {Kind: provider.QoderCOM, Pool: qcmPool, Upstream: qcmUp, Scheduler: qcmSch},
 		provider.QwenWork:    {Kind: provider.QwenWork, Pool: qwPool, Upstream: qwUp, Scheduler: qwSch},
-		provider.MonkeyCode: {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch},
-		provider.Raccoon:    {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
-		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
-		provider.GLM:        {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
-		provider.Cline:      {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
-		provider.OfficeAce:  {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
-		provider.Oczen:      {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
-		provider.Kilo:       {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
-		provider.Minimax:    {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
-		provider.LobsterAI:  {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
-		provider.ZCode:      {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
-		provider.Gemini:     {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
-		provider.CodeArts:   {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
+		provider.MonkeyCode:  {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch},
+		provider.Raccoon:     {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
+		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
+		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
+		provider.Cline:       {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
+		provider.OfficeAce:   {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
+		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
+		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
+		provider.Minimax:     {Kind: provider.Minimax, Pool: mimPool, Upstream: mimUp, Scheduler: mimSch},
+		provider.LobsterAI:   {Kind: provider.LobsterAI, Pool: lobPool, Upstream: lobUp, Scheduler: lobSch},
+		provider.ZCode:       {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
+		provider.Gemini:      {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
+		provider.CodeArts:    {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
 	}
 
 	initCustomServerRts, initCustomAppRts, customNames := buildCustomRuntimes(cfg.CustomChannels, stateDir)

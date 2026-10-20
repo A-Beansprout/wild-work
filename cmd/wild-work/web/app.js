@@ -409,6 +409,10 @@ function attachEffortPicker(input, opts) {
 //   ② 触屏设备不派发 mouseenter/mouseleave，手机上既打不开也关不掉；
 //   ③ hover 模型把「翻页」与「移出即关」耦合成矛盾诉求（要翻页就得移进浮窗）。
 const DETAIL_PAGE_SIZE = 8;
+// EXPIRING_DAYS 面板「临期」标记的展示窗口（自然日）。
+// 与后端 provider.ExpiringDays 同值：2026-10-20 起阈值不再是设置项，
+// 选号看「最早到期时刻」（R112），这个窗口只影响明细里的红色「临期」章。
+const EXPIRING_DAYS = 1;
 let detailCache = {};
 // detailState 当前浮窗的展示状态：{uid, page}。
 let detailState = null;
@@ -548,9 +552,11 @@ function renderCreditDetail() {
   }
 
   const items = d.items.slice();
-  // 临期判定与后端 provider.ExpireWithinDays 同口径：**自然日**（阈值天数内到期）。
+  // 临期判定与后端 provider.ExpireWithinDays 同口径：**自然日**（窗口内到期）。
   // 判据 = 失效时刻 - 零点宽限 所属自然日 ≤ 今天+days（次日 00:00 失效算今日）。
-  const expDays = state.expiring_days || 1;
+  // 窗口固定 1 天（= 后端 provider.ExpiringDays）：2026-10-20 起阈值不再可配，
+  // 选号改看「最早到期时刻」，这个窗口只决定明细里打不打「临期」红章。
+  const expDays = EXPIRING_DAYS;
   // expireInstantUtc 失效时刻的真实 UTC 毫秒，与后端 provider.ExpireInstant 同口径：
   //   日期粒度（YYYY-MM-DD）= 该日全天可用 ⇒ **次日 00:00（UTC+8）**才失效；
   //   RFC3339 = 精确时刻（如 gemini 的配额窗口重置、workbuddy 的 CycleEndTime）。
@@ -641,7 +647,7 @@ function renderCreditDetail() {
       const expUtc = expireInstantUtc(it.expire_at);
       if (expUtc !== null) {
         if (isExpiring(it.expire_at)) {
-          expCell = `${esc(it.expire_at)}<span class="detail-exp-tag" title="${expDays} 天内到期，优先消耗">临期</span>`;
+          expCell = `${esc(it.expire_at)}<span class="detail-exp-tag" title="今日到期（${expDays} 个自然日，次日 00:00 失效算今日），选号时优先消耗">临期</span>`;
           expCellCls = ' class="detail-exp"';
           cls = ' class="detail-exp-row"';
         } else {
@@ -974,12 +980,12 @@ function renderSummary() {
       // Token 计数：以 tokens 为单位单列，明示它不是积分。
       body = `<span class="cs-num">${fmtTokens(c.tokens)}</span>`
         + `<span class="cs-tok" title="本渠道额度以 token 计量，不计入「合计」">tokens</span>`
-        + (c.expiring > 0 ? `<span class="cs-exp" title="24 小时内到期">临期${fmtTokens(c.expiring)}</span>` : "");
+        + (c.expiring > 0 ? `<span class="cs-exp" title="今日到期（次日 00:00 失效算今日），选号时优先消耗">临期${fmtTokens(c.expiring)}</span>` : "");
     } else if (allStale) {
       body = `<span class="credit-stale">待刷新</span>`;
     } else {
       body = `<span class="cs-num">${fmt(c.credits)}</span>`
-        + (c.expiring > 0 ? `<span class="cs-exp" title="24 小时内到期">临期${fmt(c.expiring)}</span>` : "")
+        + (c.expiring > 0 ? `<span class="cs-exp" title="今日到期（次日 00:00 失效算今日），选号时优先消耗">临期${fmt(c.expiring)}</span>` : "")
         + (c.unusable > 0 ? `<span class="cs-unu" title="账号名下、本工具不可消耗的额度（不计入合计）">不可用${fmt(c.unusable)}</span>` : "")
         + (c.stale > 0 ? `<span class="cs-stale" title="部分账号余额待刷新">${c.stale} 待刷新</span>` : "");
     }
@@ -2517,9 +2523,8 @@ function openSettings() {
   $("effGlobalInput").value = effs["*"] || "";
   renderEffList();
   $("effModelInput").value = ""; $("effEffortInput").value = "";
-  // 自动签到 + 开机自启 + 临期阈值
+  // 自动签到 + 开机自启
   $("chkAutostart").checked = !!state.autostart;
-  $("selExpiring").value = String(state.expiring_days || 1);
   $("chkLoopGuard").checked = state.loop_guard !== false; // 缺省（旧后端）按开启显示
   $("chkBodyLog").checked = !!state.body_log;
   syncListenRisk(); // 按当前监听地址初始化警告条与必填星号
@@ -2889,15 +2894,7 @@ async function saveSettings() {
     await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, model_map: modelMap });
   } catch (e) { toast(e.message); return; }
 
-  // 4) 临期阈值（1/2/3 天，独立端点即时生效）
-  const expDays = parseInt($("selExpiring").value, 10) || 1;
-  if (expDays !== (state.expiring_days || 1)) {
-    try {
-      await api("/api/config/expiring_days", { days: expDays });
-    } catch (e) { toast(e.message); return; }
-  }
-
-  // 4.5) 思考链防癫开关（独立端点即时生效）
+  // 4) 思考链防癫开关（独立端点即时生效）
   const loopGuardOn = $("chkLoopGuard").checked;
   if (loopGuardOn !== (state.loop_guard !== false)) {
     try {
@@ -4079,10 +4076,10 @@ function groupUnit(group) {
   return a && a.credits_unit === "token" ? "token" : "";
 }
 
-// 使用中 / 接棒顺序：当前=粘性账号；接棒=临期优先+余额排序推算的前 3
+// 使用中 / 接棒顺序：当前=粘性账号；接棒=最早到期优先推算的前 3
 function renderRotation(rot) {
   if (!rot.length) { $("stRotation").innerHTML = ""; $("stRotation").className = "st-rotation"; return; }
-  let html = `<div class="st-block-title">使用中 / 接棒顺序<span class="st-hint">当前=粘性账号 · 接棒=临期优先+余额排序推算</span></div>`;
+  let html = `<div class="st-block-title">使用中 / 接棒顺序<span class="st-hint">当前=粘性账号 · 接棒=最早到期优先推算</span></div>`;
   for (const rv of rot) {
     // 单位随渠道切换：token 计量渠道（如 ZCode）显示 tokens，不再一律写「分」。
     const isTok = groupUnit(rv.group) === "token";

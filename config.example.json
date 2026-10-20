@@ -16,8 +16,7 @@
   },
   "schedule": {
     "checkin_times": ["09:00", "21:00"],
-    "keepalive_hours": [22],
-    "expiring_threshold_hours": 24
+    "keepalive_hours": [22]
   },
   "upstream": {
     "timeout_seconds": 120

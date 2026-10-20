@@ -71,8 +71,8 @@ func newRotateTestHandler(t *testing.T, up *kindedUpstream, uidPrefix string) *H
 	p.Add(&auth.Auth{Kind: "glm", AccessToken: "at-A", ExpiresAt: 4102444800, UID: uidPrefix + "A"})
 	p.Add(&auth.Auth{Kind: "glm", AccessToken: "at-B", ExpiresAt: 4102444800, UID: uidPrefix + "B"})
 	// A 积分更高保证首挑确定性（pool.PickExcluding 遍历 map 顺序随机）
-	p.SetCreditDetail(uidPrefix+"A", 1000, 0, 0)
-	p.SetCreditDetail(uidPrefix+"B", 500, 0, 0)
+	p.SetCreditDetail(uidPrefix+"A", 1000, 0, 0, time.Time{})
+	p.SetCreditDetail(uidPrefix+"B", 500, 0, 0, time.Time{})
 	return NewHandler(Config{
 		Runtimes: map[provider.Kind]*Runtime{
 			provider.GLM: {Kind: provider.GLM, Pool: p, Upstream: up,
