@@ -2897,68 +2897,7 @@ loomy 上游没有到期字段，`ExpireAt` 保持**留空**（不伪造），�
   一片警示等于没有警示。「预计作废」文字仍只跟 risk 走（数据结论），
   颜色只跟紧迫度走（视觉分档），两者解耦。
 
-## ✅ 验证
-
-- `go test ./...` 全绿；`node scripts/ui-static-check.mjs` 全部通过；
-- 新增 `TestExpireBucketOf`（19 例边界：次日 00:00:00 / 00:00:03 / 00:04:59 /
-  00:05:00 / 第 7 天 / 第 8 天）、`TestExpireWithinDays`、
-  `TestExpiringWithinDaysSum`、`TestExpireBucketsByInstant`、`TestExpiryRowsHoursLeft`；
-- `TestExpiryRiskWhenNoBurn`（闲置号也预警）、`TestExpiryRowsFullInstant`（秒级精度）、
-  `TestExpiryUrgency`（今天红/明天黄/5.7 天后不上色，且与 risk 解耦）；
-- 变异验证 7 处全部确认变红：零点宽限改 0 / 宽限放大到 24h /
-  7 日内并入明日 / 阈值退回时长口径 / 只取首个条目 / 7 日内漏加今日明日 /
-  临期列表按日期串排序。
-- 本轮追加：`TestExpiryRiskWhenNoBurn`（闲置号也预警 / 有消耗号预警 / 超 7 日不预警）、
-  `TestExpiryRowsFullInstant`（秒级精度原样保留）；前端 3 条断言（完整时间 /
-  不出现 T / 预计作废不为负），4 处变异全部确认变红（Risk 退回旧判据 /
-  去掉 7 日窗口 / 时间退回原样输出 / 预计作废退回减法）。
-- 本轮追加：`TestExpiryUrgency`（今天/明天/5.7 天后三档 + 颜色与 risk 解耦）；
-  前端 3 条断言（今天红 / 明天黄 / 远期即使 risk=true 也不上色），
-  3 处变异全部确认变红（配色退回按 risk / 明天档用红色 / 远期也上色）。
-
----
-
-## 🎨 glm 渠道：IDE 指纹迁移 + 一来一回对话语义 + Images 生图端点（R106）
-
-### 指纹迁移：WEB → IDE(Electron)
-
-glm（智谱清言）渠道整体迁移到 IDE 客户端指纹——WEB 通道受阿里云 WAF「头组合指纹」
-对抗成功率低，IDE 指纹实测 100% 通过且不再需要 refer__991 与退避重试。
-**凭据与授权链路完全不变**（CDP 抓取 + 粘贴兜底），变的只是调用侧 HTTP 指纹；
-40012 归 `ErrSoftRate`。cookie jar 共享，`X-Device-Id` 取 JWT device_id。
-
-### 对话语义简化为一来一回
-
-- `system` 段落忽略；`assistant` / 多 `user` 段落本地 400
-  （`glm_unsupported_conversation`，透传不罚号）；不支持 tool_calls。
-- 保活改为 say hello + 对话后立即删会话（bulk_delete）。
-
-### 新增 `POST /v1/images/generations` 与 `/v1/images/edits`
-
-OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接入**
-（whalechan 适配器实测：设 `OPENAI_BASE_URL` 即走通 character/comic 双技能全链路）：
-
-- `size` 严格映射五档（1024x1024 / 864x1152 / 1152x864 / 720x1280 / 1280x720），
-  非法值 400（上游对非法比例静默降级 1:1，本层拦截）；默认 `b64_json`，`url` 可选；
-- edits 多参考图：imgutil 单行拼版（referenceN 标注）+ 图床托管；
-  单张 http(s) URL 直传；**输出比例跟随输入图**（edits 语义，`aspect_ratio` 无效 [实证]）；
-- 三处生态兼容（whalechan 实测补齐）：multipart 文件字段 `image[]` 与 `image` 同收；
-  `output_format=png` 走 CDN 参数真转换（否则返回 JPEG 字节）；单图托管前统一转码 JPEG；
-- 不做请求内换号轮转（同步长操作轮转代价高，模型级冷却已保证下次自动换号）；
-  生图与对话产物均不自动删除。
-
-### 已知限制
-
-- 多图拼版出图效果仅双人设定集定性通过，任意 N 图未全量验证；
-- 图床依赖第三方（sang.pub，含隐私提示），配置化逃生门未做；
-- edits 输出比例强制跟随输入图，请求 `size` 只对 generations 生效。
----
-
-# wild-work v2.9.4
-
-一节改动：小浣熊「今日消耗」虚高归因修正（R107）。
-
-## 一、小浣熊每日积分到期清零不再被记成「今日消耗」（R107）
+## 五、小浣熊每日积分到期清零不再被记成「今日消耗」（R107）
 
 用户实录：面板显示小浣熊**今日消耗 580 分**，用户质疑「我感觉我没用这么多」。
 
@@ -3022,7 +2961,7 @@ OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接�
 | 今日到期 | — | 300（当晚 23:59:59 清零的那笔） |
 | 7 日内到期 | — | 2100（7 笔全在窗口内） |
 
-### ✅ 验证
+### ✅ 验证（R107）
 
 - `go build ./... && go vet ./...` 通过；`go test ./...` 仅剩 2 个**改动前就存在**的
   `internal/stats` 失败（`TestLoadLegacyStatsJSON` / `TestLoadBOMTolerance`，
@@ -3031,3 +2970,59 @@ OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接�
   含**反向护栏** `TestRaccoonNoExpiryIsSpend`：若渠道侧哪天回退成不带 `ExpireAt`，
   它会变红（正向测试自己构造了到期日，抓不到这种回退）；
 - 3 处变异（去掉到期填充 / FIFO 改均分 / 给拆分条目加 Key）全部确认变红。
+
+## ✅ 验证
+
+- `go test ./...` 全绿；`node scripts/ui-static-check.mjs` 全部通过；
+- 新增 `TestExpireBucketOf`（19 例边界：次日 00:00:00 / 00:00:03 / 00:04:59 /
+  00:05:00 / 第 7 天 / 第 8 天）、`TestExpireWithinDays`、
+  `TestExpiringWithinDaysSum`、`TestExpireBucketsByInstant`、`TestExpiryRowsHoursLeft`；
+- `TestExpiryRiskWhenNoBurn`（闲置号也预警）、`TestExpiryRowsFullInstant`（秒级精度）、
+  `TestExpiryUrgency`（今天红/明天黄/5.7 天后不上色，且与 risk 解耦）；
+- 变异验证 7 处全部确认变红：零点宽限改 0 / 宽限放大到 24h /
+  7 日内并入明日 / 阈值退回时长口径 / 只取首个条目 / 7 日内漏加今日明日 /
+  临期列表按日期串排序。
+- 本轮追加：`TestExpiryRiskWhenNoBurn`（闲置号也预警 / 有消耗号预警 / 超 7 日不预警）、
+  `TestExpiryRowsFullInstant`（秒级精度原样保留）；前端 3 条断言（完整时间 /
+  不出现 T / 预计作废不为负），4 处变异全部确认变红（Risk 退回旧判据 /
+  去掉 7 日窗口 / 时间退回原样输出 / 预计作废退回减法）。
+- 本轮追加：`TestExpiryUrgency`（今天/明天/5.7 天后三档 + 颜色与 risk 解耦）；
+  前端 3 条断言（今天红 / 明天黄 / 远期即使 risk=true 也不上色），
+  3 处变异全部确认变红（配色退回按 risk / 明天档用红色 / 远期也上色）。
+
+---
+
+## 🎨 glm 渠道：IDE 指纹迁移 + 一来一回对话语义 + Images 生图端点（R106）
+
+### 指纹迁移：WEB → IDE(Electron)
+
+glm（智谱清言）渠道整体迁移到 IDE 客户端指纹——WEB 通道受阿里云 WAF「头组合指纹」
+对抗成功率低，IDE 指纹实测 100% 通过且不再需要 refer__991 与退避重试。
+**凭据与授权链路完全不变**（CDP 抓取 + 粘贴兜底），变的只是调用侧 HTTP 指纹；
+40012 归 `ErrSoftRate`。cookie jar 共享，`X-Device-Id` 取 JWT device_id。
+
+### 对话语义简化为一来一回
+
+- `system` 段落忽略；`assistant` / 多 `user` 段落本地 400
+  （`glm_unsupported_conversation`，透传不罚号）；不支持 tool_calls。
+- 保活改为 say hello + 对话后立即删会话（bulk_delete）。
+
+### 新增 `POST /v1/images/generations` 与 `/v1/images/edits`
+
+OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接入**
+（whalechan 适配器实测：设 `OPENAI_BASE_URL` 即走通 character/comic 双技能全链路）：
+
+- `size` 严格映射五档（1024x1024 / 864x1152 / 1152x864 / 720x1280 / 1280x720），
+  非法值 400（上游对非法比例静默降级 1:1，本层拦截）；默认 `b64_json`，`url` 可选；
+- edits 多参考图：imgutil 单行拼版（referenceN 标注）+ 图床托管；
+  单张 http(s) URL 直传；**输出比例跟随输入图**（edits 语义，`aspect_ratio` 无效 [实证]）；
+- 三处生态兼容（whalechan 实测补齐）：multipart 文件字段 `image[]` 与 `image` 同收；
+  `output_format=png` 走 CDN 参数真转换（否则返回 JPEG 字节）；单图托管前统一转码 JPEG；
+- 不做请求内换号轮转（同步长操作轮转代价高，模型级冷却已保证下次自动换号）；
+  生图与对话产物均不自动删除。
+
+### 已知限制
+
+- 多图拼版出图效果仅双人设定集定性通过，任意 N 图未全量验证；
+- 图床依赖第三方（sang.pub，含隐私提示），配置化逃生门未做；
+- edits 输出比例强制跟随输入图，请求 `size` 只对 generations 生效。
