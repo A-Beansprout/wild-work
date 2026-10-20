@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1153,9 +1154,17 @@ func (h *Handler) serveRotation(
 	}
 	// 账号均健康、但请求模型在全部账号上都处于模型级限流冷却：
 	// 明确告知解冻时间，避免误以为账号故障去重登（2026-09-23 全池 6004 事故的教训）。
+	//
+	// 措辞「冷却」而不写「限流」：同一窗口也可能来自上游排队（ErrQueued 给「号×模型」
+	// 打 30s 冷却，2026-10-20），写死「限流」会让用户以为被限速了。
+	// 同时补 Retry-After：首次请求遇到全号排队时回的是 429 + Retry-After: 30，
+	// 冷却窗口内的后续请求应当给同量级的重试信号，而不是让 agent 把 503 当“服务坏了”硬退避。
 	if bound > 0 && modelAvail == 0 {
+		if !earliest.IsZero() {
+			w.Header().Set("Retry-After", formatRetryAfter(earliest))
+		}
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
-			fmt.Sprintf("渠道 %s 的 %d 个账号均健康，但模型 %s 已在全部账号上限流冷却：最早约 %s 解冻（到点自动恢复，无需重新登录），也可先切换其他模型",
+			fmt.Sprintf("渠道 %s 的 %d 个账号均健康，但模型 %s 已在全部账号上冷却（上游限流或排队）：最早约 %s 解冻（到点自动恢复，无需重新登录），也可先切换其他模型",
 				rt.Kind, bound, model, formatUnfreeze(earliest)))
 		return
 	}
@@ -1192,6 +1201,16 @@ func (h *Handler) serveRotation(
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 	return // 裸 return：携带命名结果 res（done=true——诊断引导已把响应写完）
+}
+
+// formatRetryAfter 把解冻时刻换算成整数秒（至少 1）。
+// 用于 Retry-After 头：与首次全号排队时的 Retry-After: 30 同一量级信号。
+func formatRetryAfter(until time.Time) string {
+	d := time.Until(until)
+	if d < time.Second {
+		d = time.Second
+	}
+	return strconv.Itoa(int(d.Seconds() + 0.5))
 }
 
 // formatUnfreeze 解冻时刻的可读格式：24h 内只报时刻（HH:MM），更远带日期。
