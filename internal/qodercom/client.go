@@ -286,7 +286,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	mc := c.modelEntry(modelKey)
 	contextWindow := resolveContextWindow(parseContextWindowHint(body), mc)
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, mc, reqOpenAI.Tools, enableReasoning, reqOpenAI.MaxTokens, c.userTypeOf(a), contextWindow)
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, mc, reqOpenAI.Tools, enableReasoning, reqOpenAI.ReasoningEffort, reqOpenAI.MaxTokens, c.userTypeOf(a), contextWindow)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qodercom body: %w", err)
 	}

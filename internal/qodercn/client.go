@@ -273,6 +273,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	}
 
 	// 思考开关：reasoning_effort 或 thinking:{type:"enabled"} → 启用推理
+	// 档位值（low/high/max/...）原样透传到 parameters.reasoning_effort；
+	// "none" 是关闭思考的语义值，同时负责把 is_reasoning 置 false。
 	enableReasoning := false
 	if reqOpenAI.ReasoningEffort != "" {
 		enableReasoning = true
@@ -284,7 +286,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	mc := c.modelEntry(modelKey)
 	contextWindow := resolveContextWindow(parseContextWindowHint(body), mc)
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, mc, reqOpenAI.Tools, enableReasoning, reqOpenAI.MaxTokens, c.userTypeOf(a), contextWindow)
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, mc, reqOpenAI.Tools, enableReasoning, reqOpenAI.ReasoningEffort, reqOpenAI.MaxTokens, c.userTypeOf(a), contextWindow)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qodercn body: %w", err)
 	}
