@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -85,7 +86,6 @@ type Config struct {
 	// Stats 运行统计引擎（非 nil 时转发请求插桩 AddUsage/AddRequestRow；见 internal/stats 包注释）。
 	Stats *statsEngine.Stats
 
-	MaxRotate    int
 	HardCooldown time.Duration
 	SoftCooldown time.Duration
 	ErrThreshold int
@@ -174,9 +174,6 @@ func NewHandler(cfg Config) *Handler {
 		cfg.Runtimes = map[provider.Kind]*Runtime{
 			provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: cfg.Pool, Upstream: cfg.Upstream, StaticModels: WorkBuddyStaticModels()},
 		}
-	}
-	if cfg.MaxRotate <= 0 {
-		cfg.MaxRotate = 3
 	}
 	if cfg.HardCooldown <= 0 {
 		cfg.HardCooldown = 12 * time.Hour
@@ -693,6 +690,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if res.lastKind == provider.ErrQueued {
+			// 全号排队：给合规的重试信号（与 body 里的 retry_after_seconds 一致）。
+			w.Header().Set("Retry-After", "30")
+		}
 		transparentError(w, res.lastStatus, res.lastBody)
 		return
 	}
@@ -741,7 +742,15 @@ func (h *Handler) serveRotation(
 	// lastKind：轮转中最后一个「账号级可轮换」错误的类别（Rotatable 分支置位）——
 	// 候选耗尽透传前交回调用方做方案 B 判定；成功/请求级错误不置位（零值 ErrNone）。
 	var lastKind provider.ErrKind
-	for i := 0; i < h.cfg.MaxRotate; i++ {
+	// attempts：本次请求最多试几个号 = 渠道账号数（原 MaxRotate 已删）。
+	// 每个号最多试一次（tried），是否真的换下一个由错误类别决定——
+	// kind.Rotatable() 为假、或传输层/5xx 这类「换号必撞同一面墙」的错误直接返回，
+	// 这样「试满所有号」与「立即失败」两种语义都由错误类型决定，不再有魔法数字上限。
+	attempts := len(rt.Pool.List())
+	if attempts <= 0 {
+		attempts = 1
+	}
+	for i := 0; i < attempts; i++ {
 		acct := h.pickWithSticky(rt, model)
 		if acct == nil {
 			break
@@ -761,6 +770,16 @@ func (h *Handler) serveRotation(
 				log.Printf("refresh failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
 				lastErr = err
 				h.stickyClear(rt)
+				// 本机网络/DNS 挂着时（`dial tcp: lookup ...: no such host`、connection refused），
+				// 所有账号都刷不出来，换号必撞同一面墙 ⇒ 直接 502，别把 N×30s 超时堆满。
+				if isNetworkError(err) {
+					log.Printf("refresh failed by network platform=%s uid=%s（不换号）err=%v", rt.Kind, acct.UID, err)
+					statRow.Status = http.StatusBadGateway
+					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", err.Error())
+					return
+				}
+				// 账号侧问题（refresh token 失效 / 刷新接口 5xx）：只有「恰好要刷新」的号
+				// 受影响，其余号 token 仍然有效 ⇒ 换下一个号，不设次数上限（试满所有号）。
 				var ue *provider.Error
 				if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
 					rt.Pool.MarkSessionDead(acct.UID, "refresh: "+err.Error())
@@ -778,17 +797,16 @@ func (h *Handler) serveRotation(
 		if terr != nil {
 			lastErr = terr
 			h.stickyClear(rt)
-			if rt.SingleAccount {
-				// 单账号渠道：不累计 errCount。网络抖动重试三次就冷却唯一账号，
-				// 会让整条渠道下线（且无号可轮换）。直接透传错误，重试交给客户端。
-				log.Printf("upstream transport error platform=%s uid=%s（单账号渠道不计错）err=%v",
-					rt.Kind, acct.UID, terr)
-				statRow.Status = http.StatusBadGateway
-				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", terr.Error())
-				return
-			}
-			rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
-			continue
+			// 传输层错误（连接超时 / 拒连 / 等响应头超时）：同一渠道所有账号打的是**同一个
+			// host**，网络层故障与账号无关 ⇒ 换号必然撞同一面墙，而且单次可长达 120s。
+			// 直接 502 把重试交给客户端（原逻辑：多号渠道轮 3 次 = 最长 6 分钟白等）。
+			// 也不计入账号错误（2026-10-20）：一次本机网络抖动不该把整池账号打成冷却。
+			// 单账号渠道（oczen）本来就是这条语义，现在统一。
+			log.Printf("upstream transport error platform=%s uid=%s（不换号、不计账号错误）err=%v",
+				rt.Kind, acct.UID, terr)
+			statRow.Status = http.StatusBadGateway
+			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", terr.Error())
+			return
 		}
 		if status >= 400 {
 			statRow.Status = status // 所有透传出口（单账号/请求级/惩罚后）共用
@@ -875,6 +893,11 @@ func (h *Handler) serveRotation(
 				// 面板呈现「渠道自己挂了」假象，且诱发无意义的模型降级链触发。
 				// 仅轮转以兼容「同模型不同账号权益差异」场景；候选耗尽后透传最后
 				// 错误（与上游分类器注释「BadParams：不罚号但仍轮转」对齐）。
+			case provider.ErrQueued:
+				// 上游把「排队」当 4xx 下发（同 10605 的另一种形态）：只冷却「号×模型」，不罚整号。
+				// 冷却时长取响应里的 retryAfter/重置点，换号可能命中不同队列。
+				rt.Pool.CooldownModel(acct.UID, model, h.softRateCooldown(string(respBody)), "model queued")
+				log.Printf("model queued (http %d) platform=%s uid=%s model=%s", status, rt.Kind, acct.UID, model)
 			case provider.ErrServer:
 				// 上游 5xx = 服务端故障，与账号健康无关 ⇒ **不计入账号错误**。
 				//
@@ -884,9 +907,11 @@ func (h *Handler) serveRotation(
 				// 而 err_threshold 默认 3 ⇒ **重试一次就把三个健康账号全冷却 10 分钟**，
 				// 期间整条渠道 503。账号本身完全健康（积分/签到/session 全正常）。
 				//
-				// 判据：5xx 的语义就是「服务端出问题了」，记到客户端凭据头上既不合因果，
-				// 也会把一次上游故障放大成整条渠道下线。轮转保留（ErrServer 仍 Rotatable），
-				// 「换个账号重试」的机会还在，只是不再拿 5xx 惩罚账号。
+				// ⚠️ 2026-10-20 再进一步：**连换号也不做了**（ErrServer 从 Rotatable 除名）。
+				// 实测 workbuddyai 11134「the model provider is temporarily unavailable」
+				// 在同一波里 4 个号全 500，且每个号内部客户端已自行重试 3 次（日志
+				// 「http 500，800ms 后重试 (2/3)」）⇒ 一次请求实际打 9 次，全部白打。
+				// 结论：5xx 直接透传原状态码/原文，把等待与重试交给客户端。
 				//
 				// 逃生门：NoCooldownOnServerError 字段保留，但语义不变（仍表示「不豁免」），
 				// 仅用于审计/文档层面标注渠道差异；真正的计数开关由 CountServerErrorAsAccountFault
@@ -896,15 +921,16 @@ func (h *Handler) serveRotation(
 					log.Printf("upstream server error platform=%s uid=%s status=%d（渠道显式要求计入账号错误）",
 						rt.Kind, acct.UID, status)
 				} else {
-					log.Printf("upstream server error platform=%s uid=%s status=%d（不计入账号错误）",
+					log.Printf("upstream server error platform=%s uid=%s status=%d（不计入账号错误、不换号，直接透传）",
 						rt.Kind, acct.UID, status)
 				}
 			default:
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 			}
-			// 账号级错误（限流/欠费/登录态死/5xx/账号故障等）：换下一个账号重试本请求，
+			// 账号级错误（限流/欠费/登录态死/账号故障/排队等）：换下一个账号重试本请求，
 			// 全部候选耗尽后才把最后一个上游错误透传给客户端（-p4 前此处直接 return，
-			// 导致客户端看到本可避免的 429/402）。内容类错误在上方 case 中已提前返回。
+			// 导致客户端看到本可避免的 429/402）。内容类错误在上方 case 中已提前返回；
+			// 5xx 与传输层错误也是直接透传（换号必撞同一面墙，见各自分支注释）。
 			if kind.Rotatable() {
 				log.Printf("rotate platform=%s uid=%s kind=%s status=%d body=%s",
 					rt.Kind, acct.UID, kind, status, truncateBody(respBody))
@@ -928,6 +954,25 @@ func (h *Handler) serveRotation(
 		h.stickySuccess(rt)
 		if stream {
 			usage, serr := rt.Upstream.Stream(w, rc, dispModel)
+			// 排队提示（qodercn 10605 isQueued）：上游把「模型拥塞」当成 HTTP 200 里的
+			// 一帧业务错误下发，此刻 **一字节未写** ⇒ 冷却「号×该模型」后换下一个号。
+			//
+			// 若不识别：这帧没有 choices，会被当普通 chunk 透传 ⇒ 客户端只有一个空 delta，
+			// 界面停在「正在等待模型…」，直到网关 180s 后掐断（2026-10-20 实录：
+			// 180.3/180.7/180.8s 三次，每轮扣掉 3 分钟，且零 token 计费）。
+			var qe *provider.Queued
+			if errors.As(serr, &qe) && !sw.written {
+				h.stickyClear(rt)
+				rt.Pool.CooldownModel(acct.UID, model, qe.Cooldown(), "model queued")
+				clearSSEHeaders(w) // StreamCapture 已写进 header 的 SSE 头必须撤掉
+				log.Printf("model queued platform=%s uid=%s model=%s %s（换下一个账号，冷却 %s）",
+					rt.Kind, acct.UID, model, qe.Error(), qe.Cooldown())
+				lastErr = qe
+				lastStatus = http.StatusTooManyRequests
+				lastBody = queuedBody(qe)
+				lastKind = provider.ErrQueued
+				continue
+			}
 			cu := cacheUsageOf(usage) // 缓存命中（上游未上报时 reported=false，面板显示「—」）
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
 			// 记账失败不干扰主流程——锦上添花功能。
@@ -1595,6 +1640,52 @@ func transparentError(w http.ResponseWriter, status int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// clearSSEHeaders 撑掉渠道 StreamCapture 预先写进 header 的 SSE 头。
+// 排队/业务错误帧发现于**未写出任何字节**之时，此时撤掉这些头，后续才能干净地
+// 写回 JSON 错误（否则客户端会按 text/event-stream 解析一个 JSON 体）。
+func clearSSEHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Del("Content-Type")
+	h.Del("Cache-Control")
+	h.Del("Connection")
+	h.Del("X-Accel-Buffering")
+}
+
+// queuedBody 构造「全号排队」的出口错误体：OpenAI 错误信封 + 排队元数据。
+// 客户端/agent 读 code=model_queued 即知“不是渠道挂了，是模型拥塞，等 retry_after 再试”。
+func queuedBody(q *provider.Queued) []byte {
+	payload, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message":             q.Error(),
+		"type":                "upstream_error",
+		"code":                "model_queued",
+		"retry_after_seconds": int(q.Cooldown().Seconds()),
+		"queue_count":         q.QueueCount,
+		"wait_seconds":        q.WaitSeconds,
+	}})
+	return payload
+}
+
+// isNetworkError 判定是否**本机传输层/DNS**故障（与账号无关）。
+// 判据：http.Client.Do 包装的 *url.Error / net.Error，或文案里出现 DNS/拒连特征。
+// 用途：refresh 失败要区分「号坏了（换号有效）」与「网络坏了（换号无用）」。
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
+	}
+	s := err.Error()
+	for _, m := range []string{"dial tcp", "no such host", "connection refused",
+		"connection reset", "i/o timeout", "timeout awaiting response headers", "network is unreachable"} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // softRateResetMaxCap 解析出的重置时长上限：上游时间戳异常（如错给一年后）时不至于把号冻死。

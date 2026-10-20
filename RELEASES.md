@@ -3026,3 +3026,88 @@ OpenAI Images API 兼容生图端点，**外部 OpenAI 生态工具零改造接�
 - 多图拼版出图效果仅双人设定集定性通过，任意 N 图未全量验证；
 - 图床依赖第三方（sang.pub，含隐私提示），配置化逃生门未做；
 - edits 输出比例强制跟随输入图，请求 `size` 只对 generations 生效。
+
+---
+
+# wild-work v2.9.4 — 上游「排队」不再干等 180 秒 + 换号策略按错误语义分层
+
+> 一句话：**上游说「在排队」时，我们不再把这句话当空气**——立刻换号，全号排队才告诉你等多久。
+
+## 🐛 `qodercn/deepseek-flash` 卡死 3 分钟（零 token）
+
+生产实录（2026-10-20）：同一模型连续 4 次请求全部卡死，日志一模一样：
+
+```
+elapsed=180.3s  ttfb=483ms  err=upstream stream truncated: unexpected EOF
+elapsed=180.7s  ttfb=401ms  err=upstream stream truncated: unexpected EOF
+elapsed=180.8s  ttfb=743ms  err=upstream stream truncated: unexpected EOF
+```
+
+客户端界面停在「正在等待模型…」，**3 分钟零 token，最后报错**。
+
+### 🔍 根因：上游把「排队」写成一帧业务错误，而它长得像 chunk
+
+抓上游原始响应才看清：**HTTP 200**，首帧不是 delta，而是一段三层套娃：
+
+```json
+{"code":403,"message":"{\"code\":\"10605\",\"message\":\"{\\\"isQueued\\\":true,
+ \\\"modelKey\\\":\\\"dfmodel\\\",\\\"queueCount\\\":8407,\\\"queueType\\\":\\\"p3\\\",
+ \\\"retryAfterSeconds\\\":30,\\\"waitTime\\\":509}\"}"}
+```
+
+外层 headers 还带着 `Retry-After: 30`。这帧**没有 `choices`**，旧解析器不认识它 ⇒
+当成普通 chunk 原样转发 ⇒ 客户端收到一个空 delta 后干等，直到网关 180 秒后掐断连接。
+
+对照实验：同渠道 `glm-5.3-flash` 0.87 秒正常出字 ⇒ **账号没问题，是模型在排队**。
+
+### 🔧 修法：零字节识别 → 冷却「号×模型」→ 换下一个号
+
+- 解析层在 `onChunk` 之前识别 `10605` / `isQueued`（且无 `choices`）⇒ 上抛
+  `*provider.Queued`（带 `queueCount` / `retryAfter` / `waitTime`），**保证一字节都不写**；
+- 新增错误类别 `ErrQueued`：账号本身健康，拥塞在**网关的模型维度**，
+  换号可能命中不同队列 ⇒ 只冷却「这个号的这个模型」30 秒（取上游 `retryAfter`），
+  **不升级整号冷却**；
+- 全部账号都在排队时，不再回 503 `no_healthy_account`，而是：
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+{"error":{"code":"model_queued","message":"… queue=8407 wait=509s",
+          "retry_after_seconds":30,"queue_count":8407,"wait_seconds":509}}
+```
+
+一句话：**能换就换，换完还在排队就诚实告诉你「等 30 秒」，而不是让你等 3 分钟再报错。**
+
+## 🔁 换号策略重排：按「换号有没有收益」分层
+
+`MaxRotate`（魔法数字 3）**整体删除**。轮转上限改为**渠道账号数**（每个号试一次，
+`tried` 去重），继续还是失败只由错误类别决定：
+
+| 错误 | 处置 | 依据 |
+|---|---|---|
+| 排队 10605 / 429 / 402 / 401 / 404 / 账号故障 / 其他 4xx | **试满所有号** | 换号有价值 |
+| 5xx（如 workbuddyai `11134`） | **不换号，原样透传** | 实测同一波 4 个号全 500，号内客户端已各重试 3 次 ⇒ 一次请求白打 9 次 |
+| 传输层超时 / refresh 的本机 DNS 故障 | **不换号，直接 502** | 同渠道所有号打同一个 host（实测 sgproxy `timeout awaiting response headers` 114 次、`lookup …: no such host` 38 次） |
+
+`ErrClient`（其他 4xx）**保留换号**：实测 workbuddyai `11158 model [primary-model] is not
+allowed for user type [personal_free_user]` 是账号等级差异，换到 pro 号即放行。
+
+## 🧊 整号冷却升级阈值 2 → 3
+
+`CooldownModel` 原先「同号两个模型冷却就把整号冻住」。排队让「同号多模型冷却」变成
+高频事件（`deepseek-v4.1-flash` 与 `flash-sg` 先后 429 就能冻掉整个号）⇒ 阈值提到 **3**，
+两个模型排队不再触发整号下线。
+
+## ✅ 回归
+
+- `internal/qodercn/queue_frame_test.go`：排队帧**零字节**写出 + 元数据解析 + 只带外层
+  `Retry-After` 的形态 + 非排队错误帧不透传 + 正常 delta 仍透传 + `Classify` 不把普通 403 误判；
+- `internal/server/handler_queue_test.go`：首号排队 → 换号成功且只冷「号×模型」约 30s
+  （断言不整号冷）；三号全排队 → 429 + `Retry-After` + `model_queued` 且每号只试一次；
+  传输层错误 → 只打 1 次就 502；
+- `fallback_dimension_test.go`：新增第五维度 `upstream-transparent`，`ErrServer` 移出
+  `account-rotate`，`ErrQueued` 登记（`expectedKindCount` 14→15）；
+- 升级阈值相关单测同步（`pool_test.go`、`model_fallback_test.go`、`handler_model_cooldown_test.go`）。
+
+> 顺带把散落在注释、文档里的 `MaxRotate` 表述全部改为「轮转上限 = 渠道账号数」，
+> `docs/模型降级链定义.md` 的维度表补上第五类处置 `upstream-transparent`。

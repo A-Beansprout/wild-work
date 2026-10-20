@@ -192,6 +192,7 @@ const (
 	ErrAccountFault                  // 账号级授权/配额故障（11140/14017）→ 冷却轮换
 	ErrModelBlocked                  // 11102 该后端无此模型 → (账号,模型) 负缓存避让
 	ErrPassthrough                   // 请求级拒绝（形态/地域/身体不被接受）→ 原文透传，不罚账号不轮转
+	ErrQueued                        // 上游「模型排队中」提示（qodercn 10605 isQueued）→ 换号可能命中不同队列
 )
 
 func (k ErrKind) String() string {
@@ -224,22 +225,73 @@ func (k ErrKind) String() string {
 		return "model_blocked"
 	case ErrPassthrough:
 		return "passthrough"
+	case ErrQueued:
+		return "queued"
 	default:
 		return "none"
 	}
 }
 
 // Rotatable 报告该错误是否应换下一个账号重试本请求（账号级错误）。
-// 账号有问题的（限流/欠费/登录态死/偶发 404/上游 5xx/账号故障）：换号有价值；
+// 账号有问题的（限流/欠费/登录态死/偶发 404/账号故障/排队）：换号有价值；
 // 请求内容有问题的（内容拦截/上下文超限/模型不存在）：换号必然复现，透传原文结束；
-// ErrClient（其他 4xx 业务错误）默认可换一次——部分渠道业务错误挂在账号权益上。
+// ErrClient（其他 4xx 业务错误）可换号——实测 workbuddyai 11158「model is not allowed for
+// user type [personal_free_user]」就是账号等级差异，换到 pro 号即放行。
+//
+// ⚠️ ErrServer（5xx）**不在**此列（2026-10-20 除名）：实测 workbuddyai 11134
+// 「the model provider is temporarily unavailable」在同一波里 4 个号全 500，且每个号
+// 内部客户端已自行重试 3 次 ⇒ 换号必撞同一面墙，只是把 1 次失败放大成 9 次。
 func (k ErrKind) Rotatable() bool {
 	switch k {
-	case ErrSoftRate, ErrHardCredit, ErrSessionDead, ErrNotFound, ErrServer, ErrAccountFault, ErrClient:
+	case ErrSoftRate, ErrHardCredit, ErrSessionDead, ErrNotFound, ErrAccountFault, ErrClient, ErrQueued:
 		return true
 	default:
 		return false
 	}
+}
+
+// Queued 上游「模型排队中」提示：HTTP 200 里的一帧业务错误，不是拒绝。
+//
+// 首例 qodercn deepseek-flash（2026-10-20 生产实录）——外层 headers 带 Retry-After，
+// body 内三层嵌套：{code:403} → {code:10605} → {isQueued:true, modelKey:"dfmodel",
+// queueCount:8407, retryAfterSeconds:30, waitTime:509}。
+//
+// 账号本身健康（同号其他模型照用），拥塞发生在网关的**模型维度**上；换号可能命中不同队列。
+// 该帧必须在**写出任何字节之前**识别：把这种没有 choices 的帧当普通 chunk 透传，
+// 客户端只会显示「正在等待模型…」，直到网关 180s 后掐断连接（实测三次 180.3/180.7/180.8s）。
+type Queued struct {
+	ModelKey    string
+	QueueCount  int
+	RetryAfter  time.Duration // 上游建议的重试间隔（外层 Retry-After 或 retryAfterSeconds）
+	WaitSeconds int           // 上游估计的排队时长（waitTime）
+}
+
+func (e *Queued) Error() string {
+	msg := "model queued upstream"
+	if e.ModelKey != "" {
+		msg += " (" + e.ModelKey + ")"
+	}
+	if e.QueueCount > 0 {
+		msg += fmt.Sprintf(" queue=%d", e.QueueCount)
+	}
+	if e.WaitSeconds > 0 {
+		msg += fmt.Sprintf(" wait=%ds", e.WaitSeconds)
+	}
+	if e.RetryAfter > 0 {
+		msg += fmt.Sprintf(" retry_after=%s", e.RetryAfter)
+	}
+	return msg
+}
+
+// Kind 实现 StreamErrorClassifier：流在写出字节之前命中排队时，handler 据此走换号路径。
+func (e *Queued) Kind() ErrKind { return ErrQueued }
+
+// Cooldown 本次「账号×模型」应冷却多久：优先用上游 retryAfter，缺失时退 30s。
+func (e *Queued) Cooldown() time.Duration {
+	if e.RetryAfter > 0 {
+		return e.RetryAfter
+	}
+	return 30 * time.Second
 }
 
 // Error 带分类的上游错误。

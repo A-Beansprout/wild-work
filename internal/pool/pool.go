@@ -367,9 +367,14 @@ func (p *Pool) ClearPenalty(uid string) {
 // CooldownModel 模型级冷却：只把 uid 账号的指定模型冻到 now+d，账号对其他模型仍可用。
 // 上游 429/6004 实测按模型限额（「您也可以切换其他模型继续使用」），账号级冷却粒度
 // 过粗会把同号健康模型一起拖死。
-// 升级兜底：若该账号已有 ≥1 个模型仍处于冷却中，本次视为「短时间内第二次撞墙」——
+// 升级兜底：若该账号已有 ≥2 个模型仍处于冷却中，本次视为「短时间内第三次撞墙」——
 // 上游可能实际按账号计时（多模型同时 6004），直接升级为整号冷却到最晚重置点，
 // 防止逐模型把每个模型都撞一遍 429 才发现是整号被限。返回是否发生了升级。
+//
+// ⚠️ 阈值从 2 提到 3（2026-10-20）：排队的引入让「模型级冷却」变成高频事件
+// （qodercn deepseek-flash 一次排队就给「号×模型」打 30s 冷却），阈值 2 会让
+// 「两个模型排队」= 整号冻结 60s，3 个号很快全冻 = 整条渠道下线，与用户目标相反。
+// 真正的账号级限流仍能触发：上游按账号计时时 3 个模型会一起撞墙。
 func (p *Pool) CooldownModel(uid, model string, d time.Duration, reason string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -395,7 +400,7 @@ func (p *Pool) CooldownModel(uid, model string, d time.Duration, reason string) 
 		}
 	}
 	escalated := false
-	if active >= 2 {
+	if active >= 3 {
 		e.until = latest
 		e.reason = reason + "（多模型接连限流，升级整号冷却）"
 		e.errCount = 0

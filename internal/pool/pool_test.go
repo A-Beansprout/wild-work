@@ -429,23 +429,45 @@ func TestCooldownModelKeepsOtherModelsUsable(t *testing.T) {
 	}
 }
 
-// TestCooldownModelEscalatesOnSecondActiveModel 短时间内第二个模型也撞墙 →
+// TestCooldownModelTwoModelsStayModelLevel 两个模型同时冷却 **不** 升级整号
+// （2026-10-20 阈值 2→3：模型级冷却因排队变高频，两个模型排队不该把整号冻住）。
+func TestCooldownModelTwoModelsStayModelLevel(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.SetCreditDetail("u1", 100, 0, 0, time.Time{})
+	p.CooldownModel("u1", "deepseek-flash", 30*time.Second, "model queued")
+	if escalated := p.CooldownModel("u1", "glm-5.3", time.Hour, "429 rate limit"); escalated {
+		t.Fatal("两个模型冷却不应升级整号")
+	}
+	if got := p.PickForModel("kimi-k2.7"); got == nil || got.UID != "u1" {
+		t.Fatalf("两个模型冷却后同号其他模型应仍可用: %+v", got)
+	}
+	st, _ := p.Status("u1")
+	if st.Cooling || len(st.ModelCooling) != 2 {
+		t.Errorf("应保持模型级冷却（2 条）而非整号冷却: %+v", st)
+	}
+}
+
+// TestCooldownModelEscalatesOnThirdActiveModel 短时间内第三个模型也撞墙 →
 // 升级整号冷却到最晚重置点（防上游实际按账号计时逐模型撞墙）。
-func TestCooldownModelEscalatesOnSecondActiveModel(t *testing.T) {
+func TestCooldownModelEscalatesOnThirdActiveModel(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
 	p.SetCreditDetail("u1", 100, 0, 0, time.Time{})
 	if escalated := p.CooldownModel("u1", "glm-5.3", time.Hour, "429 rate limit"); escalated {
 		t.Fatal("首次不应升级")
 	}
-	if escalated := p.CooldownModel("u1", "deepseek-v4.1-flash", 2*time.Hour, "429 rate limit"); !escalated {
-		t.Fatal("第二个模型仍冷却中时再次撞墙应升级整号")
+	if escalated := p.CooldownModel("u1", "deepseek-v4.1-flash", 2*time.Hour, "429 rate limit"); escalated {
+		t.Fatal("第二个模型不应升级")
+	}
+	if escalated := p.CooldownModel("u1", "kimi-k2.7", 3*time.Hour, "429 rate limit"); !escalated {
+		t.Fatal("第三个模型仍冷却中时再次撞墙应升级整号")
 	}
 	if got := p.Pick(); got != nil {
 		t.Fatalf("升级后整号应冷却: %+v", got)
 	}
-	if got := p.PickForModel("kimi-k2.7"); got != nil {
-		t.Fatalf("升级后第三个模型也不应选中该号: %+v", got)
+	if got := p.PickForModel("qwen3.8-max"); got != nil {
+		t.Fatalf("升级后第四个模型也不应选中该号: %+v", got)
 	}
 	st, _ := p.Status("u1")
 	if !st.Cooling || len(st.ModelCooling) != 0 {

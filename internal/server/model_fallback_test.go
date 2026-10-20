@@ -34,8 +34,7 @@ func newFbHandler(t *testing.T, upA, upB provider.Upstream, rules []config.Model
 			provider.Oczen:     {Kind: provider.Oczen, Pool: pa, Upstream: upA},
 			provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: pb, Upstream: upB},
 		},
-		APIKey: "k", MaxRotate: 3,
-		HardCooldown: time.Hour, SoftCooldown: time.Minute,
+		APIKey: "k", HardCooldown: time.Hour, SoftCooldown: time.Minute,
 		ErrThreshold: 1, ErrCooldown: time.Minute,
 		ModelFallbacks: rules,
 	})
@@ -318,11 +317,12 @@ func TestModelFallbackCrossChannelWhenWholeChannelCold(t *testing.T) {
 	h, pa, _ := newFbHandler(t, upA, upB, []config.ModelFallbackRule{
 		{From: "oczen/big-pickle", To: []string{"workbuddy/glm-free"}},
 	})
-	// 两个不同模型接连限流 → 触发 pool 的整号冷却升级（真实事故形态：
-	// deepseek-v4.1-flash 与 flash-sg 先后 429 ⇒ 账号级冷却 ⇒ 渠道全灭）
+	// 三个不同模型接连限流 → 触发 pool 的整号冷却升级（阈值 2→3，2026-10-20；
+	// 真实事故形态：deepseek-v4.1-flash 与 flash-sg 先后 429 ⇒ 账号级冷却 ⇒ 渠道全灭）
 	pa.CooldownModel(oczen.AnonymousUID, "big-pickle", 10*time.Minute, "test")
-	if !pa.CooldownModel(oczen.AnonymousUID, "another-model", 10*time.Minute, "test") {
-		t.Fatal("第二次模型冷却应升级为整号冷却（active>=2）")
+	pa.CooldownModel(oczen.AnonymousUID, "another-model", 10*time.Minute, "test")
+	if !pa.CooldownModel(oczen.AnonymousUID, "third-model", 10*time.Minute, "test") {
+		t.Fatal("第三次模型冷却应升级为整号冷却（active>=3）")
 	}
 	rec := callModel(h, "oczen/big-pickle")
 	if rec.Code != http.StatusOK {

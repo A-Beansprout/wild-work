@@ -109,22 +109,21 @@ func Test429ModelCooldownKeepsOtherModelsUsable(t *testing.T) {
 	}
 }
 
-// Test429SecondModelEscalatesAccountCooldown glm 与 deepseek 先后撞墙：
-// 第二次触发整号升级冷却，第三个模型（kimi）的请求得到 503，且文案含解冻时间、
-// 不再误导「需重新登录」。
-func Test429SecondModelEscalatesAccountCooldown(t *testing.T) {
-	h := newRateLimitHandler("glm-5.3", "deepseek-v4.1-flash")
+// Test429ThirdModelEscalatesAccountCooldown glm / deepseek / kimi 先后撞墙：
+// 第三个模型同时冷却才触发整号升级（阈值 2→3，2026-10-20），第四个模型的请求
+// 得到 503，且文案含解冻时间、不再误导「需重新登录」。
+func Test429ThirdModelEscalatesAccountCooldown(t *testing.T) {
+	h := newRateLimitHandler("glm-5.3", "deepseek-v4.1-flash", "kimi-k2.7")
 
-	if rec := doChat(t, h, "qoder/glm-5.3"); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("glm 首撞应 429: %d", rec.Code)
-	}
-	if rec := doChat(t, h, "qoder/deepseek-v4.1-flash"); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("deepseek 二撞应 429（透传）: %d", rec.Code)
+	for _, m := range []string{"glm-5.3", "deepseek-v4.1-flash", "kimi-k2.7"} {
+		if rec := doChat(t, h, "qoder/"+m); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s 撞墙应 429（透传）: %d", m, rec.Code)
+		}
 	}
 
-	rec := doChat(t, h, "qoder/kimi-k2.7")
+	rec := doChat(t, h, "qoder/qwen3.8-max")
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("升级整号后第三模型应 503: status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("升级整号后第四模型应 503: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	msg := rec.Body.String()
 	if !strings.Contains(msg, "解冻") {

@@ -83,7 +83,6 @@ func newRotateTestHandler(t *testing.T, up *kindedUpstream, uidPrefix string) *H
 		SoftCooldown: 60_000_000_000,
 		ErrThreshold: 3,
 		ErrCooldown:  60_000_000_000,
-		MaxRotate:    3,
 	})
 }
 
@@ -149,7 +148,7 @@ func TestContentErrorDoesNotRotate(t *testing.T) {
 func TestRotatableKindFamilies(t *testing.T) {
 	rotatable := []provider.ErrKind{
 		provider.ErrSoftRate, provider.ErrHardCredit, provider.ErrSessionDead,
-		provider.ErrNotFound, provider.ErrServer, provider.ErrAccountFault, provider.ErrClient,
+		provider.ErrNotFound, provider.ErrAccountFault, provider.ErrClient, provider.ErrQueued,
 	}
 	for _, k := range rotatable {
 		if !k.Rotatable() {
@@ -158,6 +157,9 @@ func TestRotatableKindFamilies(t *testing.T) {
 	}
 	notRotatable := []provider.ErrKind{
 		provider.ErrContentBlocked, provider.ErrPromptTooLong, provider.ErrPassthrough,
+		// 2026-10-20 除名：5xx 实测同一波里 4 个号全 500（workbuddyai 11134），
+		// 且每个号内部客户端已自行重试 3 次 ⇒ 换号必撞同一面墙。
+		provider.ErrServer,
 	}
 	for _, k := range notRotatable {
 		if k.Rotatable() {

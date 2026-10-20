@@ -458,6 +458,11 @@ func Classify(status int, body string) provider.ErrKind {
 	if status == http.StatusUnauthorized {
 		return provider.ErrSessionDead
 	}
+	// 排队提示（10605 isQueued）：就算外层是 4xx（实测 403），语义也是「等一会儿再来」，
+	// 换号可能命中不同队列 ⇒ 独立类别，冷却「号×模型」而不是罚整号（见 provider.Queued）。
+	if strings.Contains(body, "10605") || strings.Contains(body, "isQueued") {
+		return provider.ErrQueued
+	}
 	// 429 优先于 hardRule：限流 body 高频带 "quota exceeded"。
 	if status == http.StatusTooManyRequests {
 		return provider.ErrSoftRate

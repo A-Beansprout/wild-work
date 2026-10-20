@@ -39,7 +39,6 @@ func newClineTestHandler(t *testing.T, up *kindedUpstream) (*Handler, *pool.Pool
 		SoftCooldown: 60_000_000_000,
 		ErrThreshold: 3,
 		ErrCooldown:  60_000_000_000,
-		MaxRotate:    3,
 	})
 	return h, p
 }

@@ -69,7 +69,6 @@ func newHardCooldownHandler(t *testing.T, hardFor func(time.Time) time.Duration)
 		SoftCooldown:    time.Minute,
 		ErrThreshold:    3,
 		ErrCooldown:     time.Minute,
-		MaxRotate:       1, // 只打一个账号，便于断言该号的冷却时长
 		HardCooldownFor: hardFor,
 	})
 	return h, p
