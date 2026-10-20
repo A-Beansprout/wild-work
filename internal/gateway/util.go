@@ -144,11 +144,7 @@ func toolContentValue(v any) any {
 					continue
 				}
 				hasImg = true
-				img := map[string]any{"url": url}
-				if detail != "" {
-					img["detail"] = detail
-				}
-				blocks = append(blocks, map[string]any{"type": "image_url", "image_url": img})
+				blocks = append(blocks, imageURLBlock(url, detail))
 			}
 		}
 		if hasImg {

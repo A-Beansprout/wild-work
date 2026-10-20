@@ -324,7 +324,7 @@ func convertResponsesContent(content any) any {
 				}
 				if url != "" {
 					hasImg = true
-					blocks = append(blocks, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
+					blocks = append(blocks, imageURLBlock(url, ""))
 				}
 			}
 		}

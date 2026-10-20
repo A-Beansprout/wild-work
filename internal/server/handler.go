@@ -85,6 +85,9 @@ type Config struct {
 	// Stats 运行统计引擎（非 nil 时转发请求插桩 AddUsage/AddRequestRow；见 internal/stats 包注释）。
 	Stats *statsEngine.Stats
 
+	// MaxRequestBody 请求体上限（字节）。0 = 用 DefaultMaxRequestBody（128MiB）。
+	MaxRequestBody int64
+
 	MaxRotate    int
 	HardCooldown time.Duration
 	SoftCooldown time.Duration
@@ -192,6 +195,9 @@ func NewHandler(cfg Config) *Handler {
 	}
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
+	}
+	if cfg.MaxRequestBody > 0 {
+		MaxRequestBody = cfg.MaxRequestBody
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats, fallbacks: cfg.ModelFallbacks, efforts: cfg.ReasoningEfforts}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
@@ -1563,28 +1569,47 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(raw)
 }
 
-// MaxRequestBody 请求体上限（32MiB）：server 与 gateway 共用，避免两处硬编码不同步。
-// 原为 8MiB，实测多模态大图 base64 后（体积 ×~1.37）很宐易超限（issue #30 反馈），提至 32MiB。
-// 超限直接回 413 说真话，不做静默截断——截断后 JSON 解析失败会被误报成
-// invalid_model（issue #30），比直接拒绝更误导排查。
-const MaxRequestBody = 32 << 20
+// DefaultMaxRequestBody 请求体默认上限（128MiB）。
+//
+// 沿革：8MiB → 32MiB（issue #30，多模态大图 base64 后易超限）→ 128MiB（issue #181）。
+// 提不动的原因不是「图大」，而是**无状态客户端每轮重放整段历史**：Codex 的一个会话
+// 累积 12 张 2048px 截图（33.01MiB base64，文本仅 0.43MiB），请求体 33.44MiB 直接撞
+// 32MiB 硬限回 413，会话报废。gateway 侧另有 `imageURLBlock` 在转发前把图缩到 1568px
+// / JPEG（同 12 张 → 约 2.9MiB），所以上游实际收到的仍很小；此处上限只需容纳
+// **客户端原始体**。仍可经 config.json 的 `server.max_request_body_mb` 调整。
+const DefaultMaxRequestBody = 128 << 20
+
+// MaxRequestBody 当前生效的请求体上限。默认 DefaultMaxRequestBody，
+// 启动时按配置覆盖（见 NewHandler）。保留为包级变量是为兼容既有测试与调用方。
+var MaxRequestBody int64 = DefaultMaxRequestBody
 
 // ReadBodyLimited 读取请求体：超过 MaxRequestBody 时回 413 并返回错误。
 // 用 LimitReader(max+1) 多读 1 字节以区分「恰好 max」与「超限」。
 func ReadBodyLimited(r *http.Request) ([]byte, error) {
-	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
+	limit := MaxRequestBody
+	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(raw)) > MaxRequestBody {
+	if int64(len(raw)) > limit {
 		_ = r.Body.Close()
-		return nil, errTooLarge
+		return nil, tooLargeError(limit)
 	}
 	return raw, nil
 }
 
-// errTooLarge 超限哨兵错误（调用方据此回 413）。MiB 数字直接用常量推导，避免改上限后文案不同步。
-var errTooLarge = fmt.Errorf("request body exceeds limit of %d bytes (%d MiB); please reduce request size", MaxRequestBody, MaxRequestBody>>20)
+// errTooLarge 超限哨兵（调用方用 errors.Is 判定后回 413）。
+var errTooLarge = errors.New("request body too large")
+
+// IsBodyTooLarge 供 gateway 层判定「入站请求体超限」（跨包无法引用未导出哨兵）。
+func IsBodyTooLarge(err error) bool { return errors.Is(err, errTooLarge) }
+
+// tooLargeError 构造超限错误：包住哨兵以便 errors.Is 命中，文案带实际上限。
+// MiB 数字由生效上限推导，避免改上限后文案不同步。
+func tooLargeError(limit int64) error {
+	return fmt.Errorf("%w: exceeds limit of %d bytes (%d MiB); please reduce request size",
+		errTooLarge, limit, limit>>20)
+}
 
 func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": "api_error", "code": code}})

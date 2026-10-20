@@ -142,6 +142,15 @@ type Config struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	// Server 入站 HTTP 服务参数。
+	Server struct {
+		// MaxRequestBodyMB 入站请求体上限（MiB）。0 = 默认 128。
+		// 为什么要给到这么高：无状态客户端（Codex）每轮把整段历史原样重放，
+		// 多张截图的 base64 会线性累积；gateway 转发前会把图缩到 1568px/JPEG，
+		// 所以这个上限只需容纳**客户端原始体**，不代表上游会收到这么大的包（issue #181）。
+		MaxRequestBodyMB int `json:"max_request_body_mb,omitempty"`
+	} `json:"server"`
+
 	// Login 登录流程的可调项。
 	Login struct {
 		// LobsterAICallbackPort 固定 LobsterAI 的 OAuth 回调端口（0 = 每次随机）。
@@ -512,6 +521,17 @@ func (c *Config) normalize() error {
 	c.ExpiringThresholdDur = time.Duration(c.Schedule.ExpiringThresholdHours) * time.Hour
 	if c.Compat.MaxTokensCap < 0 {
 		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
+	}
+	// 入站请求体上限：0 = 默认；负数/过大一律钳到合理区间（下限 8MiB 沿用历史最低值，
+	// 上限 1024MiB 防手滑写成天文数字把内存撑爆）。
+	if c.Server.MaxRequestBodyMB < 0 {
+		c.Server.MaxRequestBodyMB = 0
+	}
+	if c.Server.MaxRequestBodyMB > 0 && c.Server.MaxRequestBodyMB < 8 {
+		c.Server.MaxRequestBodyMB = 8
+	}
+	if c.Server.MaxRequestBodyMB > 1024 {
+		c.Server.MaxRequestBodyMB = 1024
 	}
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863

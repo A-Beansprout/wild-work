@@ -199,7 +199,7 @@ func convertAnthropicMessage(role string, content any, idx int) ([]any, error) {
 			}
 		case "image":
 			if url := anthropicImageURL(bm); url != "" {
-				imgBlocks = append(imgBlocks, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
+				imgBlocks = append(imgBlocks, imageURLBlock(url, ""))
 			}
 		case "tool_use":
 			// assistant 侧的工具调用 → Chat 的 tool_calls

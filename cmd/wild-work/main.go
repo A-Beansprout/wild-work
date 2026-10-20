@@ -695,6 +695,7 @@ func main() {
 		ErrCooldown:      cfg.ErrCooldownDur,
 		ModelFallbacks:   cfg.ModelFallback,    // 启动时载入降级链（此前仅面板保存后热更新，重启即丢）
 		ReasoningEfforts: cfg.ReasoningEfforts, // 启动时载入思考强度映射（同上）
+		MaxRequestBody:   int64(cfg.Server.MaxRequestBodyMB) << 20, // 0 = server 默认 128MiB
 		WebUI:            sub,
 		AttachAPI:        appInst.HandleAPI,
 	})
