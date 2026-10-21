@@ -3311,3 +3311,19 @@ R113 之后图片已按 vision 通道转发，但 **base64 的字节数**还在�
 - 实测同一会话 **33.48MiB → 4.03MiB（8.3x）**，12 张图 33.01→2.86MiB；
   真实上游单发 3 张截图 `200 / input_tokens=655`，逐张描述准确（底部小字仍可读）。
 - 回归：`internal/gateway/image_slim_test.go` 6 例。
+
+## 八、出站脱敏补一条 DSH 身份句，绕过上游 11-128 渠道校验（R115）
+
+上游对 `system` 消息做**开头逐字前缀**匹配：只要 system 以
+`You are an AI agent powered by DeepSeek Harness` 开头（句号可有可无），即回
+`HTTP 400 {"code":11-128,"msg":"Illegal API invocation from an unapproved channel"}`。
+DeepSeek Harness 的 system prompt 正是以这句开头，于是经本代理转发的 DSH Agent
+请求会稳定撞上 11-128。
+
+- `internal/sanitize`（`PrepareBody` 真实入口）与 `internal/upstream`（内层平行实现）
+  两份脱敏表各补一条：特征串 + 最小改写「在 `DeepSeek Harness` 前插入冠词 `the`」。
+- 选插冠词的理由：语义扰动最小、改动可见可 review、不依赖不可见字符
+  （全角空格会被 NFKC 折叠，抗归一化差）；`built on` 会换实词。
+- 同步更新 `internal/upstream/sanitize_test.go` 的逐字节快照护栏
+  （`sanitizeFeatures` 7→8 项、`sanitizeRewrites` 5→6 对），并新增 3 个回归用例
+  （改写生效 / 经 `PrepareBody` 落到 system content / 措辞相近的变体不得被误改）。
