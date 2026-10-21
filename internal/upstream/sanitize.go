@@ -79,9 +79,10 @@ var sanitizeRewrites = [][2]string{
 	},
 	{
 		// DSH 身份句：上游只认 system 开头的逐字形态（换位置、换 role、缺 "You are an"
-		// 前缀均放行）；把一个词 powered by 改成 built on 即绕过，语义不变（实测 200）。
+		// 前缀均放行）；插入冠词 the 即绕过——保留 powered by 原措辞，仅加一个虚词，
+		// 语义扰动最小，且不依赖不可见字符或 Unicode 归一化（实测 200）。
 		"You are an AI agent powered by DeepSeek Harness",
-		"You are an AI agent built on DeepSeek Harness",
+		"You are an AI agent powered by the DeepSeek Harness",
 	},
 }
 

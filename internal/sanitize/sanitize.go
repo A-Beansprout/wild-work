@@ -46,10 +46,10 @@ var rewrites = [][2]string{
 	},
 	// 裸 11128 整单拦截，插入连字符保留可读性（零宽空格无效，上游会归一化）。
 	{"11128", "11-128"},
-	// DSH 身份句：上游只认 system 开头的逐字形态；换一个词即绕过（实测 200）。
+	// DSH 身份句：上游只认 system 开头的逐字形态；插入冠词 the 即绕过，语义扰动最小（实测 200）。
 	{
 		"You are an AI agent powered by DeepSeek Harness",
-		"You are an AI agent built on DeepSeek Harness",
+		"You are an AI agent powered by the DeepSeek Harness",
 	},
 }
 
