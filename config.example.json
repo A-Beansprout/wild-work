@@ -21,6 +21,9 @@
   "upstream": {
     "timeout_seconds": 120
   },
+  "server": {
+    "max_request_body_mb": 128
+  },
   "login": {
     "lobsterai_callback_port": 0
   },

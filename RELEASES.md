@@ -3293,3 +3293,21 @@ Codex 的 `view_image` 把截图以 `input_image` 块放进 `function_call_outpu
   `input_tokens=1013`，模型准确描述截图内容（CN `workbuddy/deepseek-v4-pro` 亦 1013→3271 正常）。
 - 回归：`internal/gateway/tool_image_test.go` 7 例。
 
+## 七、入站请求体上限 32MiB → 128MiB，并在转发前把内联图片降采样（R114，issue #176）
+
+R113 之后图片已按 vision 通道转发，但 **base64 的字节数**还在：Codex 是无状态客户端，
+每轮把整段历史原样重放，截图会线性累积。实测一个会话 426 个 item 里，
+**12 张 2048px 截图占 33.01MiB**（其余文本仅 0.43MiB），请求体 33.44MiB 撞 32MiB 硬限，
+回 `413 Payload Too Large: request body exceeds limit of 33554432 bytes`，会话报废。
+注意这个 413 发生在网关**读入站 body** 阶段，与协议转换无关。
+
+- `server.MaxRequestBody` 由常量改为可变（默认 **128MiB**），可用 `config.json` 的
+  `server.max_request_body_mb` 调整（钳 8~1024）；超限文案里的 MiB 数由生效上限推导。
+- 新增 `internal/gateway/imageslim.go`：转发前把 `data:` 图片降采样到长边 ≤1568，
+  不透明图重编码 **JPEG q85**、带 alpha 走 PNG；按 sha256 缓存（历史重放免重复解码）。
+  覆盖用户附图、`function_call_output`、Anthropic `image` 三个入口。
+- 只动 data URL；http(s) 直链、非 base64 data URL、解码失败、像素超 5000 万、
+  体积没变小 —— 一律原样返回。
+- 实测同一会话 **33.48MiB → 4.03MiB（8.3x）**，12 张图 33.01→2.86MiB；
+  真实上游单发 3 张截图 `200 / input_tokens=655`，逐张描述准确（底部小字仍可读）。
+- 回归：`internal/gateway/image_slim_test.go` 6 例。
